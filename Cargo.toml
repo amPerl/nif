@@ -1,0 +1,16 @@
+[package]
+name = "nif"
+version = "0.1.0"
+edition = "2018"
+authors = ["Romet Tagobert <sgzfxn@gmail.com>"]
+categories = []
+description = "A super-primitive NIF parser for a very specific old version of the format"
+homepage = "github.com/amPerl/nif"
+repository = "https://github.com/amPerl/nif"
+license = "MIT"
+readme = "README.md"
+
+[dependencies]
+anyhow = "1.0.38"
+binread = "1.4.1"
+thiserror = "1.0.23"
