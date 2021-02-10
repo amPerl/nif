@@ -9,6 +9,9 @@ homepage = "github.com/amPerl/nif"
 repository = "https://github.com/amPerl/nif"
 license = "MIT"
 readme = "README.md"
+exclude = [
+    "tests/*"
+]
 
 [dependencies]
 anyhow = "1.0.38"
