@@ -30,19 +30,15 @@ pub fn parse_lf_terminated_string<R: Read + Seek>(
     _options: &ReadOptions,
     _: (),
 ) -> BinResult<String> {
-    let pos = reader.seek(SeekFrom::Current(0))?;
-
-    String::from_utf8(
+    Ok(String::from_utf8_lossy(
         reader
             .iter_bytes()
             .filter_map(Result::ok)
             .take_while(|&b| b != b'\n')
-            .collect(),
+            .collect::<Vec<u8>>()
+            .as_slice(),
     )
-    .map_err(|e| binread::Error::Custom {
-        pos: pos as usize,
-        err: Box::new(e),
-    })
+    .to_string())
 }
 
 pub fn parse_int_prefixed_string<R: Read + Seek>(
@@ -50,20 +46,17 @@ pub fn parse_int_prefixed_string<R: Read + Seek>(
     options: &ReadOptions,
     _: (),
 ) -> BinResult<String> {
-    let pos = reader.seek(SeekFrom::Current(0))?;
     let count = u32::read_options(reader, options, ())?;
 
-    String::from_utf8(
+    Ok(String::from_utf8_lossy(
         reader
             .iter_bytes()
             .take(count as usize)
             .filter_map(Result::ok)
-            .collect(),
+            .collect::<Vec<u8>>()
+            .as_slice(),
     )
-    .map_err(|e| binread::Error::Custom {
-        pos: pos as usize,
-        err: Box::new(e),
-    })
+    .to_string())
 }
 
 pub fn parse_blocks<R: Read + Seek>(
@@ -83,7 +76,9 @@ pub fn parse_blocks<R: Read + Seek>(
                 // );
 
                 let block = match block_type.as_ref() {
-                    "NiObject" => Block::NiObject(NiObject::read_options(reader, options, ())?),
+                    "NiObjectNET" => {
+                        Block::NiObjectNET(NiObjectNET::read_options(reader, options, ())?)
+                    }
                     "NiAvObject" => {
                         Block::NiAvObject(NiAvObject::read_options(reader, options, ())?)
                     }
@@ -121,6 +116,19 @@ pub fn parse_blocks<R: Read + Seek>(
                     "NiSpecularProperty" => Block::NiSpecularProperty(
                         NiSpecularProperty::read_options(reader, options, ())?,
                     ),
+                    "NiSwitchNode" => {
+                        Block::NiSwitchNode(NiSwitchNode::read_options(reader, options, ())?)
+                    }
+                    "NiLODNode" => Block::NiLODNode(NiLODNode::read_options(reader, options, ())?),
+                    "NiRangeLODData" => {
+                        Block::NiRangeLODData(NiRangeLODData::read_options(reader, options, ())?)
+                    }
+                    "NiBillboardNode" => {
+                        Block::NiBillboardNode(NiBillboardNode::read_options(reader, options, ())?)
+                    }
+                    "NiCollisionData" => {
+                        Block::NiCollisionData(NiCollisionData::read_options(reader, options, ())?)
+                    }
                     _ => {
                         return Err(binread::Error::Custom {
                             pos: reader.seek(SeekFrom::Current(0))? as usize,

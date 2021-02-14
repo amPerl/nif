@@ -1,10 +1,11 @@
-use anyhow;
 use binread::{
     io::{Read, Seek},
     BinRead, BinReaderExt,
 };
+use error::NifError;
 
 pub mod blocks;
+pub mod common;
 pub mod error;
 pub mod header;
 mod parse_utils;
@@ -21,7 +22,7 @@ pub struct Nif {
 }
 
 impl Nif {
-    pub fn parse<R: Read + Seek>(reader: &mut R) -> anyhow::Result<Self> {
+    pub fn parse<R: Read + Seek>(reader: &mut R) -> Result<Self, NifError> {
         Ok(reader.read_le()?)
     }
 }

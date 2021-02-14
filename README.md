@@ -1,2 +1,2 @@
 # nif
-A super-primitive NIF parser for a very specific old version of the format
+A super-primitive Gamebryo NIF parser targeting version 20.0.0.4

@@ -1,4 +1,4 @@
-use super::ni_object::NiObject;
+use super::ni_object_net::NiObjectNET;
 use anyhow;
 use binread::{
     io::{Read, Seek},
@@ -7,7 +7,7 @@ use binread::{
 
 #[derive(Debug, PartialEq, BinRead)]
 pub struct NiMaterialProperty {
-    pub base: NiObject,
+    pub base: NiObjectNET,
     pub color_ambient: (f32, f32, f32),
     pub color_diffuse: (f32, f32, f32),
     pub color_specular: (f32, f32, f32),

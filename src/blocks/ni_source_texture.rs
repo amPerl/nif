@@ -1,5 +1,5 @@
-use super::NiObject;
-use super::NiString;
+use super::ni_object_net::NiObjectNET;
+use super::ni_string::NiString;
 use crate::error::NifError;
 use anyhow;
 use binread::{
@@ -11,7 +11,7 @@ use binread::{
 #[br(assert(direct_render == false, NifError::NotImplemented("Direct Render")))]
 #[br(assert(use_external == 1, NifError::NotImplemented("Non External")))]
 pub struct NiSourceTexture {
-    pub base: NiObject,
+    pub base: NiObjectNET,
     pub use_external: u8,
     pub file_name: NiString,
     pub unknown_link_ref: i32,

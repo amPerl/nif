@@ -1,4 +1,7 @@
-use crate::error::NifError;
+use crate::{
+    common::{Color4, Vector2, Vector3},
+    error::NifError,
+};
 use anyhow;
 use binread::{
     io::{Read, Seek},
@@ -6,7 +9,7 @@ use binread::{
 };
 
 #[derive(Debug, PartialEq, BinRead)]
-#[br(assert(vector_flags == 1, NifError::NotImplemented("VectorFlags")))]
+#[br(assert(vector_flags < 6, NifError::NotImplemented("VectorFlags")))]
 pub struct NiTriShapeData {
     pub group_id: u32,
     pub num_vertices: u16,
@@ -34,7 +37,7 @@ pub struct NiTriShapeData {
     #[br(count=num_vertices)]
     pub vertex_colors: Option<Vec<Color4>>,
 
-    #[br(count=num_vertices)]
+    #[br(count=vector_flags * num_vertices)]
     pub uv_sets: Vec<Vector2>,
 
     pub consistency_flags: u16,
@@ -59,27 +62,6 @@ pub struct MatchGroup {
     pub num_vertices: u16,
     #[br(count=num_vertices)]
     pub vertex_indices: Vec<u16>,
-}
-
-#[derive(Debug, PartialEq, BinRead)]
-pub struct Vector2 {
-    pub x: f32,
-    pub y: f32,
-}
-
-#[derive(Debug, PartialEq, BinRead)]
-pub struct Vector3 {
-    pub x: f32,
-    pub y: f32,
-    pub z: f32,
-}
-
-#[derive(Debug, PartialEq, BinRead)]
-pub struct Color4 {
-    pub r: f32,
-    pub g: f32,
-    pub b: f32,
-    pub a: f32,
 }
 
 #[derive(Debug, PartialEq, BinRead)]

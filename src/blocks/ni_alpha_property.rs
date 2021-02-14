@@ -1,4 +1,4 @@
-use super::NiObject;
+use super::ni_object_net::NiObjectNET;
 use anyhow;
 use binread::{
     io::{Read, Seek},
@@ -7,7 +7,7 @@ use binread::{
 
 #[derive(Debug, PartialEq, BinRead)]
 pub struct NiAlphaProperty {
-    pub base: NiObject,
+    pub base: NiObjectNET,
     pub flags: u16,
     pub threshold: u8,
 }

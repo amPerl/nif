@@ -1,4 +1,4 @@
-use super::ni_object_net::NiObjectNET;
+use super::ni_switch_node::NiSwitchNode;
 use anyhow;
 use binread::{
     io::{Read, Seek},
@@ -6,12 +6,12 @@ use binread::{
 };
 
 #[derive(Debug, PartialEq, BinRead)]
-pub struct NiSpecularProperty {
-    pub base: NiObjectNET,
-    pub flags: u16,
+pub struct NiLODNode {
+    pub base: NiSwitchNode,
+    pub lod_level_data_ref: i32,
 }
 
-impl NiSpecularProperty {
+impl NiLODNode {
     pub fn parse<R: Read + Seek>(reader: &mut R) -> anyhow::Result<Self> {
         Ok(reader.read_le()?)
     }

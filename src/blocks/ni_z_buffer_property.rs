@@ -1,4 +1,4 @@
-use super::ni_object::NiObject;
+use super::ni_object_net::NiObjectNET;
 use anyhow;
 use binread::{
     io::{Read, Seek},
@@ -7,7 +7,7 @@ use binread::{
 
 #[derive(Debug, PartialEq, BinRead)]
 pub struct NiZBufferProperty {
-    pub base: NiObject,
+    pub base: NiObjectNET,
     pub flags: u16,
     pub function: ZCompareMode,
 }
