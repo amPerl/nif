@@ -237,3 +237,31 @@ fn nif_f() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn nif_g() -> anyhow::Result<()> {
+    let nif_buffer = include_bytes!("g.nif");
+    let mut nif_cursor = Cursor::new(nif_buffer);
+
+    let nif_result = Nif::parse(&mut nif_cursor);
+    match &nif_result {
+        Err(NifError::BinReadError(binread::Error::Custom { pos, err })) => {
+            match err.downcast_ref::<NifError>() {
+                Some(inner_nif_error) => {
+                    println!("NifError: at {}: {:?}", pos, inner_nif_error);
+                }
+                None => (),
+            }
+        }
+        _ => (),
+    };
+
+    let nif: Nif = nif_result?;
+
+    assert_eq!(0x14000004, nif.header.version);
+    assert_eq!(EndianType::LittleEndian, nif.header.endian_type);
+
+    assert!(matches!(nif.blocks[0], Block::NiNode { .. }));
+
+    Ok(())
+}

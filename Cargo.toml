@@ -15,5 +15,5 @@ exclude = [
 
 [dependencies]
 anyhow = "1.0.38"
-binread = "1.4.1"
+binread = "2.1.1"
 thiserror = "1.0.23"

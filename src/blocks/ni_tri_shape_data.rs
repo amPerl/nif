@@ -64,7 +64,7 @@ pub struct MatchGroup {
     pub vertex_indices: Vec<u16>,
 }
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, Clone)]
 pub struct Triangle {
     pub a: u16,
     pub b: u16,

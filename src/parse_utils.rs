@@ -32,7 +32,7 @@ pub fn parse_lf_terminated_string<R: Read + Seek>(
 ) -> BinResult<String> {
     Ok(String::from_utf8_lossy(
         reader
-            .iter_bytes()
+            .bytes()
             .filter_map(Result::ok)
             .take_while(|&b| b != b'\n')
             .collect::<Vec<u8>>()
@@ -50,7 +50,7 @@ pub fn parse_int_prefixed_string<R: Read + Seek>(
 
     Ok(String::from_utf8_lossy(
         reader
-            .iter_bytes()
+            .bytes()
             .take(count as usize)
             .filter_map(Result::ok)
             .collect::<Vec<u8>>()
@@ -129,9 +129,12 @@ pub fn parse_blocks<R: Read + Seek>(
                     "NiCollisionData" => {
                         Block::NiCollisionData(NiCollisionData::read_options(reader, options, ())?)
                     }
+                    "NiStencilProperty" => Block::NiStencilProperty(
+                        NiStencilProperty::read_options(reader, options, ())?,
+                    ),
                     _ => {
                         return Err(binread::Error::Custom {
-                            pos: reader.seek(SeekFrom::Current(0))? as usize,
+                            pos: reader.seek(SeekFrom::Current(0))?,
                             err: Box::new(NifError::UnknownBlock),
                         });
                     }
@@ -140,7 +143,7 @@ pub fn parse_blocks<R: Read + Seek>(
             }
             None => {
                 return Err(binread::Error::Custom {
-                    pos: reader.seek(SeekFrom::Current(0))? as usize,
+                    pos: reader.seek(SeekFrom::Current(0))?,
                     err: Box::new(NifError::InvalidBlockTypeIndex),
                 });
             }

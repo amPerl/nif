@@ -11,6 +11,7 @@ mod ni_object_net;
 mod ni_range_lod_data;
 mod ni_source_texture;
 mod ni_specular_property;
+mod ni_stencil_property;
 mod ni_string;
 mod ni_string_extra_data;
 mod ni_switch_node;
@@ -33,6 +34,7 @@ pub use ni_object_net::*;
 pub use ni_range_lod_data::*;
 pub use ni_source_texture::*;
 pub use ni_specular_property::*;
+pub use ni_stencil_property::*;
 pub use ni_string::*;
 pub use ni_string_extra_data::*;
 pub use ni_switch_node::*;
@@ -64,4 +66,5 @@ pub enum Block {
     NiBillboardNode(NiBillboardNode),
     NiCollisionObject(NiCollisionObject),
     NiCollisionData(NiCollisionData),
+    NiStencilProperty(NiStencilProperty),
 }
