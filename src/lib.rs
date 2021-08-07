@@ -2,7 +2,7 @@ use binread::{
     io::{Read, Seek},
     BinRead, BinReaderExt,
 };
-use error::NifError;
+pub use error::NifError;
 
 pub mod blocks;
 pub mod common;

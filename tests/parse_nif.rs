@@ -1,5 +1,5 @@
-use binread::io::cursor::Cursor;
 use nif::{blocks::Block, error::NifError, header::EndianType, Nif};
+use std::io::Cursor;
 
 #[test]
 fn nif_a() -> anyhow::Result<()> {
@@ -188,7 +188,10 @@ fn nif_e() -> anyhow::Result<()> {
     assert!(matches!(nif.blocks[7], Block::NiSourceTexture { .. }));
     assert!(matches!(nif.blocks[8], Block::NiSourceTexture { .. }));
     assert!(matches!(nif.blocks[9], Block::NiAlphaProperty { .. }));
-    assert!(matches!(nif.blocks[10], Block::NiVertexColorProperty { .. }));
+    assert!(matches!(
+        nif.blocks[10],
+        Block::NiVertexColorProperty { .. }
+    ));
     assert!(matches!(nif.blocks[11], Block::NiMaterialProperty { .. }));
     assert!(matches!(nif.blocks[12], Block::NiTriShapeData { .. }));
 
@@ -262,6 +265,10 @@ fn nif_g() -> anyhow::Result<()> {
     assert_eq!(EndianType::LittleEndian, nif.header.endian_type);
 
     assert!(matches!(nif.blocks[0], Block::NiNode { .. }));
+    assert!(matches!(
+        nif.blocks[135],
+        Block::NiTransformData(nif::blocks::NiTransformData { .. })
+    ));
 
     Ok(())
 }

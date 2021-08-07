@@ -5,7 +5,7 @@ pub enum NifError {
     #[error("nif feature \"{0}\" is not implemented")]
     NotImplemented(&'static str),
     #[error("encountered unknown block")]
-    UnknownBlock,
+    UnknownBlock(usize, String),
     #[error("an invalid block type index was specified")]
     InvalidBlockTypeIndex,
     #[error("value is invalid")]

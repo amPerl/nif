@@ -8,6 +8,48 @@ use binread::{
 use crate::error::NifError;
 
 use super::blocks::{Block, *};
+use super::common;
+
+pub fn parse_keys<R: Read + Seek, T: BinRead<Args = ()>>(
+    reader: &mut R,
+    options: &ReadOptions,
+    args: (u32, Option<common::KeyType>),
+) -> BinResult<Vec<common::Key<T>>> {
+    if args.0 == 0 {
+        return Ok(Vec::new());
+    }
+    let key_type = args.1.expect("num_keys was >0, key_type should exist");
+
+    let mut keys = Vec::new();
+    for _ in 0..args.0 {
+        let key = common::Key::read_options(reader, options, (key_type,))?;
+        keys.push(key);
+    }
+
+    Ok(keys)
+}
+
+pub fn parse_quat_keys<R: Read + Seek>(
+    reader: &mut R,
+    options: &ReadOptions,
+    args: (u32, Option<common::KeyType>),
+) -> BinResult<Vec<common::QuatKey>> {
+    if args.0 == 0 {
+        return Ok(Vec::new());
+    }
+    let key_type = args.1.expect("num_keys was >0, key_type should exist");
+    if key_type != common::KeyType::XyzRotation {
+        return Ok(Vec::new());
+    }
+
+    let mut keys = Vec::new();
+    for _ in 0..args.0 {
+        let key = common::QuatKey::read_options(reader, options, (key_type,))?;
+        keys.push(key);
+    }
+
+    Ok(keys)
+}
 
 pub fn parse_version<R: Read + Seek>(
     reader: &mut R,
@@ -132,10 +174,108 @@ pub fn parse_blocks<R: Read + Seek>(
                     "NiStencilProperty" => Block::NiStencilProperty(
                         NiStencilProperty::read_options(reader, options, ())?,
                     ),
+                    "NiTimeController" => Block::NiTimeController(NiTimeController::read_options(
+                        reader,
+                        options,
+                        (),
+                    )?),
+                    "NiInterpController" => Block::NiInterpController(
+                        NiInterpController::read_options(reader, options, ())?,
+                    ),
+                    "NiSingleInterpController" => Block::NiSingleInterpController(
+                        NiSingleInterpController::read_options(reader, options, ())?,
+                    ),
+                    "NiFloatInterpController" => Block::NiFloatInterpController(
+                        NiFloatInterpController::read_options(reader, options, ())?,
+                    ),
+                    "NiAlphaController" => Block::NiAlphaController(
+                        NiAlphaController::read_options(reader, options, ())?,
+                    ),
+                    "NiInterpolator" => {
+                        Block::NiInterpolator(NiInterpolator::read_options(reader, options, ())?)
+                    }
+                    "NiKeyBasedInterpolator" => Block::NiKeyBasedInterpolator(
+                        NiKeyBasedInterpolator::read_options(reader, options, ())?,
+                    ),
+                    "NiFloatInterpolator" => Block::NiFloatInterpolator(
+                        NiFloatInterpolator::read_options(reader, options, ())?,
+                    ),
+                    "NiFloatData" => {
+                        Block::NiFloatData(NiFloatData::read_options(reader, options, ())?)
+                    }
+                    "NiParticleSystem" => Block::NiParticleSystem(NiParticleSystem::read_options(
+                        reader,
+                        options,
+                        (),
+                    )?),
+                    "NiPSysEmitterCtlr" => Block::NiPSysEmitterCtlr(
+                        NiPSysEmitterCtlr::read_options(reader, options, ())?,
+                    ),
+                    "NiPSysUpdateCtlr" => Block::NiPSysUpdateCtlr(NiPSysUpdateCtlr::read_options(
+                        reader,
+                        options,
+                        (),
+                    )?),
+                    "NiBoolInterpolator" => Block::NiBoolInterpolator(
+                        NiBoolInterpolator::read_options(reader, options, ())?,
+                    ),
+                    "NiBoolData" => {
+                        Block::NiBoolData(NiBoolData::read_options(reader, options, ())?)
+                    }
+                    "NiColorData" => {
+                        Block::NiColorData(NiColorData::read_options(reader, options, ())?)
+                    }
+                    "NiPSysData" => {
+                        Block::NiPSysData(NiPSysData::read_options(reader, options, ())?)
+                    }
+                    "NiPSysAgeDeathModifier" => Block::NiPSysAgeDeathModifier(
+                        NiPSysAgeDeathModifier::read_options(reader, options, ())?,
+                    ),
+                    "NiPSysBoxEmitter" => Block::NiPSysBoxEmitter(NiPSysBoxEmitter::read_options(
+                        reader,
+                        options,
+                        (),
+                    )?),
+                    "NiPSysSpawnModifier" => Block::NiPSysSpawnModifier(
+                        NiPSysSpawnModifier::read_options(reader, options, ())?,
+                    ),
+                    "NiPSysGrowFadeModifier" => Block::NiPSysGrowFadeModifier(
+                        NiPSysGrowFadeModifier::read_options(reader, options, ())?,
+                    ),
+                    "NiPSysColorModifier" => Block::NiPSysColorModifier(
+                        NiPSysColorModifier::read_options(reader, options, ())?,
+                    ),
+                    "NiPSysRotationModifier" => Block::NiPSysRotationModifier(
+                        NiPSysRotationModifier::read_options(reader, options, ())?,
+                    ),
+                    "NiPSysPositionModifier" => Block::NiPSysPositionModifier(
+                        NiPSysPositionModifier::read_options(reader, options, ())?,
+                    ),
+                    "NiPSysBoundUpdateModifier" => Block::NiPSysBoundUpdateModifier(
+                        NiPSysBoundUpdateModifier::read_options(reader, options, ())?,
+                    ),
+                    "NiPSysGravityModifier" => Block::NiPSysGravityModifier(
+                        NiPSysGravityModifier::read_options(reader, options, ())?,
+                    ),
+                    "NiPSysColliderManager" => Block::NiPSysColliderManager(
+                        NiPSysColliderManager::read_options(reader, options, ())?,
+                    ),
+                    "NiPSysPlanarCollider" => Block::NiPSysPlanarCollider(
+                        NiPSysPlanarCollider::read_options(reader, options, ())?,
+                    ),
+                    "NiTransformController" => Block::NiTransformController(
+                        NiTransformController::read_options(reader, options, ())?,
+                    ),
+                    "NiTransformInterpolator" => Block::NiTransformInterpolator(
+                        NiTransformInterpolator::read_options(reader, options, ())?,
+                    ),
+                    "NiTransformData" => {
+                        Block::NiTransformData(NiTransformData::read_options(reader, options, ())?)
+                    }
                     _ => {
                         return Err(binread::Error::Custom {
                             pos: reader.seek(SeekFrom::Current(0))?,
-                            err: Box::new(NifError::UnknownBlock),
+                            err: Box::new(NifError::UnknownBlock(blocks.len(), block_type.clone())),
                         });
                     }
                 };

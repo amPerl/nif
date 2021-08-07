@@ -1,48 +1,10 @@
-mod ni_alpha_property;
-mod ni_av_object;
-mod ni_billboard_node;
-mod ni_collision_data;
-mod ni_collision_object;
-mod ni_integer_extra_data;
-mod ni_lod_node;
-mod ni_material_property;
-mod ni_node;
-mod ni_object_net;
-mod ni_range_lod_data;
-mod ni_source_texture;
-mod ni_specular_property;
-mod ni_stencil_property;
-mod ni_string;
-mod ni_string_extra_data;
-mod ni_switch_node;
-mod ni_texturing_property;
-mod ni_tri_shape;
-mod ni_tri_shape_data;
-mod ni_vertex_color_property;
-mod ni_z_buffer_property;
+mod ni_animation;
+mod ni_main;
+mod ni_particle;
 
-pub use ni_alpha_property::*;
-pub use ni_av_object::*;
-pub use ni_billboard_node::*;
-pub use ni_collision_data::*;
-pub use ni_collision_object::*;
-pub use ni_integer_extra_data::*;
-pub use ni_lod_node::*;
-pub use ni_material_property::*;
-pub use ni_node::*;
-pub use ni_object_net::*;
-pub use ni_range_lod_data::*;
-pub use ni_source_texture::*;
-pub use ni_specular_property::*;
-pub use ni_stencil_property::*;
-pub use ni_string::*;
-pub use ni_string_extra_data::*;
-pub use ni_switch_node::*;
-pub use ni_texturing_property::*;
-pub use ni_tri_shape::*;
-pub use ni_tri_shape_data::*;
-pub use ni_vertex_color_property::*;
-pub use ni_z_buffer_property::*;
+pub use ni_animation::*;
+pub use ni_main::*;
+pub use ni_particle::*;
 
 #[derive(Debug, PartialEq)]
 pub enum Block {
@@ -67,4 +29,34 @@ pub enum Block {
     NiCollisionObject(NiCollisionObject),
     NiCollisionData(NiCollisionData),
     NiStencilProperty(NiStencilProperty),
+    NiTimeController(NiTimeController),
+    NiInterpController(NiInterpController),
+    NiSingleInterpController(NiSingleInterpController),
+    NiFloatInterpController(NiFloatInterpController),
+    NiAlphaController(NiAlphaController),
+    NiInterpolator(NiInterpolator),
+    NiKeyBasedInterpolator(NiKeyBasedInterpolator),
+    NiFloatInterpolator(NiFloatInterpolator),
+    NiFloatData(NiFloatData),
+    NiParticleSystem(NiParticleSystem),
+    NiPSysEmitterCtlr(NiPSysEmitterCtlr),
+    NiPSysUpdateCtlr(NiPSysUpdateCtlr),
+    NiBoolInterpolator(NiBoolInterpolator),
+    NiBoolData(NiBoolData),
+    NiColorData(NiColorData),
+    NiPSysData(NiPSysData),
+    NiPSysAgeDeathModifier(NiPSysAgeDeathModifier),
+    NiPSysBoxEmitter(NiPSysBoxEmitter),
+    NiPSysSpawnModifier(NiPSysSpawnModifier),
+    NiPSysGrowFadeModifier(NiPSysGrowFadeModifier),
+    NiPSysColorModifier(NiPSysColorModifier),
+    NiPSysRotationModifier(NiPSysRotationModifier),
+    NiPSysPositionModifier(NiPSysPositionModifier),
+    NiPSysBoundUpdateModifier(NiPSysBoundUpdateModifier),
+    NiPSysGravityModifier(NiPSysGravityModifier),
+    NiPSysColliderManager(NiPSysColliderManager),
+    NiPSysPlanarCollider(NiPSysPlanarCollider),
+    NiTransformController(NiTransformController),
+    NiTransformData(NiTransformData),
+    NiTransformInterpolator(NiTransformInterpolator),
 }
