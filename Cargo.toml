@@ -1,6 +1,6 @@
 [package]
 name = "nif"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2018"
 authors = ["Romet Tagobert <sgzfxn@gmail.com>"]
 categories = []
@@ -14,6 +14,6 @@ exclude = [
 ]
 
 [dependencies]
-anyhow = "1.0.38"
+anyhow = "1.0.42"
 binread = "2.1.1"
-thiserror = "1.0.23"
+thiserror = "1.0.26"
