@@ -1,6 +1,5 @@
-use binread::BinRead;
-
 use super::Vector3;
+use binread::BinRead;
 
 #[derive(Debug, PartialEq, BinRead, Clone)]
 pub struct Matrix33 {
@@ -8,17 +7,16 @@ pub struct Matrix33 {
 }
 
 #[cfg(feature = "glam")]
-impl Into<glam::Mat3> for &Matrix33 {
-    fn into(self) -> glam::Mat3 {
-        let result = glam::Mat3::from_cols_array(&self.column_major);
-        result.transpose()
+impl From<&Matrix33> for glam::Mat3 {
+    fn from(val: &Matrix33) -> Self {
+        glam::Mat3::from_cols_array(&val.column_major).transpose()
     }
 }
 
 #[cfg(feature = "glam")]
-impl Into<glam::Mat3> for Matrix33 {
-    fn into(self) -> glam::Mat3 {
-        (&self).into()
+impl From<Matrix33> for glam::Mat3 {
+    fn from(val: Matrix33) -> Self {
+        (&val).into()
     }
 }
 

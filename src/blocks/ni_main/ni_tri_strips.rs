@@ -1,5 +1,4 @@
 use super::NiGeometry;
-use anyhow;
 use binread::{
     io::{Read, Seek},
     BinRead, BinReaderExt,

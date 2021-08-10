@@ -1,12 +1,10 @@
-use anyhow;
 use binread::{
     io::{Read, Seek},
     BinRead, BinReaderExt,
 };
 
-use crate::common::Color3;
-
 use super::NiDynamicEffect;
+use crate::common::Color3;
 
 #[derive(Debug, PartialEq, BinRead)]
 pub struct NiLight {

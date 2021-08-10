@@ -1,5 +1,4 @@
 use super::ni_interp_controller::NiInterpController;
-use anyhow;
 use binread::{
     io::{Read, Seek},
     BinRead, BinReaderExt,

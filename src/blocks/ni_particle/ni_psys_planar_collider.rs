@@ -1,12 +1,10 @@
-use anyhow;
 use binread::{
     io::{Read, Seek},
     BinRead, BinReaderExt,
 };
 
-use crate::common::Vector3;
-
 use super::NiPSysCollider;
+use crate::common::Vector3;
 
 #[derive(Debug, PartialEq, BinRead)]
 pub struct NiPSysPlanarCollider {

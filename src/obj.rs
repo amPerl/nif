@@ -73,9 +73,9 @@ impl Obj {
             }
         }
 
-        let mut vert_offset = 1 as usize;
-        let mut uv_offset = 1 as usize;
-        let mut normal_offset = 1 as usize;
+        let mut vert_offset = 1;
+        let mut uv_offset = 1;
+        let mut normal_offset = 1;
 
         for mesh in self.meshes.iter() {
             writeln!(&mut out_obj, "g {}", mesh.name)?;
@@ -177,7 +177,12 @@ impl Obj {
 
         match root_node {
             Block::NiNode(ni_node) => {
-                self.visit_ni_node(nif, ni_node, None, label.unwrap_or("Untitled".into()));
+                self.visit_ni_node(
+                    nif,
+                    ni_node,
+                    None,
+                    label.unwrap_or_else(|| "Untitled".into()),
+                );
             }
             _ => {
                 panic!("root element should be NiNode");
@@ -358,8 +363,7 @@ impl Obj {
             normals: geometry_data
                 .normals
                 .as_ref()
-                .map(|normals| normals.iter().map(|v| v.into()).collect())
-                .clone(),
+                .map(|normals| normals.iter().map(|v| v.into()).collect()),
             triangles: tri_shape_data.triangles.clone(),
             uvs: geometry_data
                 .uv_sets

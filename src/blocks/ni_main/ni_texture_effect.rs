@@ -1,12 +1,10 @@
-use anyhow;
 use binread::{
     io::{Read, Seek},
     BinRead, BinReaderExt,
 };
 
-use crate::common::{Matrix33, Vector3};
-
 use super::{NiDynamicEffect, TexClampMode, TexFilterMode};
+use crate::common::{Matrix33, Vector3};
 
 #[derive(Debug, PartialEq, BinRead)]
 pub struct NiTextureEffect {

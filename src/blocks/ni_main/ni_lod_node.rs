@@ -1,5 +1,4 @@
 use super::ni_switch_node::NiSwitchNode;
-use anyhow;
 use binread::{
     io::{Read, Seek},
     BinRead, BinReaderExt,

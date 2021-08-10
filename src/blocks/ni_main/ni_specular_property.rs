@@ -1,5 +1,4 @@
 use super::ni_object_net::NiObjectNET;
-use anyhow;
 use binread::{
     io::{Read, Seek},
     BinRead, BinReaderExt,

@@ -6,6 +6,7 @@ pub use ni_animation::*;
 pub use ni_main::*;
 pub use ni_particle::*;
 
+#[allow(clippy::clippy::large_enum_variant)]
 #[derive(Debug, PartialEq)]
 pub enum Block {
     NiObjectNET(NiObjectNET),

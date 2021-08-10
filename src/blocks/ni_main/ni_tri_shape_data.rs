@@ -1,12 +1,10 @@
-use anyhow;
 use binread::{
     io::{Read, Seek},
     BinRead, BinReaderExt,
 };
 
-use crate::common::Triangle;
-
 use super::NiTriBasedGeomData;
+use crate::common::Triangle;
 
 #[derive(Debug, PartialEq, BinRead)]
 pub struct NiTriShapeData {

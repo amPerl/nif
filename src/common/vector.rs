@@ -7,16 +7,16 @@ pub struct Vector2 {
 }
 
 #[cfg(feature = "glam")]
-impl Into<glam::Vec2> for &Vector2 {
-    fn into(self) -> glam::Vec2 {
-        glam::Vec2::new(self.x, self.y)
+impl From<&Vector2> for glam::Vec2 {
+    fn from(val: &Vector2) -> Self {
+        glam::Vec2::new(val.x, val.y)
     }
 }
 
 #[cfg(feature = "glam")]
-impl Into<glam::Vec2> for Vector2 {
-    fn into(self) -> glam::Vec2 {
-        (&self).into()
+impl From<Vector2> for glam::Vec2 {
+    fn from(val: Vector2) -> Self {
+        (&val).into()
     }
 }
 
@@ -28,16 +28,16 @@ pub struct Vector3 {
 }
 
 #[cfg(feature = "glam")]
-impl Into<glam::Vec3> for &Vector3 {
-    fn into(self) -> glam::Vec3 {
-        glam::Vec3::new(self.x, self.y, self.z)
+impl From<&Vector3> for glam::Vec3 {
+    fn from(val: &Vector3) -> Self {
+        glam::Vec3::new(val.x, val.y, val.z)
     }
 }
 
 #[cfg(feature = "glam")]
-impl Into<glam::Vec3> for Vector3 {
-    fn into(self) -> glam::Vec3 {
-        (&self).into()
+impl From<Vector3> for glam::Vec3 {
+    fn from(val: Vector3) -> Self {
+        (&val).into()
     }
 }
 
@@ -48,16 +48,16 @@ pub struct TexCoord {
 }
 
 #[cfg(feature = "glam")]
-impl Into<glam::Vec2> for &TexCoord {
-    fn into(self) -> glam::Vec2 {
-        glam::Vec2::new(self.u, self.v)
+impl From<&TexCoord> for glam::Vec2 {
+    fn from(val: &TexCoord) -> Self {
+        glam::Vec2::new(val.u, val.v)
     }
 }
 
 #[cfg(feature = "glam")]
-impl Into<glam::Vec2> for TexCoord {
-    fn into(self) -> glam::Vec2 {
-        (&self).into()
+impl From<TexCoord> for glam::Vec2 {
+    fn from(val: TexCoord) -> Self {
+        (&val).into()
     }
 }
 

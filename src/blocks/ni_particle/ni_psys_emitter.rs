@@ -1,12 +1,10 @@
-use anyhow;
 use binread::{
     io::{Read, Seek},
     BinRead, BinReaderExt,
 };
 
-use crate::common::Color4;
-
 use super::NiPSysModifier;
+use crate::common::Color4;
 
 #[derive(Debug, PartialEq, BinRead)]
 pub struct NiPSysEmitter {

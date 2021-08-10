@@ -1,12 +1,10 @@
-use anyhow;
 use binread::{
     io::{Read, Seek},
     BinRead, BinReaderExt,
 };
 
-use crate::common::NiQuatTransform;
-
 use super::NiKeyBasedInterpolator;
+use crate::common::NiQuatTransform;
 
 #[derive(Debug, PartialEq, BinRead)]
 pub struct NiTransformInterpolator {

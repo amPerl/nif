@@ -1,7 +1,6 @@
 use super::blocks::NiString;
 use super::error::NifError;
 use super::parse_utils;
-use anyhow;
 use binread::{
     io::{Read, Seek},
     BinRead, BinReaderExt,

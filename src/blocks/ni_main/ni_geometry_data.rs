@@ -1,12 +1,10 @@
-use anyhow;
 use binread::{
     io::{Read, Seek},
     BinRead, BinReaderExt,
 };
 
-use crate::common::{Color4, TexCoord, Vector3};
-
 use super::NiString;
+use crate::common::{Color4, TexCoord, Vector3};
 
 #[derive(Debug, PartialEq, BinRead)]
 pub struct NiGeometryData {

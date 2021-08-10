@@ -1,6 +1,5 @@
-use binread::BinRead;
-
 use super::Vector3;
+use binread::BinRead;
 
 #[derive(Debug, PartialEq, BinRead, Clone)]
 pub struct Quaternion {

@@ -1,14 +1,13 @@
 use super::ni_object_net::NiObjectNET;
 use super::ni_string::NiString;
 use crate::error::NifError;
-use anyhow;
 use binread::{
     io::{Read, Seek},
     BinRead, BinReaderExt,
 };
 
 #[derive(Debug, PartialEq, BinRead)]
-#[br(assert(direct_render == false, NifError::NotImplemented("Direct Render")))]
+#[br(assert(!direct_render, NifError::NotImplemented("Direct Render")))]
 pub struct NiSourceTexture {
     pub base: NiObjectNET,
     pub use_external: u8,

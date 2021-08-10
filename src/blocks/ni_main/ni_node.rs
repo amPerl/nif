@@ -1,5 +1,4 @@
 use super::ni_av_object::NiAvObject;
-use anyhow;
 use binread::{
     io::{Read, Seek},
     BinRead, BinReaderExt,

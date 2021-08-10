@@ -1,14 +1,11 @@
-use std::io::SeekFrom;
-
+use super::blocks::{Block, *};
+use super::common;
+use crate::error::NifError;
 use binread::{
     io::{Read, Seek},
     BinRead, BinResult, ReadOptions,
 };
-
-use crate::error::NifError;
-
-use super::blocks::{Block, *};
-use super::common;
+use std::io::SeekFrom;
 
 pub fn parse_keys<R: Read + Seek, T: BinRead<Args = ()>>(
     reader: &mut R,

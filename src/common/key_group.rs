@@ -1,7 +1,6 @@
+use super::Quaternion;
 use crate::parse_utils;
 use binread::BinRead;
-
-use super::Quaternion;
 
 #[derive(Debug, PartialEq, BinRead)]
 pub struct KeyGroup<T: BinRead<Args = ()>> {

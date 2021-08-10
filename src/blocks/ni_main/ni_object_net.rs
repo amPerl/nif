@@ -1,5 +1,4 @@
 use super::ni_string::NiString;
-use anyhow;
 use binread::{
     io::{Read, Seek},
     BinRead, BinReaderExt,

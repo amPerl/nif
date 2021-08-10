@@ -1,5 +1,4 @@
 use super::ni_object_net::NiObjectNET;
-use anyhow;
 use binread::{
     io::{Read, Seek},
     BinRead, BinReaderExt,
@@ -37,11 +36,11 @@ pub enum StencilAction {
 #[derive(Debug, PartialEq, BinRead)]
 pub enum StencilDrawMode {
     #[br(magic = 0u32)]
-    CCWOrBoth,
+    CcwOrBoth,
     #[br(magic = 1u32)]
-    CCW,
+    Ccw,
     #[br(magic = 2u32)]
-    CW,
+    Cw,
     #[br(magic = 3u32)]
     Both,
 }

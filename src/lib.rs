@@ -17,8 +17,8 @@ mod parse_utils;
 pub struct Nif {
     pub header: header::Header,
     #[br(args(
-        (&header).block_types.iter().map(|b| b.value.clone()).collect(),
-        (&header).block_type_index.clone(),
+        header.block_types.iter().map(|b| b.value.clone()).collect(),
+        header.block_type_index.clone(),
     ))]
     #[br(parse_with = parse_utils::parse_blocks)]
     pub blocks: Vec<blocks::Block>,

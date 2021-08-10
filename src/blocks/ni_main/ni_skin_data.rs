@@ -1,12 +1,10 @@
-use anyhow;
 use binread::{
     io::{Read, Seek},
     BinRead, BinReaderExt,
 };
 
-use crate::common::NiTransform;
-
 use super::NiBound;
+use crate::common::NiTransform;
 
 #[derive(Debug, PartialEq, BinRead)]
 pub struct NiSkinData {
