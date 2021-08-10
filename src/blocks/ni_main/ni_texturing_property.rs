@@ -1,3 +1,5 @@
+use crate::common::TexCoord;
+
 use super::ni_object_net::NiObjectNET;
 use anyhow;
 use binread::{
@@ -58,6 +60,16 @@ pub struct TexDesc {
     pub uv_set: u32,
     #[br(map = |x: u8| x > 0)]
     pub has_texture_transform: bool,
+    #[br(if(has_texture_transform))]
+    pub translation: Option<TexCoord>,
+    #[br(if(has_texture_transform))]
+    pub tiling: Option<TexCoord>,
+    #[br(if(has_texture_transform))]
+    pub w_rotation: Option<f32>,
+    #[br(if(has_texture_transform))]
+    pub transform_type: Option<u32>,
+    #[br(if(has_texture_transform))]
+    pub center_offset: Option<TexCoord>,
 }
 
 #[derive(Debug, PartialEq, BinRead)]

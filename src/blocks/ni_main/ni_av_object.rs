@@ -1,3 +1,5 @@
+use crate::common::{Matrix33, Vector3};
+
 use super::ni_object_net::NiObjectNET;
 use anyhow;
 use binread::{
@@ -9,8 +11,8 @@ use binread::{
 pub struct NiAvObject {
     pub base: NiObjectNET,
     pub flags: u16,
-    pub translation: (f32, f32, f32),
-    pub rotation: ((f32, f32, f32), (f32, f32, f32), (f32, f32, f32)),
+    pub translation: Vector3,
+    pub rotation: Matrix33,
     pub scale: f32,
     pub num_property_refs: u32,
     #[br(count = num_property_refs)]

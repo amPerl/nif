@@ -40,11 +40,18 @@ pub struct NiGeometryData {
     #[br(if(has_vertex_colors), count = num_vertices)]
     pub vertex_colors: Option<Vec<Color4>>,
 
-    #[br(if(num_uv_sets & 63 > 0), count = num_vertices)]
-    pub uv_sets: Option<Vec<TexCoord>>,
+    #[br(count = num_uv_sets & 63, args(num_vertices))]
+    pub uv_sets: Vec<UvSet>,
 
     pub consistency_flags: u16,
     pub additional_data_ref: i32,
+}
+
+#[derive(Debug, PartialEq, BinRead)]
+#[br(import(num_vertices: u16))]
+pub struct UvSet {
+    #[br(count = num_vertices)]
+    pub uvs: Vec<TexCoord>,
 }
 
 impl NiGeometryData {

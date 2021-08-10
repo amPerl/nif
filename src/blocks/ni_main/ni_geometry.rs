@@ -4,22 +4,23 @@ use binread::{
     BinRead, BinReaderExt,
 };
 
-use super::NiAvObject;
-use crate::NifError;
+use super::{NiAvObject, NiString};
 
 #[derive(Debug, PartialEq, BinRead)]
 pub struct NiGeometry {
     pub base: NiAvObject,
     pub data_ref: i32,
     pub skin_instance_ref: i32,
-    pub material_data: MaterialData,
+    #[br(map = |x: u8| x > 0)]
+    pub has_shader: bool,
+    #[br(if(has_shader))]
+    pub material_data: Option<MaterialDataShader>,
 }
 
 #[derive(Debug, PartialEq, BinRead)]
-pub struct MaterialData {
-    #[br(assert(!has_shader, NifError::NotImplemented("MaterialData with shader not implemented")))]
-    #[br(map = |x: u8| x > 0)]
-    pub has_shader: bool,
+pub struct MaterialDataShader {
+    pub name: NiString,
+    pub extra_data_ref: i32,
 }
 
 impl NiGeometry {

@@ -1,6 +1,6 @@
 [package]
 name = "nif"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2018"
 authors = ["Romet Tagobert <sgzfxn@gmail.com>"]
 categories = []
@@ -13,7 +13,16 @@ exclude = [
     "tests/*"
 ]
 
+[[bin]]
+name = "nif2obj"
+required-features = ["obj"]
+
+[features]
+default = ["obj"]
+obj = ["glam"]
+
 [dependencies]
 anyhow = "1.0.42"
 binread = "2.1.1"
 thiserror = "1.0.26"
+glam = { version = "0.17.3", optional = true }

@@ -9,12 +9,14 @@ use binread::{
 
 #[derive(Debug, PartialEq, BinRead)]
 #[br(assert(direct_render == false, NifError::NotImplemented("Direct Render")))]
-#[br(assert(use_external == 1, NifError::NotImplemented("Non External")))]
 pub struct NiSourceTexture {
     pub base: NiObjectNET,
     pub use_external: u8,
     pub file_name: NiString,
-    pub unknown_link_ref: i32,
+    #[br(if(use_external == 1))]
+    pub unknown_link_ref: Option<i32>,
+    #[br(if(use_external == 0))]
+    pub pixel_data_ref: Option<i32>,
     pub pixel_layout: PixelLayout,
     pub mipmap_format: MipMapFormat,
     pub alpha_format: AlphaFormat,

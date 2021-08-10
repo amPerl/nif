@@ -8,6 +8,9 @@ pub mod blocks;
 pub mod common;
 pub mod error;
 pub mod header;
+#[cfg(feature = "obj")]
+pub mod obj;
+
 mod parse_utils;
 
 #[derive(Debug, PartialEq, BinRead)]

@@ -56,4 +56,5 @@ pub enum KeyType {
     XyzRotation,
     #[br(magic = 5u32)]
     Const,
+    Invalid(u32),
 }

@@ -1,4 +1,4 @@
-use super::{ni_av_object::NiAvObject, ni_string::NiString};
+use super::NiGeometry;
 use anyhow;
 use binread::{
     io::{Read, Seek},
@@ -7,19 +7,7 @@ use binread::{
 
 #[derive(Debug, PartialEq, BinRead)]
 pub struct NiTriShape {
-    pub base: NiAvObject,
-    pub data_ref: i32,
-    pub skin_instance_ref: i32,
-    #[br(map = |x: u8| x > 0)]
-    pub has_shader: bool,
-    #[br(if(has_shader))]
-    pub material_data: Option<MaterialDataShader>,
-}
-
-#[derive(Debug, PartialEq, BinRead)]
-pub struct MaterialDataShader {
-    pub name: NiString,
-    pub extra_data_ref: i32,
+    pub base: NiGeometry,
 }
 
 impl NiTriShape {
