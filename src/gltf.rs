@@ -74,7 +74,7 @@ impl Gltf {
         new_node.children = new_node.children.map(|children| {
             children
                 .iter()
-                .map(|child_index| self.clone_node(child_index.clone(), None, None, None))
+                .map(|child_index| self.clone_node(*child_index, None, None, None))
                 .collect()
         });
         if let Some(position) = position {
@@ -721,7 +721,7 @@ impl Gltf {
                             .write_all(&color.b.to_le_bytes())
                             .expect("failed to write colors to buffer");
                         buffer_vec
-                            .write_all(&(1.0 as f32).to_le_bytes())
+                            .write_all(&1.0_f32.to_le_bytes())
                             .expect("failed to write colors to buffer");
                         // buffer_vec
                         //     .write_all(&color.a.to_le_bytes())
@@ -1089,43 +1089,5 @@ impl Gltf {
 
         self.root.nodes.push(node);
         Some(json::Index::new(self.root.nodes.len() as u32 - 1))
-    }
-
-    pub fn visit_texturing_property(
-        &mut self,
-        nif: &Nif,
-        texturing_property: &NiTexturingProperty,
-    ) -> Option<String> {
-        if !texturing_property.has_base_texture || texturing_property.base_texture.is_none() {
-            return None;
-        }
-
-        let diffuse_tex_desc = texturing_property.base_texture.as_ref().unwrap();
-
-        let diffuse_source = nif
-            .blocks
-            .get(diffuse_tex_desc.source_ref as usize)
-            .expect("invalid property ref");
-
-        match diffuse_source {
-            Block::NiSourceTexture(source_texture) => self.visit_source_texture(source_texture),
-            _ => None,
-        }
-    }
-
-    pub fn visit_source_texture(&mut self, source_texture: &NiSourceTexture) -> Option<String> {
-        if source_texture.use_external == 0 {
-            return None;
-        }
-
-        Some(
-            source_texture
-                .file_name
-                .value
-                .replace(".tga", ".dds")
-                .replace(".TGA", ".dds")
-                .replace(".bmp", ".dds")
-                .replace(".BMP", ".dds"),
-        )
     }
 }
