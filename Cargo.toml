@@ -1,6 +1,6 @@
 [package]
 name = "nif"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2018"
 authors = ["Romet Tagobert <sgzfxn@gmail.com>"]
 categories = []
@@ -15,14 +15,21 @@ exclude = [
 
 [[bin]]
 name = "nif2obj"
-required-features = ["obj"]
+required-features = ["obj_export"]
+
+[[bin]]
+name = "nif2gltf"
+required-features = ["gltf_export"]
 
 [features]
-default = ["obj"]
-obj = ["glam"]
+default = ["obj_export", "gltf_export"]
+obj_export = ["glam"]
+gltf_export = ["glam", "gltf", "gltf-json"]
 
 [dependencies]
 anyhow = "1.0.42"
 binread = "2.1.1"
 thiserror = "1.0.26"
 glam = { version = "0.17.3", optional = true }
+gltf = { version = "0.16.0", optional = true }
+gltf-json = { version = "0.16.0", optional = true }

@@ -8,7 +8,10 @@ pub mod blocks;
 pub mod common;
 pub mod error;
 pub mod header;
-#[cfg(feature = "obj")]
+
+#[cfg(feature = "gltf_export")]
+pub mod gltf;
+#[cfg(feature = "obj_export")]
 pub mod obj;
 
 mod parse_utils;
