@@ -3,6 +3,8 @@ use binread::{
     BinRead, BinReaderExt,
 };
 
+use crate::common::BlockRef;
+
 #[derive(Debug, PartialEq, BinRead)]
 pub struct NiPSysCollider {
     pub bounce: f32,
@@ -10,10 +12,10 @@ pub struct NiPSysCollider {
     pub spawn_on_collide: bool,
     #[br(map = |x: u8| x > 0)]
     pub die_on_collide: bool,
-    pub spawn_modifier_ref: i32,
-    pub parent_ref: i32,
-    pub next_collider_ref: i32,
-    pub collider_object_ref: i32,
+    pub spawn_modifier_ref: BlockRef,
+    pub parent_ref: BlockRef,
+    pub next_collider_ref: BlockRef,
+    pub collider_object_ref: BlockRef,
 }
 
 impl NiPSysCollider {

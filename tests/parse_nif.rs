@@ -3,7 +3,7 @@ use std::io::Cursor;
 
 #[test]
 fn nif_1() -> anyhow::Result<()> {
-    let nif_buffer = include_bytes!("1.nif");
+    let nif_buffer = std::fs::read("tests/1.nif")?;
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif: Nif = Nif::parse(&mut nif_cursor)?;
@@ -19,7 +19,7 @@ fn nif_1() -> anyhow::Result<()> {
 
 #[test]
 fn nif_2() -> anyhow::Result<()> {
-    let nif_buffer = include_bytes!("2.nif");
+    let nif_buffer = std::fs::read("tests/2.nif")?;
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif: Nif = Nif::parse(&mut nif_cursor)?;
@@ -35,7 +35,7 @@ fn nif_2() -> anyhow::Result<()> {
 
 #[test]
 fn nif_3() -> anyhow::Result<()> {
-    let nif_buffer = include_bytes!("3.nif");
+    let nif_buffer = std::fs::read("tests/3.nif")?;
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
@@ -57,7 +57,7 @@ fn nif_3() -> anyhow::Result<()> {
 
 #[test]
 fn nif_4() -> anyhow::Result<()> {
-    let nif_buffer = include_bytes!("4.nif");
+    let nif_buffer = std::fs::read("tests/4.nif")?;
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
@@ -79,7 +79,7 @@ fn nif_4() -> anyhow::Result<()> {
 
 #[test]
 fn nif_5() -> anyhow::Result<()> {
-    let nif_buffer = include_bytes!("5.nif");
+    let nif_buffer = std::fs::read("tests/5.nif")?;
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
@@ -102,7 +102,7 @@ fn nif_5() -> anyhow::Result<()> {
 
 #[test]
 fn nif_6() -> anyhow::Result<()> {
-    let nif_buffer = include_bytes!("6.nif");
+    let nif_buffer = std::fs::read("tests/6.nif")?;
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
@@ -125,7 +125,7 @@ fn nif_6() -> anyhow::Result<()> {
 
 #[test]
 fn nif_7() -> anyhow::Result<()> {
-    let nif_buffer = include_bytes!("7.nif");
+    let nif_buffer = std::fs::read("tests/7.nif")?;
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
@@ -151,7 +151,7 @@ fn nif_7() -> anyhow::Result<()> {
 
 #[test]
 fn nif_8() -> anyhow::Result<()> {
-    let nif_buffer = include_bytes!("8.nif");
+    let nif_buffer = std::fs::read("tests/8.nif")?;
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
@@ -174,7 +174,7 @@ fn nif_8() -> anyhow::Result<()> {
 
 #[test]
 fn nif_9() -> anyhow::Result<()> {
-    let nif_buffer = include_bytes!("9.nif");
+    let nif_buffer = std::fs::read("tests/9.nif")?;
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
@@ -197,7 +197,7 @@ fn nif_9() -> anyhow::Result<()> {
 
 #[test]
 fn nif_10() -> anyhow::Result<()> {
-    let nif_buffer = include_bytes!("10.nif");
+    let nif_buffer = std::fs::read("tests/10.nif")?;
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
@@ -220,7 +220,7 @@ fn nif_10() -> anyhow::Result<()> {
 
 #[test]
 fn nif_11() -> anyhow::Result<()> {
-    let nif_buffer = include_bytes!("11.nif");
+    let nif_buffer = std::fs::read("tests/11.nif")?;
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
@@ -243,7 +243,7 @@ fn nif_11() -> anyhow::Result<()> {
 
 #[test]
 fn nif_12() -> anyhow::Result<()> {
-    let nif_buffer = include_bytes!("12.nif");
+    let nif_buffer = std::fs::read("tests/12.nif")?;
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
@@ -269,7 +269,7 @@ fn nif_12() -> anyhow::Result<()> {
 
 #[test]
 fn nif_13() -> anyhow::Result<()> {
-    let nif_buffer = include_bytes!("13.nif");
+    let nif_buffer = std::fs::read("tests/13.nif")?;
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
@@ -292,7 +292,7 @@ fn nif_13() -> anyhow::Result<()> {
 
 #[test]
 fn nif_14() -> anyhow::Result<()> {
-    let nif_buffer = include_bytes!("14.nif");
+    let nif_buffer = std::fs::read("tests/14.nif")?;
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
@@ -315,7 +315,7 @@ fn nif_14() -> anyhow::Result<()> {
 
 #[test]
 fn nif_15() -> anyhow::Result<()> {
-    let nif_buffer = include_bytes!("15.nif");
+    let nif_buffer = std::fs::read("tests/15.nif")?;
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
@@ -338,7 +338,7 @@ fn nif_15() -> anyhow::Result<()> {
 
 #[test]
 fn nif_16() -> anyhow::Result<()> {
-    let nif_buffer = include_bytes!("16.nif");
+    let nif_buffer = std::fs::read("tests/16.nif")?;
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
@@ -361,7 +361,7 @@ fn nif_16() -> anyhow::Result<()> {
 
 #[test]
 fn nif_17() -> anyhow::Result<()> {
-    let nif_buffer = include_bytes!("17.nif");
+    let nif_buffer = std::fs::read("tests/17.nif")?;
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
@@ -384,7 +384,7 @@ fn nif_17() -> anyhow::Result<()> {
 
 #[test]
 fn nif_18() -> anyhow::Result<()> {
-    let nif_buffer = include_bytes!("18.nif");
+    let nif_buffer = std::fs::read("tests/18.nif")?;
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
@@ -407,7 +407,7 @@ fn nif_18() -> anyhow::Result<()> {
 
 #[test]
 fn nif_19() -> anyhow::Result<()> {
-    let nif_buffer = include_bytes!("19.nif");
+    let nif_buffer = std::fs::read("tests/19.nif")?;
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
@@ -430,7 +430,7 @@ fn nif_19() -> anyhow::Result<()> {
 
 #[test]
 fn nif_20() -> anyhow::Result<()> {
-    let nif_buffer = include_bytes!("20.nif");
+    let nif_buffer = std::fs::read("tests/20.nif")?;
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
@@ -456,7 +456,7 @@ fn nif_20() -> anyhow::Result<()> {
 
 #[test]
 fn nif_21() -> anyhow::Result<()> {
-    let nif_buffer = include_bytes!("21.nif");
+    let nif_buffer = std::fs::read("tests/21.nif")?;
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
@@ -479,7 +479,7 @@ fn nif_21() -> anyhow::Result<()> {
 
 #[test]
 fn nif_22() -> anyhow::Result<()> {
-    let nif_buffer = include_bytes!("22.nif");
+    let nif_buffer = std::fs::read("tests/22.nif")?;
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
@@ -502,7 +502,7 @@ fn nif_22() -> anyhow::Result<()> {
 
 #[test]
 fn nif_23() -> anyhow::Result<()> {
-    let nif_buffer = include_bytes!("23.nif");
+    let nif_buffer = std::fs::read("tests/23.nif")?;
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
@@ -525,7 +525,7 @@ fn nif_23() -> anyhow::Result<()> {
 
 #[test]
 fn nif_24() -> anyhow::Result<()> {
-    let nif_buffer = include_bytes!("24.nif");
+    let nif_buffer = std::fs::read("tests/24.nif")?;
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
@@ -548,7 +548,7 @@ fn nif_24() -> anyhow::Result<()> {
 
 #[test]
 fn nif_25() -> anyhow::Result<()> {
-    let nif_buffer = include_bytes!("25.nif");
+    let nif_buffer = std::fs::read("tests/25.nif")?;
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
@@ -565,6 +565,27 @@ fn nif_25() -> anyhow::Result<()> {
 
     assert!(matches!(nif.blocks[0], Block::NiNode { .. }));
     assert!(matches!(nif.blocks[49], Block::NiRangeLODData { .. }));
+
+    Ok(())
+}
+
+#[test]
+fn nif_26() -> anyhow::Result<()> {
+    let nif_buffer = std::fs::read("tests/26.nif")?;
+    let mut nif_cursor = Cursor::new(nif_buffer);
+
+    let nif: Nif = Nif::parse(&mut nif_cursor)?;
+
+    assert_eq!(0x14000004, nif.header.version);
+    assert_eq!(EndianType::LittleEndian, nif.header.endian_type);
+
+    assert!(matches!(nif.blocks[0], Block::NiNode { .. }));
+    assert!(matches!(nif.blocks[1], Block::NiZBufferProperty { .. }));
+    assert!(matches!(nif.blocks[2], Block::NiVertexColorProperty { .. }));
+    assert!(matches!(nif.blocks[3], Block::NiNode { .. }));
+    assert!(matches!(nif.blocks[4], Block::NiTriShape { .. }));
+    assert!(matches!(nif.blocks[5], Block::NiMaterialProperty { .. }));
+    assert!(matches!(nif.blocks[6], Block::NiTriShapeData { .. }));
 
     Ok(())
 }

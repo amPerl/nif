@@ -15,3 +15,11 @@ impl NiDirectionalLight {
         Ok(reader.read_le()?)
     }
 }
+
+impl std::ops::Deref for NiDirectionalLight {
+    type Target = NiLight;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}

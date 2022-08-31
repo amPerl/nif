@@ -4,13 +4,13 @@ use binread::{
 };
 
 use super::NiKeyBasedInterpolator;
-use crate::common::NiQuatTransform;
+use crate::common::{BlockRef, NiQuatTransform};
 
 #[derive(Debug, PartialEq, BinRead)]
 pub struct NiTransformInterpolator {
     pub base: NiKeyBasedInterpolator,
     pub transform: NiQuatTransform,
-    pub data_ref: i32,
+    pub data_ref: BlockRef,
 }
 
 impl NiTransformInterpolator {

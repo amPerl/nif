@@ -3,12 +3,14 @@ use binread::{
     BinRead, BinReaderExt,
 };
 
+use crate::common::BlockRef;
+
 use super::NiPixelFormat;
 
 #[derive(Debug, PartialEq, BinRead)]
 pub struct NiPixelData {
     pub base: NiPixelFormat,
-    pub palette_ref: i32,
+    pub palette_ref: BlockRef,
     pub num_mipmaps: u32,
     pub bytes_per_pixel: u32,
     #[br(count = num_mipmaps)]

@@ -23,3 +23,11 @@ impl NiShadeProperty {
         Ok(reader.read_le()?)
     }
 }
+
+impl std::ops::Deref for NiShadeProperty {
+    type Target = NiObjectNET;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}

@@ -3,6 +3,8 @@ use binread::{
     BinRead, BinReaderExt,
 };
 
+use crate::common::BlockRef;
+
 use super::NiKeyBasedInterpolator;
 
 #[derive(Debug, PartialEq, BinRead)]
@@ -13,8 +15,8 @@ pub struct NiPathInterpolator {
     pub max_bank_angle: f32,
     pub smoothing: f32,
     pub follow_axis: i16,
-    pub path_data_ref: i32,
-    pub percent_data_ref: i32,
+    pub path_data_ref: BlockRef,
+    pub percent_data_ref: BlockRef,
 }
 
 impl NiPathInterpolator {

@@ -197,29 +197,14 @@ impl Obj {
         parent_transform: Option<glam::Mat4>,
         label: String,
     ) {
-        let av_object = &ni_node.base;
-        let translation_orig = &av_object.translation;
-        let rotation_orig = &av_object.rotation;
-
-        let translation: glam::Mat4 = glam::Mat4::from_translation(translation_orig.into());
-        let rotation = glam::Mat4::from_mat3(rotation_orig.into());
-        let scale: glam::Mat4 = glam::Mat4::from_scale(glam::Vec3::new(
-            av_object.scale,
-            av_object.scale,
-            av_object.scale,
-        ));
-
-        let mut transform = translation * rotation * scale;
+        let mut transform = ni_node.transform();
 
         if let Some(parent_transform) = parent_transform {
             transform = parent_transform * transform;
         }
 
         for &child_ref in ni_node.child_refs.iter() {
-            let child = nif
-                .blocks
-                .get(child_ref as usize)
-                .expect("invalid child ref");
+            let child = child_ref.get(&nif.blocks).expect("invalid child ref");
 
             match child {
                 Block::NiNode(ni_node) => {
@@ -227,7 +212,7 @@ impl Obj {
                         nif,
                         ni_node,
                         Some(transform),
-                        format!("{}_NiNode{}", label, child_ref),
+                        format!("{}_NiNode{}", label, child_ref.0),
                     );
                 }
                 Block::NiLODNode(ni_lod_node) => {
@@ -235,15 +220,15 @@ impl Obj {
                         nif,
                         &ni_lod_node.base.base,
                         Some(transform),
-                        format!("{}_NiLODNode{}", label, child_ref),
+                        format!("{}_NiLODNode{}", label, child_ref.0),
                     );
                 }
                 Block::NiTriShape(ni_tri_shape) => {
                     self.visit_tri_shape(
-                        &nif,
+                        nif,
                         ni_tri_shape,
                         transform,
-                        format!("{}_NiTriShape{}", label, child_ref),
+                        format!("{}_NiTriShape{}", label, child_ref.0),
                     );
                 }
                 _ => {}
@@ -258,32 +243,19 @@ impl Obj {
         parent_transform: glam::Mat4,
         label: String,
     ) {
-        let av_object = &tri_shape.base.base;
-
-        let translation_orig = &av_object.translation;
-        let rotation_orig = &av_object.rotation;
-
-        let translation: glam::Mat4 = glam::Mat4::from_translation(translation_orig.into());
-        let rotation = glam::Mat4::from_mat3(rotation_orig.into());
-        let scale: glam::Mat4 = glam::Mat4::from_scale(glam::Vec3::new(
-            av_object.scale,
-            av_object.scale,
-            av_object.scale,
-        ));
-
-        let transform = translation * rotation * scale;
+        let transform = tri_shape.transform();
         let transform = parent_transform * transform;
 
-        let data = nif
-            .blocks
-            .get(tri_shape.base.data_ref as usize)
+        let data = tri_shape
+            .data_ref
+            .get(&nif.blocks)
             .expect("invalid property ref");
 
         let obj_shape_data = match data {
             Block::NiTriShapeData(tri_shape_data) => self.visit_tri_shape_data(
                 tri_shape_data,
                 transform,
-                format!("{}_NiTriShapeData{}", label, tri_shape.base.data_ref),
+                format!("{}_NiTriShapeData{}", label, tri_shape.base.data_ref.0),
             ),
             _ => None,
         };
@@ -297,16 +269,13 @@ impl Obj {
         let mut diffuse_texture_map = None;
         let mut material = None;
 
-        for &property_ref in av_object.property_refs.iter() {
-            let property = nif
-                .blocks
-                .get(property_ref as usize)
-                .expect("invalid property ref");
+        for &property_ref in tri_shape.property_refs.iter() {
+            let property = property_ref.get(&nif.blocks).expect("invalid property ref");
 
             match property {
                 Block::NiMaterialProperty(material_property) => {
                     material = Some(ObjMaterial {
-                        name: format!("{}_NiMaterialProperty{}", label, property_ref),
+                        name: format!("{}_NiMaterialProperty{}", label, property_ref.0),
                         ambient_color: material_property.color_ambient,
                         diffuse_color: material_property.color_diffuse,
                         specular_color: material_property.color_specular,
@@ -317,7 +286,7 @@ impl Obj {
                 }
                 Block::NiTexturingProperty(texturing_property) => {
                     if let Some(texture_path) =
-                        self.visit_texturing_property(&nif, &texturing_property)
+                        self.visit_texturing_property(nif, texturing_property)
                     {
                         diffuse_texture_map = Some(texture_path);
                     }
@@ -384,9 +353,9 @@ impl Obj {
 
         let diffuse_tex_desc = texturing_property.base_texture.as_ref().unwrap();
 
-        let diffuse_source = nif
-            .blocks
-            .get(diffuse_tex_desc.source_ref as usize)
+        let diffuse_source = diffuse_tex_desc
+            .source_ref
+            .get(&nif.blocks)
             .expect("invalid property ref");
 
         match diffuse_source {

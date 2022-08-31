@@ -1,4 +1,4 @@
-use nif::gltf::Gltf;
+use nif::collectors::gltf::Gltf;
 use nif::Nif;
 use std::fs::File;
 use std::path::{Path, PathBuf};

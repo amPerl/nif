@@ -3,12 +3,14 @@ use binread::{
     BinRead, BinReaderExt,
 };
 
+use crate::common::BlockRef;
+
 use super::NiPSysModifier;
 
 #[derive(Debug, PartialEq, BinRead)]
 pub struct NiPSysColorModifier {
     pub base: NiPSysModifier,
-    pub data_ref: i32,
+    pub data_ref: BlockRef,
 }
 
 impl NiPSysColorModifier {

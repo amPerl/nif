@@ -10,7 +10,7 @@ use gltf_json::validation::Checked::Valid;
 
 use crate::{
     blocks::*,
-    common::{Color4, TexCoord, Vector3},
+    common::{BlockRef, Color4, TexCoord, Vector3},
     Nif,
 };
 
@@ -322,11 +322,10 @@ impl Gltf {
                         .get_mut(scene_json_index.value())
                         .expect("wat");
 
-                    if existing_scene
+                    if !existing_scene
                         .nodes
                         .iter()
-                        .find(|n| n.value() == root_node_index.value())
-                        .is_none()
+                        .any(|n| n.value() == root_node_index.value())
                     {
                         existing_scene.nodes.push(root_node_index);
                     }
@@ -344,9 +343,9 @@ impl Gltf {
         ni_lod_node: &NiLODNode,
         name: &str,
     ) -> Option<json::Index<json::Node>> {
-        let lod_range_data_block = nif
-            .blocks
-            .get(ni_lod_node.lod_level_data_ref as usize)
+        let lod_range_data_block = ni_lod_node
+            .lod_level_data_ref
+            .get(&nif.blocks)
             .expect("invalid lod_level_data_ref");
 
         let mut closest_lod: Option<(usize, f32)> = None;
@@ -380,7 +379,7 @@ impl Gltf {
         nif: &Nif,
         ni_node: &NiNode,
         name: &str,
-        single_child_ref: Option<i32>,
+        single_child_ref: Option<BlockRef>,
     ) -> json::Index<json::Node> {
         let av_object = &ni_node.base;
 
@@ -394,7 +393,7 @@ impl Gltf {
         let mut node_children = Vec::new();
 
         for &child_ref in ni_node.child_refs.iter() {
-            if child_ref < 0 {
+            if child_ref.0 < 0 {
                 continue;
             }
             if let Some(single_child_ref) = single_child_ref {
@@ -403,34 +402,33 @@ impl Gltf {
                 }
             }
 
-            let child = nif
-                .blocks
-                .get(child_ref as usize)
-                .unwrap_or_else(|| panic!("invalid child ref: {}", child_ref));
+            let child = child_ref
+                .get(&nif.blocks)
+                .unwrap_or_else(|| panic!("invalid child ref: {}", child_ref.0));
 
             match child {
                 Block::NiNode(ni_node) => {
                     node_children.push(self.visit_ni_node(
                         nif,
                         ni_node,
-                        &format!("{}_NiNode{}", name, child_ref),
+                        &format!("{}_NiNode{}", name, child_ref.0),
                         None,
                     ));
                 }
                 Block::NiLODNode(ni_lod_node) => {
                     if let Some(child_index) = self.visit_ni_lod_node(
                         nif,
-                        &ni_lod_node,
-                        &format!("{}_NiLODNode{}", name, child_ref),
+                        ni_lod_node,
+                        &format!("{}_NiLODNode{}", name, child_ref.0),
                     ) {
                         node_children.push(child_index);
                     }
                 }
                 Block::NiTriShape(ni_tri_shape) => {
                     if let Some(node) = self.visit_tri_shape(
-                        &nif,
+                        nif,
                         ni_tri_shape,
-                        &format!("{}_NiTriShape{}", name, child_ref),
+                        &format!("{}_NiTriShape{}", name, child_ref.0),
                     ) {
                         node_children.push(node);
                     }
@@ -486,10 +484,7 @@ impl Gltf {
         let mut alpha_property: Option<&NiAlphaProperty> = None;
 
         for &property_ref in av_object.property_refs.iter() {
-            let property = nif
-                .blocks
-                .get(property_ref as usize)
-                .expect("invalid property ref");
+            let property = property_ref.get(&nif.blocks).expect("invalid property ref");
 
             match property {
                 Block::NiMaterialProperty(ni_material_property) => {
@@ -512,9 +507,8 @@ impl Gltf {
             if let Some(texturing_property) = texturing_property {
                 if let Some(base_texture_desc) = &texturing_property.base_texture {
                     let diffuse_source_ref = base_texture_desc.source_ref;
-                    let diffuse_source = nif
-                        .blocks
-                        .get(diffuse_source_ref as usize)
+                    let diffuse_source = diffuse_source_ref
+                        .get(&nif.blocks)
                         .expect("invalid property ref");
 
                     if let Block::NiSourceTexture(source_texture) = diffuse_source {
@@ -549,9 +543,9 @@ impl Gltf {
             ));
         }
 
-        let data = nif
-            .blocks
-            .get(tri_shape.base.data_ref as usize)
+        let data = tri_shape
+            .data_ref
+            .get(&nif.blocks)
             .expect("invalid property ref");
 
         let mesh_index = match data {
@@ -1058,7 +1052,7 @@ impl Gltf {
                     extras: Default::default(),
                     name: Some(format!(
                         "{}_NiTriShapeData{}",
-                        name, tri_shape.base.data_ref
+                        name, tri_shape.base.data_ref.0
                     )),
                     primitives: vec![primitive],
                     weights: None,

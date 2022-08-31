@@ -3,9 +3,11 @@ use binread::{
     BinRead, BinReaderExt,
 };
 
+use crate::common::BlockRef;
+
 #[derive(Debug, PartialEq, BinRead)]
 pub struct NiCollisionObject {
-    pub target_ref: i32,
+    pub target_ref: BlockRef,
 }
 
 impl NiCollisionObject {

@@ -15,3 +15,11 @@ impl NiSpecularProperty {
         Ok(reader.read_le()?)
     }
 }
+
+impl std::ops::Deref for NiSpecularProperty {
+    type Target = NiObjectNET;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}

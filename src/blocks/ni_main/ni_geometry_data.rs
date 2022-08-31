@@ -4,7 +4,7 @@ use binread::{
 };
 
 use super::NiString;
-use crate::common::{Color4, TexCoord, Vector3};
+use crate::common::{BlockRef, Color4, TexCoord, Vector3};
 
 #[derive(Debug, PartialEq, BinRead)]
 pub struct NiGeometryData {
@@ -42,7 +42,7 @@ pub struct NiGeometryData {
     pub uv_sets: Vec<UvSet>,
 
     pub consistency_flags: u16,
-    pub additional_data_ref: i32,
+    pub additional_data_ref: BlockRef,
 }
 
 #[derive(Debug, PartialEq, BinRead)]

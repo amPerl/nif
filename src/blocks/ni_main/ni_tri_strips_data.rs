@@ -23,3 +23,11 @@ impl NiTriStripsData {
         Ok(reader.read_le()?)
     }
 }
+
+impl std::ops::Deref for NiTriStripsData {
+    type Target = NiTriBasedGeomData;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}

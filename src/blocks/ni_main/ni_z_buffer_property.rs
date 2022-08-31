@@ -37,3 +37,11 @@ impl NiZBufferProperty {
         Ok(reader.read_le()?)
     }
 }
+
+impl std::ops::Deref for NiZBufferProperty {
+    type Target = NiObjectNET;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}

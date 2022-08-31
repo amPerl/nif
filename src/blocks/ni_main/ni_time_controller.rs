@@ -3,15 +3,17 @@ use binread::{
     BinRead, BinReaderExt,
 };
 
+use crate::common::BlockRef;
+
 #[derive(Debug, PartialEq, BinRead)]
 pub struct NiTimeController {
-    pub next_controller_ref: i32,
+    pub next_controller_ref: BlockRef,
     pub flags: u16, // TimeControllerFlags, bitfield
     pub frequency: f32,
     pub phase: f32,
     pub start_time: f32,
     pub end_time: f32,
-    pub target_ref: i32,
+    pub target_ref: BlockRef,
 }
 
 impl NiTimeController {

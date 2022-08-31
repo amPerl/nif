@@ -6,14 +6,12 @@ pub struct Matrix33 {
     pub column_major: [f32; 9],
 }
 
-#[cfg(feature = "glam")]
 impl From<&Matrix33> for glam::Mat3 {
     fn from(val: &Matrix33) -> Self {
         glam::Mat3::from_cols_array(&val.column_major).transpose()
     }
 }
 
-#[cfg(feature = "glam")]
 impl From<Matrix33> for glam::Mat3 {
     fn from(val: Matrix33) -> Self {
         (&val).into()

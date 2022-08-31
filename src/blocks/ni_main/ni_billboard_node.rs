@@ -33,3 +33,11 @@ impl NiBillboardNode {
         Ok(reader.read_le()?)
     }
 }
+
+impl std::ops::Deref for NiBillboardNode {
+    type Target = NiNode;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}

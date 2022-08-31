@@ -21,3 +21,11 @@ impl NiMaterialProperty {
         Ok(reader.read_le()?)
     }
 }
+
+impl std::ops::Deref for NiMaterialProperty {
+    type Target = NiObjectNET;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}

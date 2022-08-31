@@ -3,7 +3,7 @@ use binread::{
     BinRead, BinReaderExt,
 };
 
-use crate::blocks::NiParticles;
+use crate::{blocks::NiParticles, common::BlockRef};
 
 #[derive(Debug, PartialEq, BinRead)]
 pub struct NiParticleSystem {
@@ -12,11 +12,19 @@ pub struct NiParticleSystem {
     pub world_space: bool,
     pub num_modifiers: u32,
     #[br(count = num_modifiers)]
-    pub modifiers_refs: Vec<i32>,
+    pub modifiers_refs: Vec<BlockRef>,
 }
 
 impl NiParticleSystem {
     pub fn parse<R: Read + Seek>(reader: &mut R) -> anyhow::Result<Self> {
         Ok(reader.read_le()?)
+    }
+}
+
+impl std::ops::Deref for NiParticleSystem {
+    type Target = NiParticles;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
     }
 }

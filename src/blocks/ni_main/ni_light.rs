@@ -20,3 +20,11 @@ impl NiLight {
         Ok(reader.read_le()?)
     }
 }
+
+impl std::ops::Deref for NiLight {
+    type Target = NiDynamicEffect;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}

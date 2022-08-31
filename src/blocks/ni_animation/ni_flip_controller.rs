@@ -1,3 +1,5 @@
+use crate::common::BlockRef;
+
 use super::ni_float_interp_controller::NiFloatInterpController;
 use binread::{
     io::{Read, Seek},
@@ -10,7 +12,7 @@ pub struct NiFlipController {
     pub texture_slot: u32, // TexType
     pub num_sources: u32,
     #[br(count = num_sources)]
-    pub source_refs: Vec<i32>,
+    pub source_refs: Vec<BlockRef>,
 }
 
 impl NiFlipController {

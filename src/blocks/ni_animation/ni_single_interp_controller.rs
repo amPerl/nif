@@ -1,3 +1,5 @@
+use crate::common::BlockRef;
+
 use super::ni_interp_controller::NiInterpController;
 use binread::{
     io::{Read, Seek},
@@ -7,7 +9,7 @@ use binread::{
 #[derive(Debug, PartialEq, BinRead)]
 pub struct NiSingleInterpController {
     pub base: NiInterpController,
-    pub interpolator_ref: i32,
+    pub interpolator_ref: BlockRef,
 }
 
 impl NiSingleInterpController {

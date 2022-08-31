@@ -4,12 +4,12 @@ use binread::{
 };
 
 use super::NiPSysModifier;
-use crate::common::Vector3;
+use crate::common::{BlockRef, Vector3};
 
 #[derive(Debug, PartialEq, BinRead)]
 pub struct NiPSysGravityModifier {
     pub base: NiPSysModifier,
-    pub gravity_object_ref: i32,
+    pub gravity_object_ref: BlockRef,
     pub gravity_axis: Vector3,
     pub decay: f32,
     pub strength: f32,

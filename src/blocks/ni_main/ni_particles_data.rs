@@ -43,3 +43,11 @@ impl NiParticlesData {
         Ok(reader.read_le()?)
     }
 }
+
+impl std::ops::Deref for NiParticlesData {
+    type Target = NiGeometryData;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}

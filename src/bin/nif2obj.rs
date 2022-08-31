@@ -1,4 +1,4 @@
-use nif::obj::Obj;
+use nif::collectors::obj::Obj;
 use nif::Nif;
 use std::fs::File;
 use std::path::{Path, PathBuf};

@@ -1,3 +1,5 @@
+use crate::common::BlockRef;
+
 use super::ni_interp_controller::NiInterpController;
 use binread::{
     io::{Read, Seek},
@@ -8,11 +10,11 @@ use binread::{
 pub struct NiGeomMorpherController {
     pub base: NiInterpController,
     pub morpher_flags: GeomMorpherFlags,
-    pub data_ref: i32,
+    pub data_ref: BlockRef,
     pub always_update: u8,
     pub num_interpolators: u32,
     #[br(count = num_interpolators)]
-    pub interpolator_refs: Vec<i32>,
+    pub interpolator_refs: Vec<BlockRef>,
 }
 
 #[derive(Debug, PartialEq, BinRead)]

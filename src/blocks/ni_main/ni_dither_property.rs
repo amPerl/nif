@@ -23,3 +23,11 @@ impl NiDitherProperty {
         Ok(reader.read_le()?)
     }
 }
+
+impl std::ops::Deref for NiDitherProperty {
+    type Target = NiObjectNET;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}

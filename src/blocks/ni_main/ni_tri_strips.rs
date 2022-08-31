@@ -14,3 +14,11 @@ impl NiTriStrips {
         Ok(reader.read_le()?)
     }
 }
+
+impl std::ops::Deref for NiTriStrips {
+    type Target = NiGeometry;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}

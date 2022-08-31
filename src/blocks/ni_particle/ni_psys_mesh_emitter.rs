@@ -4,14 +4,14 @@ use binread::{
 };
 
 use super::NiPSysEmitter;
-use crate::common::Vector3;
+use crate::common::{BlockRef, Vector3};
 
 #[derive(Debug, PartialEq, BinRead)]
 pub struct NiPSysMeshEmitter {
     pub base: NiPSysEmitter,
     pub num_emitter_meshes: u32,
     #[br(count = num_emitter_meshes)]
-    pub emitter_mesh_refs: Vec<i32>,
+    pub emitter_mesh_refs: Vec<BlockRef>,
     pub initial_velocity_type: VelocityType,
     pub emission_type: EmitFrom,
     pub emission_axis: Vector3,

@@ -5,14 +5,12 @@ use binread::{
 pub use error::NifError;
 
 pub mod blocks;
+pub mod collectors;
 pub mod common;
 pub mod error;
 pub mod header;
 
-#[cfg(feature = "gltf_export")]
-pub mod gltf;
-#[cfg(feature = "obj_export")]
-pub mod obj;
+pub use glam;
 
 mod parse_utils;
 

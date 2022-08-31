@@ -15,3 +15,11 @@ impl NiTriBasedGeom {
         Ok(reader.read_le()?)
     }
 }
+
+impl std::ops::Deref for NiTriBasedGeom {
+    type Target = NiGeometry;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}
