@@ -34,7 +34,7 @@ impl Mesh {
             transform = parent_transform * transform;
         }
 
-        for child_ref in ni_node.child_refs.iter() {
+        for child_ref in ni_node.child_refs.iter().filter(|r| r.0 >= 0) {
             match child_ref
                 .get(&nif.blocks)
                 .with_context(|| format!("Invalid child ref: {:?}", child_ref))?
@@ -43,6 +43,9 @@ impl Mesh {
                     self.visit_ni_node(nif, ni_node, Some(transform), lod_distance)?;
                 }
                 Block::NiLODNode(ni_lod_node) => {
+                    let lod_transform = ni_lod_node.transform();
+                    let transform = transform * lod_transform;
+
                     // if we have lod ranges, find the one that applies
                     if let Some(Block::NiRangeLODData(range_data)) =
                         ni_lod_node.lod_level_data_ref.get(&nif.blocks)
@@ -114,7 +117,10 @@ impl Mesh {
         ni_tri_shape_data: &NiTriShapeData,
         parent_transform: glam::Mat4,
     ) -> anyhow::Result<()> {
-        if !ni_tri_shape_data.has_vertices || !ni_tri_shape_data.has_triangles {
+        if !ni_tri_shape_data.has_vertices
+            || !ni_tri_shape_data.has_triangles
+            || !ni_tri_shape_data.has_normals
+        {
             return Ok(());
         }
 
