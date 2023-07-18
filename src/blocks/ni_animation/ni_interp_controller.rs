@@ -1,5 +1,5 @@
 use crate::blocks::NiTimeController;
-use binread::{
+use binrw::{
     io::{Read, Seek},
     BinRead, BinReaderExt,
 };

@@ -1,5 +1,5 @@
 use crate::parse_utils;
-use binread::BinRead;
+use binrw::BinRead;
 
 #[derive(Debug, PartialEq, BinRead)]
 pub struct NiString {

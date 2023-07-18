@@ -12,6 +12,6 @@ pub enum NifError {
     InvalidValueError,
     #[error("invalid string")]
     StringParseError,
-    #[error("binread error")]
-    BinReadError(#[from] binread::error::Error),
+    #[error("binrw error")]
+    BinReadError(#[from] binrw::error::Error),
 }

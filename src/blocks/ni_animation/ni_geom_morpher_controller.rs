@@ -1,7 +1,7 @@
 use crate::common::BlockRef;
 
 use super::ni_interp_controller::NiInterpController;
-use binread::{
+use binrw::{
     io::{Read, Seek},
     BinRead, BinReaderExt,
 };

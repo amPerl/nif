@@ -1,7 +1,7 @@
 use super::ni_object_net::NiObjectNET;
 use crate::common::{BlockRef, Matrix33, Vector3};
 
-use binread::{
+use binrw::{
     io::{Read, Seek},
     BinRead, BinReaderExt,
 };

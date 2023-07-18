@@ -1,4 +1,4 @@
-use binread::{
+use binrw::{
     io::{Read, Seek},
     BinRead, BinReaderExt,
 };
@@ -10,7 +10,7 @@ pub struct NiMorphData {
     pub num_morphs: u32,
     pub num_vertices: u32,
     pub relative_targets: u8,
-    #[br(count = num_morphs, args(num_vertices))]
+    #[br(args { count: num_morphs as _, inner: (num_vertices,) })]
     pub morphs: Vec<Morph>,
 }
 

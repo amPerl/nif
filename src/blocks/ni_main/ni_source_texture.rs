@@ -1,7 +1,7 @@
 use super::ni_object_net::NiObjectNET;
 use super::ni_string::NiString;
 use crate::error::NifError;
-use binread::{
+use binrw::{
     io::{Read, Seek},
     BinRead, BinReaderExt,
 };

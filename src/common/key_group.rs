@@ -1,9 +1,12 @@
 use super::Quaternion;
 use crate::parse_utils;
-use binread::BinRead;
+use binrw::BinRead;
 
 #[derive(Debug, PartialEq, BinRead)]
-pub struct KeyGroup<T: BinRead<Args = ()>> {
+pub struct KeyGroup<T: BinRead>
+where
+    T: for<'a> BinRead<Args<'a> = ()>,
+{
     pub num_keys: u32,
     #[br(if(num_keys > 0))]
     pub interpolation: Option<KeyType>,
@@ -14,7 +17,10 @@ pub struct KeyGroup<T: BinRead<Args = ()>> {
 
 #[derive(Debug, PartialEq, BinRead)]
 #[br(import(key_type: KeyType))]
-pub struct Key<T: BinRead<Args = ()>> {
+pub struct Key<T: BinRead>
+where
+    T: for<'a> BinRead<Args<'a> = ()>,
+{
     pub time: f32,
     pub value: T,
     #[br(if(key_type == KeyType::Quadratic))]

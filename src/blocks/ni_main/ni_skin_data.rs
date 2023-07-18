@@ -1,4 +1,4 @@
-use binread::{
+use binrw::{
     io::{Read, Seek},
     BinRead, BinReaderExt,
 };
@@ -11,7 +11,7 @@ pub struct NiSkinData {
     pub skin_transform: NiTransform,
     pub num_bones: u32,
     pub has_vertex_weights: u8,
-    #[br(count = num_bones, args(has_vertex_weights))]
+    #[br(args { count: num_bones as _, inner: (has_vertex_weights,) })]
     pub bone_list: Vec<BoneData>,
 }
 

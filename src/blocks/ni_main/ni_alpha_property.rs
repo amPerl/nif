@@ -1,5 +1,5 @@
 use super::ni_object_net::NiObjectNET;
-use binread::{
+use binrw::{
     io::{Read, Seek},
     BinRead, BinReaderExt,
 };

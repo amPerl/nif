@@ -1,7 +1,7 @@
 use super::ni_collision_object::NiCollisionObject;
 use crate::common::Vector3;
 
-use binread::{
+use binrw::{
     io::{Read, Seek},
     BinRead, BinReaderExt,
 };

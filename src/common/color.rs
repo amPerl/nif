@@ -1,4 +1,4 @@
-use binread::BinRead;
+use binrw::BinRead;
 
 #[derive(Debug, PartialEq, BinRead, Clone, Copy)]
 pub struct Color3 {

@@ -1,7 +1,7 @@
 use crate::common::BlockRef;
 
 use super::ni_av_object::NiAvObject;
-use binread::{
+use binrw::{
     io::{Read, Seek},
     BinRead, BinReaderExt,
 };

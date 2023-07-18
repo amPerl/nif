@@ -1,5 +1,5 @@
 use super::ni_node::NiNode;
-use binread::{
+use binrw::{
     io::{Read, Seek},
     BinRead, BinReaderExt,
 };

@@ -1,4 +1,4 @@
-use binread::{
+use binrw::{
     io::{Read, Seek},
     BinRead, BinReaderExt,
 };
@@ -29,7 +29,7 @@ pub struct SkinPartition {
 
     #[br(map = |x: u8| x > 0)]
     pub has_vertex_weights: bool,
-    #[br(if(has_vertex_weights), count = num_vertices, args(num_weights_per_vertex))]
+    #[br(if(has_vertex_weights), args { count: num_vertices as _, inner: (num_weights_per_vertex,) })]
     pub vertex_weights: Option<Vec<VertexWeights>>,
 
     #[br(count = num_strips)]

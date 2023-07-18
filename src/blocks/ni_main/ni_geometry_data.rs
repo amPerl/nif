@@ -1,4 +1,4 @@
-use binread::{
+use binrw::{
     io::{Read, Seek},
     BinRead, BinReaderExt,
 };
@@ -38,7 +38,7 @@ pub struct NiGeometryData {
     #[br(if(has_vertex_colors), count = num_vertices)]
     pub vertex_colors: Option<Vec<Color4>>,
 
-    #[br(count = num_uv_sets & 63, args(num_vertices))]
+    #[br(args { count: (num_uv_sets & 63) as _, inner: (num_vertices,) })]
     pub uv_sets: Vec<UvSet>,
 
     pub consistency_flags: u16,

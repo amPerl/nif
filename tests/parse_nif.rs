@@ -39,7 +39,7 @@ fn nif_3() -> anyhow::Result<()> {
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
-    if let Err(NifError::BinReadError(binread::Error::Custom { pos, err })) = &nif_result {
+    if let Err(NifError::BinReadError(binrw::Error::Custom { pos, err })) = &nif_result {
         if let Some(inner_nif_error) = err.downcast_ref::<NifError>() {
             println!("NifError: at {}: {:?}", pos, inner_nif_error);
         }
@@ -61,7 +61,7 @@ fn nif_4() -> anyhow::Result<()> {
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
-    if let Err(NifError::BinReadError(binread::Error::Custom { pos, err })) = &nif_result {
+    if let Err(NifError::BinReadError(binrw::Error::Custom { pos, err })) = &nif_result {
         if let Some(inner_nif_error) = err.downcast_ref::<NifError>() {
             println!("NifError: at {}: {:?}", pos, inner_nif_error);
         }
@@ -83,7 +83,7 @@ fn nif_5() -> anyhow::Result<()> {
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
-    if let Err(NifError::BinReadError(binread::Error::Custom { pos, err })) = &nif_result {
+    if let Err(NifError::BinReadError(binrw::Error::Custom { pos, err })) = &nif_result {
         if let Some(inner_nif_error) = err.downcast_ref::<NifError>() {
             println!("NifError: at {}: {:?}", pos, inner_nif_error);
         }
@@ -106,7 +106,7 @@ fn nif_6() -> anyhow::Result<()> {
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
-    if let Err(NifError::BinReadError(binread::Error::Custom { pos, err })) = &nif_result {
+    if let Err(NifError::BinReadError(binrw::Error::Custom { pos, err })) = &nif_result {
         if let Some(inner_nif_error) = err.downcast_ref::<NifError>() {
             println!("NifError: at {}: {:?}", pos, inner_nif_error);
         }
@@ -129,7 +129,7 @@ fn nif_7() -> anyhow::Result<()> {
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
-    if let Err(NifError::BinReadError(binread::Error::Custom { pos, err })) = &nif_result {
+    if let Err(NifError::BinReadError(binrw::Error::Custom { pos, err })) = &nif_result {
         if let Some(inner_nif_error) = err.downcast_ref::<NifError>() {
             println!("NifError: at {}: {:?}", pos, inner_nif_error);
         }
@@ -155,7 +155,7 @@ fn nif_8() -> anyhow::Result<()> {
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
-    if let Err(NifError::BinReadError(binread::Error::Custom { pos, err })) = &nif_result {
+    if let Err(NifError::BinReadError(binrw::Error::Custom { pos, err })) = &nif_result {
         if let Some(inner_nif_error) = err.downcast_ref::<NifError>() {
             println!("NifError: at {}: {:?}", pos, inner_nif_error);
         }
@@ -178,7 +178,7 @@ fn nif_9() -> anyhow::Result<()> {
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
-    if let Err(NifError::BinReadError(binread::Error::Custom { pos, err })) = &nif_result {
+    if let Err(NifError::BinReadError(binrw::Error::Custom { pos, err })) = &nif_result {
         if let Some(inner_nif_error) = err.downcast_ref::<NifError>() {
             println!("NifError: at {}: {:?}", pos, inner_nif_error);
         }
@@ -201,7 +201,7 @@ fn nif_10() -> anyhow::Result<()> {
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
-    if let Err(NifError::BinReadError(binread::Error::Custom { pos, err })) = &nif_result {
+    if let Err(NifError::BinReadError(binrw::Error::Custom { pos, err })) = &nif_result {
         if let Some(inner_nif_error) = err.downcast_ref::<NifError>() {
             println!("NifError: at {}: {:?}", pos, inner_nif_error);
         }
@@ -224,7 +224,7 @@ fn nif_11() -> anyhow::Result<()> {
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
-    if let Err(NifError::BinReadError(binread::Error::Custom { pos, err })) = &nif_result {
+    if let Err(NifError::BinReadError(binrw::Error::Custom { pos, err })) = &nif_result {
         if let Some(inner_nif_error) = err.downcast_ref::<NifError>() {
             println!("NifError: at {}: {:?}", pos, inner_nif_error);
         }
@@ -247,7 +247,7 @@ fn nif_12() -> anyhow::Result<()> {
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
-    if let Err(NifError::BinReadError(binread::Error::Custom { pos, err })) = &nif_result {
+    if let Err(NifError::BinReadError(binrw::Error::Custom { pos, err })) = &nif_result {
         if let Some(inner_nif_error) = err.downcast_ref::<NifError>() {
             println!("NifError: at {}: {:?}", pos, inner_nif_error);
         }
@@ -273,7 +273,7 @@ fn nif_13() -> anyhow::Result<()> {
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
-    if let Err(NifError::BinReadError(binread::Error::Custom { pos, err })) = &nif_result {
+    if let Err(NifError::BinReadError(binrw::Error::Custom { pos, err })) = &nif_result {
         if let Some(inner_nif_error) = err.downcast_ref::<NifError>() {
             println!("NifError: at {}: {:?}", pos, inner_nif_error);
         }
@@ -296,7 +296,7 @@ fn nif_14() -> anyhow::Result<()> {
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
-    if let Err(NifError::BinReadError(binread::Error::Custom { pos, err })) = &nif_result {
+    if let Err(NifError::BinReadError(binrw::Error::Custom { pos, err })) = &nif_result {
         if let Some(inner_nif_error) = err.downcast_ref::<NifError>() {
             println!("NifError: at {}: {:?}", pos, inner_nif_error);
         }
@@ -319,7 +319,7 @@ fn nif_15() -> anyhow::Result<()> {
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
-    if let Err(NifError::BinReadError(binread::Error::Custom { pos, err })) = &nif_result {
+    if let Err(NifError::BinReadError(binrw::Error::Custom { pos, err })) = &nif_result {
         if let Some(inner_nif_error) = err.downcast_ref::<NifError>() {
             println!("NifError: at {}: {:?}", pos, inner_nif_error);
         }
@@ -342,7 +342,7 @@ fn nif_16() -> anyhow::Result<()> {
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
-    if let Err(NifError::BinReadError(binread::Error::Custom { pos, err })) = &nif_result {
+    if let Err(NifError::BinReadError(binrw::Error::Custom { pos, err })) = &nif_result {
         if let Some(inner_nif_error) = err.downcast_ref::<NifError>() {
             println!("NifError: at {}: {:?}", pos, inner_nif_error);
         }
@@ -365,7 +365,7 @@ fn nif_17() -> anyhow::Result<()> {
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
-    if let Err(NifError::BinReadError(binread::Error::Custom { pos, err })) = &nif_result {
+    if let Err(NifError::BinReadError(binrw::Error::Custom { pos, err })) = &nif_result {
         if let Some(inner_nif_error) = err.downcast_ref::<NifError>() {
             println!("NifError: at {}: {:?}", pos, inner_nif_error);
         }
@@ -388,7 +388,7 @@ fn nif_18() -> anyhow::Result<()> {
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
-    if let Err(NifError::BinReadError(binread::Error::Custom { pos, err })) = &nif_result {
+    if let Err(NifError::BinReadError(binrw::Error::Custom { pos, err })) = &nif_result {
         if let Some(inner_nif_error) = err.downcast_ref::<NifError>() {
             println!("NifError: at {}: {:?}", pos, inner_nif_error);
         }
@@ -411,7 +411,7 @@ fn nif_19() -> anyhow::Result<()> {
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
-    if let Err(NifError::BinReadError(binread::Error::Custom { pos, err })) = &nif_result {
+    if let Err(NifError::BinReadError(binrw::Error::Custom { pos, err })) = &nif_result {
         if let Some(inner_nif_error) = err.downcast_ref::<NifError>() {
             println!("NifError: at {}: {:?}", pos, inner_nif_error);
         }
@@ -434,7 +434,7 @@ fn nif_20() -> anyhow::Result<()> {
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
-    if let Err(NifError::BinReadError(binread::Error::Custom { pos, err })) = &nif_result {
+    if let Err(NifError::BinReadError(binrw::Error::Custom { pos, err })) = &nif_result {
         if let Some(inner_nif_error) = err.downcast_ref::<NifError>() {
             println!("NifError: at {}: {:?}", pos, inner_nif_error);
         }
@@ -460,7 +460,7 @@ fn nif_21() -> anyhow::Result<()> {
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
-    if let Err(NifError::BinReadError(binread::Error::Custom { pos, err })) = &nif_result {
+    if let Err(NifError::BinReadError(binrw::Error::Custom { pos, err })) = &nif_result {
         if let Some(inner_nif_error) = err.downcast_ref::<NifError>() {
             println!("NifError: at {}: {:?}", pos, inner_nif_error);
         }
@@ -483,7 +483,7 @@ fn nif_22() -> anyhow::Result<()> {
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
-    if let Err(NifError::BinReadError(binread::Error::Custom { pos, err })) = &nif_result {
+    if let Err(NifError::BinReadError(binrw::Error::Custom { pos, err })) = &nif_result {
         if let Some(inner_nif_error) = err.downcast_ref::<NifError>() {
             println!("NifError: at {}: {:?}", pos, inner_nif_error);
         }
@@ -506,7 +506,7 @@ fn nif_23() -> anyhow::Result<()> {
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
-    if let Err(NifError::BinReadError(binread::Error::Custom { pos, err })) = &nif_result {
+    if let Err(NifError::BinReadError(binrw::Error::Custom { pos, err })) = &nif_result {
         if let Some(inner_nif_error) = err.downcast_ref::<NifError>() {
             println!("NifError: at {}: {:?}", pos, inner_nif_error);
         }
@@ -529,7 +529,7 @@ fn nif_24() -> anyhow::Result<()> {
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
-    if let Err(NifError::BinReadError(binread::Error::Custom { pos, err })) = &nif_result {
+    if let Err(NifError::BinReadError(binrw::Error::Custom { pos, err })) = &nif_result {
         if let Some(inner_nif_error) = err.downcast_ref::<NifError>() {
             println!("NifError: at {}: {:?}", pos, inner_nif_error);
         }
@@ -552,7 +552,7 @@ fn nif_25() -> anyhow::Result<()> {
     let mut nif_cursor = Cursor::new(nif_buffer);
 
     let nif_result = Nif::parse(&mut nif_cursor);
-    if let Err(NifError::BinReadError(binread::Error::Custom { pos, err })) = &nif_result {
+    if let Err(NifError::BinReadError(binrw::Error::Custom { pos, err })) = &nif_result {
         if let Some(inner_nif_error) = err.downcast_ref::<NifError>() {
             println!("NifError: at {}: {:?}", pos, inner_nif_error);
         }

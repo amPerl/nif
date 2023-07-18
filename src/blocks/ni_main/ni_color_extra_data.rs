@@ -1,7 +1,7 @@
 use super::ni_string::NiString;
 use crate::common::Color4;
 
-use binread::{
+use binrw::{
     io::{Read, Seek},
     BinRead, BinReaderExt,
 };

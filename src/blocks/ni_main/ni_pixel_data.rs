@@ -1,4 +1,4 @@
-use binread::{
+use binrw::{
     io::{Read, Seek},
     BinRead, BinReaderExt,
 };
@@ -17,7 +17,7 @@ pub struct NiPixelData {
     pub mipmaps: Vec<MipMap>,
     pub num_pixels: u32,
     pub num_faces: u32,
-    #[br(count = num_faces, args(num_pixels))]
+    #[br(args { count: num_faces as _, inner: (num_pixels,) })]
     pub pixel_data: Vec<PixelData>,
 }
 

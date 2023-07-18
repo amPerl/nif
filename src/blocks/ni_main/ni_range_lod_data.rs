@@ -1,5 +1,5 @@
 use crate::common::Vector3;
-use binread::{
+use binrw::{
     io::{Read, Seek},
     BinRead, BinReaderExt,
 };
