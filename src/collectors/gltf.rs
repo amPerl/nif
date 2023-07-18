@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs::File,
     io::{BufWriter, Write},
     path::PathBuf,
@@ -1012,7 +1013,7 @@ impl Gltf {
 
                 let primitive = json::mesh::Primitive {
                     attributes: {
-                        let mut map = std::collections::HashMap::new();
+                        let mut map = BTreeMap::new();
                         if let Some(positions_accessor_index) = positions_accessor_index {
                             map.insert(
                                 Valid(json::mesh::Semantic::Positions),

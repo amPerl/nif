@@ -27,9 +27,9 @@ obj_export = []
 gltf_export = ["gltf", "gltf-json"]
 
 [dependencies]
-anyhow = "1.0.42"
-thiserror = "1.0.26"
-glam = "0.21.3"
-gltf = { version = "0.16.0", optional = true }
-gltf-json = { version = "0.16.0", optional = true }
+anyhow = "1.0.72"
+thiserror = "1.0.43"
+glam = "0.24.1"
+gltf = { version = "1.2.0", optional = true }
+gltf-json = { version = "1.2.0", optional = true }
 binrw = "0.11.2"
