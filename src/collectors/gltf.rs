@@ -813,7 +813,7 @@ impl Gltf {
                             json::Index::new(self.root.buffer_views.len() as u32 - 1);
                         self.root.accessors.push(json::Accessor {
                             buffer_view: Some(buffer_view_index),
-                            byte_offset: 0,
+                            byte_offset: Some(0),
                             count: vertices.len() as u32,
                             component_type: Valid(json::accessor::GenericComponentType(
                                 json::accessor::ComponentType::F32,
@@ -857,7 +857,7 @@ impl Gltf {
                             json::Index::new(self.root.buffer_views.len() as u32 - 1);
                         self.root.accessors.push(json::Accessor {
                             buffer_view: Some(buffer_view_index),
-                            byte_offset: 0,
+                            byte_offset: Some(0),
                             count: normals.len() as u32,
                             component_type: Valid(json::accessor::GenericComponentType(
                                 json::accessor::ComponentType::F32,
@@ -901,7 +901,7 @@ impl Gltf {
                             json::Index::new(self.root.buffer_views.len() as u32 - 1);
                         self.root.accessors.push(json::Accessor {
                             buffer_view: Some(buffer_view_index),
-                            byte_offset: 0,
+                            byte_offset: Some(0),
                             count: colors.len() as u32,
                             component_type: Valid(json::accessor::GenericComponentType(
                                 json::accessor::ComponentType::F32,
@@ -949,7 +949,7 @@ impl Gltf {
                             json::Index::new(self.root.buffer_views.len() as u32 - 1);
                         self.root.accessors.push(json::Accessor {
                             buffer_view: Some(buffer_view_index),
-                            byte_offset: 0,
+                            byte_offset: Some(0),
                             count: uv_set.uvs.len() as u32,
                             component_type: Valid(json::accessor::GenericComponentType(
                                 json::accessor::ComponentType::F32,
@@ -984,7 +984,7 @@ impl Gltf {
                             json::Index::new(self.root.buffer_views.len() as u32 - 1);
                         self.root.accessors.push(json::Accessor {
                             buffer_view: Some(buffer_view_index),
-                            byte_offset: 0,
+                            byte_offset: Some(0),
                             count: triangles.len() as u32 * 3,
                             component_type: Valid(json::accessor::GenericComponentType(
                                 json::accessor::ComponentType::U16,
