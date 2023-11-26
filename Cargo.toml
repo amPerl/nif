@@ -1,6 +1,6 @@
 [package]
 name = "nif"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 authors = ["Romet Tagobert <sgzfxn@gmail.com>"]
 categories = []
@@ -9,9 +9,7 @@ homepage = "https://github.com/amPerl/nif"
 repository = "https://github.com/amPerl/nif"
 license = "MIT"
 readme = "README.md"
-exclude = [
-    "tests/*"
-]
+exclude = ["tests/*"]
 
 [[bin]]
 name = "nif2obj"
