@@ -4,7 +4,7 @@ use binrw::{
 };
 
 use super::{NiDynamicEffect, TexClampMode, TexFilterMode};
-use crate::common::{BlockRef, Matrix33, Vector3};
+use crate::common::{BlockRef, Matrix33, NiPlane, Vector3};
 
 #[derive(Debug, PartialEq, BinRead)]
 pub struct NiTextureEffect {
@@ -18,12 +18,6 @@ pub struct NiTextureEffect {
     pub source_texture_ref: BlockRef,
     pub enable_plane: u8,
     pub plane: NiPlane,
-}
-
-#[derive(Debug, PartialEq, BinRead)]
-pub struct NiPlane {
-    pub normal: Vector3,
-    pub constant: f32,
 }
 
 impl NiTextureEffect {

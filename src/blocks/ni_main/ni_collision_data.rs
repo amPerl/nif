@@ -1,5 +1,5 @@
 use super::ni_collision_object::NiCollisionObject;
-use crate::common::Vector3;
+use crate::common::{NiPlane, Vector3};
 
 use binrw::{
     io::{Read, Seek},
@@ -58,12 +58,6 @@ pub struct CapsuleBV {
     pub origin: Vector3,
     pub extent: f32,
     pub radius: f32,
-}
-
-#[derive(Debug, PartialEq, BinRead)]
-pub struct NiPlane {
-    pub normal: Vector3,
-    pub constant: f32,
 }
 
 #[derive(Debug, PartialEq, BinRead)]
