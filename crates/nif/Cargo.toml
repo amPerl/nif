@@ -11,8 +11,9 @@ license = "MIT"
 readme = "README.md"
 exclude = ["tests/*"]
 
+
 [dependencies]
-anyhow = "1.0.72"
+anyhow.workspace = true
 thiserror = "1.0.43"
 glam = "0.24.1"
 binrw = "0.11.2"
