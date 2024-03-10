@@ -1,33 +1,3 @@
-[package]
-name = "nif"
-version = "0.4.2"
-edition = "2021"
-authors = ["Romet Tagobert <sgzfxn@gmail.com>"]
-categories = []
-description = "A super-primitive Gamebryo NIF parser targeting version 20.0.0.4"
-homepage = "https://github.com/amPerl/nif"
-repository = "https://github.com/amPerl/nif"
-license = "MIT"
-readme = "README.md"
-exclude = ["tests/*"]
-
-[[bin]]
-name = "nif2obj"
-required-features = ["obj_export"]
-
-[[bin]]
-name = "nif2gltf"
-required-features = ["gltf_export"]
-
-[features]
-default = ["obj_export", "gltf_export"]
-obj_export = []
-gltf_export = ["gltf", "gltf-json"]
-
-[dependencies]
-anyhow = "1.0.72"
-thiserror = "1.0.43"
-glam = "0.24.1"
-gltf = { version = "1.2.0", optional = true }
-gltf-json = { version = "1.2.0", optional = true }
-binrw = "0.11.2"
+[workspace]
+members = ["crates/*"]
+resolver = "2"

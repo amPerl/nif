@@ -5,7 +5,6 @@ use binrw::{
 pub use error::NifError;
 
 pub mod blocks;
-pub mod collectors;
 pub mod common;
 pub mod error;
 pub mod header;
