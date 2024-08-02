@@ -14,7 +14,7 @@ pub struct Mesh {
 
 impl Mesh {
     pub fn add_nif(&mut self, nif: &Nif, lod_distance: f32) -> anyhow::Result<()> {
-        if let Some(Block::NiNode(ni_node)) = nif.blocks.get(0) {
+        if let Some(Block::NiNode(ni_node)) = nif.blocks.first() {
             self.visit_ni_node(nif, ni_node, None, lod_distance)?;
         }
 

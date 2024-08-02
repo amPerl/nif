@@ -10,7 +10,7 @@ pub struct NiPSysData {
     pub base: NiParticlesData,
 
     #[br(count = base.base.num_vertices)]
-    pub particle_info: Vec<(Vector3, f32, f32, f32, u32)>,
+    pub particle_info: Vec<NiParticleInfo>,
 
     #[br(map = |x: u8| x > 0)]
     pub has_unknown_floats: bool,
@@ -19,6 +19,16 @@ pub struct NiPSysData {
 
     pub unknown_short_1: u16,
     pub unknown_short_2: u16,
+}
+
+#[derive(Debug, PartialEq, BinRead)]
+pub struct NiParticleInfo {
+    pub velocity: Vector3,
+    pub age: f32,
+    pub life_span: f32,
+    pub last_update: f32,
+    pub spawn_generation: u16,
+    pub code: u16,
 }
 
 impl NiPSysData {

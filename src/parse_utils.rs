@@ -2,14 +2,14 @@ use super::blocks::{Block, *};
 use super::common;
 use crate::error::NifError;
 use binrw::{io::Read, BinRead, BinResult};
-use std::io::SeekFrom;
 
 #[binrw::parser(reader, endian)]
-pub fn parse_keys<T: BinRead>(
+pub fn parse_keys<T>(
     num_keys: u32,
     key_type: Option<common::KeyType>,
 ) -> BinResult<Vec<common::Key<T>>>
 where
+    T: BinRead,
     T: for<'a> BinRead<Args<'a> = ()>,
 {
     if num_keys == 0 {
@@ -330,7 +330,7 @@ pub fn parse_blocks(strings: Vec<String>, block_type_indices: Vec<u16>) -> BinRe
                     ),
                     _ => {
                         return Err(binrw::Error::Custom {
-                            pos: reader.seek(SeekFrom::Current(0))?,
+                            pos: reader.stream_position()?,
                             err: Box::new(NifError::UnknownBlock(blocks.len(), block_type.clone())),
                         });
                     }
@@ -339,7 +339,7 @@ pub fn parse_blocks(strings: Vec<String>, block_type_indices: Vec<u16>) -> BinRe
             }
             None => {
                 return Err(binrw::Error::Custom {
-                    pos: reader.seek(SeekFrom::Current(0))?,
+                    pos: reader.stream_position()?,
                     err: Box::new(NifError::InvalidBlockTypeIndex),
                 });
             }

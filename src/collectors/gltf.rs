@@ -42,7 +42,7 @@ impl Gltf {
             let buffer_path = gltf_path.with_file_name(&relative_buffer_path);
 
             gltf.buffers.push(json::Buffer {
-                byte_length: buffer_vec.len() as u32,
+                byte_length: buffer_vec.len().into(),
                 name: Some(format!("{}_Buffer{}", gltf_filename, buffer_idx)),
                 uri: Some(relative_buffer_path),
                 extensions: Default::default(),
@@ -800,9 +800,9 @@ impl Gltf {
                     Some(vertices) => {
                         self.root.buffer_views.push(json::buffer::View {
                             buffer: buffer_index,
-                            byte_length: expected_vertices_length as u32,
-                            byte_offset: Some(offset_so_far),
-                            byte_stride: Some(12),
+                            byte_length: expected_vertices_length.into(),
+                            byte_offset: Some(json::validation::USize64(offset_so_far as _)),
+                            byte_stride: Some(json::buffer::Stride(12)),
                             name: Some(format!("{}_Buffer_Vertices", name)),
                             target: Some(Valid(json::buffer::Target::ArrayBuffer)),
                             extensions: Default::default(),
@@ -813,8 +813,8 @@ impl Gltf {
                             json::Index::new(self.root.buffer_views.len() as u32 - 1);
                         self.root.accessors.push(json::Accessor {
                             buffer_view: Some(buffer_view_index),
-                            byte_offset: Some(0),
-                            count: vertices.len() as u32,
+                            byte_offset: Some(json::validation::USize64(0)),
+                            count: vertices.len().into(),
                             component_type: Valid(json::accessor::GenericComponentType(
                                 json::accessor::ComponentType::F32,
                             )),
@@ -844,9 +844,9 @@ impl Gltf {
                     Some(normals) => {
                         self.root.buffer_views.push(json::buffer::View {
                             buffer: buffer_index,
-                            byte_length: expected_normals_length as u32,
-                            byte_offset: Some(offset_so_far),
-                            byte_stride: Some(12),
+                            byte_length: expected_normals_length.into(),
+                            byte_offset: Some(json::validation::USize64(offset_so_far as _)),
+                            byte_stride: Some(json::buffer::Stride(12)),
                             name: Some(format!("{}_Buffer_Normals", name)),
                             target: Some(Valid(json::buffer::Target::ArrayBuffer)),
                             extensions: Default::default(),
@@ -857,8 +857,8 @@ impl Gltf {
                             json::Index::new(self.root.buffer_views.len() as u32 - 1);
                         self.root.accessors.push(json::Accessor {
                             buffer_view: Some(buffer_view_index),
-                            byte_offset: Some(0),
-                            count: normals.len() as u32,
+                            byte_offset: Some(json::validation::USize64(0)),
+                            count: normals.len().into(),
                             component_type: Valid(json::accessor::GenericComponentType(
                                 json::accessor::ComponentType::F32,
                             )),
@@ -888,9 +888,9 @@ impl Gltf {
                     Some(colors) => {
                         self.root.buffer_views.push(json::buffer::View {
                             buffer: buffer_index,
-                            byte_length: expected_colors_length as u32,
-                            byte_offset: Some(offset_so_far),
-                            byte_stride: Some(16),
+                            byte_length: expected_colors_length.into(),
+                            byte_offset: Some(json::validation::USize64(offset_so_far as _)),
+                            byte_stride: Some(json::buffer::Stride(16)),
                             name: Some(format!("{}_Buffer_Colors", name)),
                             target: Some(Valid(json::buffer::Target::ArrayBuffer)),
                             extensions: Default::default(),
@@ -901,8 +901,8 @@ impl Gltf {
                             json::Index::new(self.root.buffer_views.len() as u32 - 1);
                         self.root.accessors.push(json::Accessor {
                             buffer_view: Some(buffer_view_index),
-                            byte_offset: Some(0),
-                            count: colors.len() as u32,
+                            byte_offset: Some(json::validation::USize64(0)),
+                            count: colors.len().into(),
                             component_type: Valid(json::accessor::GenericComponentType(
                                 json::accessor::ComponentType::F32,
                             )),
@@ -936,9 +936,9 @@ impl Gltf {
                     Some(uv_set) => {
                         self.root.buffer_views.push(json::buffer::View {
                             buffer: buffer_index,
-                            byte_length: expected_uvs_length as u32,
-                            byte_offset: Some(offset_so_far),
-                            byte_stride: Some(8),
+                            byte_length: expected_uvs_length.into(),
+                            byte_offset: Some(json::validation::USize64(offset_so_far as _)),
+                            byte_stride: Some(json::buffer::Stride(8)),
                             name: Some(format!("{}_Buffer_UVs", name)),
                             target: Some(Valid(json::buffer::Target::ArrayBuffer)),
                             extensions: Default::default(),
@@ -949,8 +949,8 @@ impl Gltf {
                             json::Index::new(self.root.buffer_views.len() as u32 - 1);
                         self.root.accessors.push(json::Accessor {
                             buffer_view: Some(buffer_view_index),
-                            byte_offset: Some(0),
-                            count: uv_set.uvs.len() as u32,
+                            byte_offset: Some(json::validation::USize64(0)),
+                            count: uv_set.uvs.len().into(),
                             component_type: Valid(json::accessor::GenericComponentType(
                                 json::accessor::ComponentType::F32,
                             )),
@@ -972,8 +972,8 @@ impl Gltf {
                     Some(triangles) => {
                         self.root.buffer_views.push(json::buffer::View {
                             buffer: buffer_index,
-                            byte_length: expected_triangles_length as u32,
-                            byte_offset: Some(offset_so_far),
+                            byte_length: expected_triangles_length.into(),
+                            byte_offset: Some(json::validation::USize64(offset_so_far as _)),
                             byte_stride: None, //Some(6),
                             name: Some(format!("{}_Buffer_Triangles", name)),
                             target: Some(Valid(json::buffer::Target::ElementArrayBuffer)),
@@ -984,8 +984,8 @@ impl Gltf {
                             json::Index::new(self.root.buffer_views.len() as u32 - 1);
                         self.root.accessors.push(json::Accessor {
                             buffer_view: Some(buffer_view_index),
-                            byte_offset: Some(0),
-                            count: triangles.len() as u32 * 3,
+                            byte_offset: Some(json::validation::USize64(0)),
+                            count: (triangles.len() * 3).into(),
                             component_type: Valid(json::accessor::GenericComponentType(
                                 json::accessor::ComponentType::U16,
                             )),
