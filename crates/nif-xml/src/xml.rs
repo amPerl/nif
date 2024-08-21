@@ -1,7 +1,9 @@
+#![allow(dead_code)]
+
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
-pub(crate) struct NifToolsXml {
+pub struct NifToolsXml {
     #[serde(rename = "@version")]
     version: String,
 
@@ -34,43 +36,43 @@ pub(crate) struct NifToolsXml {
 }
 
 impl NifToolsXml {
-    pub(crate) fn get_module(&self, name: &str) -> Option<&Module> {
+    pub fn get_module(&self, name: &str) -> Option<&Module> {
         self.modules.iter().find(|m| m.name == name)
     }
 
-    pub(crate) fn get_basic_type(&self, name: &str) -> Option<&BasicType> {
+    pub fn get_basic_type(&self, name: &str) -> Option<&BasicType> {
         self.basic_types.iter().find(|o| o.name == name)
     }
 
-    pub(crate) fn get_bit_flags(&self, name: &str) -> Option<&BitFlags> {
+    pub fn get_bit_flags(&self, name: &str) -> Option<&BitFlags> {
         self.bit_flags.iter().find(|o| o.name == name)
     }
 
-    pub(crate) fn get_enum(&self, name: &str) -> Option<&Enum> {
+    pub fn get_enum(&self, name: &str) -> Option<&Enum> {
         self.enums.iter().find(|o| o.name == name)
     }
 
-    pub(crate) fn get_struct(&self, name: &str) -> Option<&Struct> {
+    pub fn get_struct(&self, name: &str) -> Option<&Struct> {
         self.structs.iter().find(|o| o.name == name)
     }
 
-    pub(crate) fn get_ni_object(&self, name: &str) -> Option<&NiObject> {
+    pub fn get_ni_object(&self, name: &str) -> Option<&NiObject> {
         self.ni_objects.iter().find(|o| o.name == name)
     }
 
-    pub(crate) fn get_basic_type_names(&self) -> Vec<String> {
+    pub fn get_basic_type_names(&self) -> Vec<String> {
         self.basic_types.iter().map(|o| o.name.clone()).collect()
     }
 
-    pub(crate) fn get_bit_flags_names(&self) -> Vec<String> {
+    pub fn get_bit_flags_names(&self) -> Vec<String> {
         self.bit_flags.iter().map(|o| o.name.clone()).collect()
     }
 
-    pub(crate) fn get_enum_names(&self) -> Vec<String> {
+    pub fn get_enum_names(&self) -> Vec<String> {
         self.enums.iter().map(|o| o.name.clone()).collect()
     }
 
-    pub(crate) fn get_module_struct_names(&self, module_name: &str) -> Vec<String> {
+    pub fn get_module_struct_names(&self, module_name: &str) -> Vec<String> {
         self.structs
             .iter()
             .filter(|o| o.module.as_ref().map(|m| m == module_name).unwrap_or(false))
@@ -78,7 +80,7 @@ impl NifToolsXml {
             .collect()
     }
 
-    pub(crate) fn get_module_ni_object_names(&self, module_name: &str) -> Vec<String> {
+    pub fn get_module_ni_object_names(&self, module_name: &str) -> Vec<String> {
         self.ni_objects
             .iter()
             .filter(|o| o.module.as_ref().map(|m| m == module_name).unwrap_or(false))
@@ -88,7 +90,7 @@ impl NifToolsXml {
 }
 
 #[derive(Debug, Deserialize)]
-pub(crate) struct Token {
+pub struct Token {
     #[serde(rename = "@name")]
     name: String,
     #[serde(rename = "@attrs")]
@@ -111,7 +113,7 @@ pub(crate) struct Token {
 }
 
 #[derive(Debug, Deserialize)]
-pub(crate) struct TokenValue {
+pub struct TokenValue {
     #[serde(rename = "@token")]
     token: String,
     #[serde(rename = "@string")]
@@ -119,7 +121,7 @@ pub(crate) struct TokenValue {
 }
 
 #[derive(Debug, Deserialize)]
-pub(crate) struct VerAttr {
+pub struct VerAttr {
     #[serde(rename = "@name")]
     name: String,
     #[serde(rename = "@access")]
@@ -129,7 +131,7 @@ pub(crate) struct VerAttr {
 }
 
 #[derive(Debug, Deserialize)]
-pub(crate) struct Version {
+pub struct Version {
     #[serde(rename = "@id")]
     id: String,
     #[serde(rename = "@num")]
@@ -145,7 +147,7 @@ pub(crate) struct Version {
 }
 
 #[derive(Debug, Deserialize)]
-pub(crate) struct Module {
+pub struct Module {
     #[serde(rename = "@name")]
     name: String,
     #[serde(rename = "@priority")]
@@ -157,17 +159,17 @@ pub(crate) struct Module {
 }
 
 impl Module {
-    pub(crate) fn get_name(&self) -> &str {
+    pub fn get_name(&self) -> &str {
         &self.name
     }
 
-    pub(crate) fn get_dependencies(&self) -> &Vec<String> {
+    pub fn get_dependencies(&self) -> &Vec<String> {
         self.depends.as_ref()
     }
 }
 
 #[derive(Debug, Deserialize)]
-pub(crate) struct BasicType {
+pub struct BasicType {
     #[serde(rename = "@name")]
     name: String,
     #[serde(rename = "@boolean")]
@@ -185,7 +187,7 @@ pub(crate) struct BasicType {
 }
 
 #[derive(Debug, Deserialize)]
-pub(crate) struct BitFlags {
+pub struct BitFlags {
     #[serde(rename = "@name")]
     name: String,
     #[serde(rename = "@storage")]
@@ -195,7 +197,7 @@ pub(crate) struct BitFlags {
 }
 
 #[derive(Debug, Deserialize)]
-pub(crate) struct BitFlagOption {
+pub struct BitFlagOption {
     #[serde(rename = "@bit")]
     bit: u32,
     #[serde(rename = "@name")]
@@ -205,17 +207,37 @@ pub(crate) struct BitFlagOption {
 }
 
 #[derive(Debug, Deserialize)]
-pub(crate) struct Enum {
+pub struct Enum {
     #[serde(rename = "@name")]
     name: String,
     #[serde(rename = "@storage")]
     storage: String,
+    #[serde(rename = "$text")]
+    description: Option<String>,
     #[serde(rename = "option")]
     options: Vec<EnumOption>,
 }
 
+impl Enum {
+    pub fn get_name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn get_storage(&self) -> &str {
+        &self.storage
+    }
+
+    pub fn get_options(&self) -> &Vec<EnumOption> {
+        &self.options
+    }
+
+    pub fn get_description(&self) -> Option<&str> {
+        self.description.as_deref()
+    }
+}
+
 #[derive(Debug, Deserialize)]
-pub(crate) struct EnumOption {
+pub struct EnumOption {
     #[serde(rename = "@value")]
     value: String,
     #[serde(rename = "@name")]
@@ -224,8 +246,22 @@ pub(crate) struct EnumOption {
     description: Option<String>,
 }
 
+impl EnumOption {
+    pub fn get_name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn get_value(&self) -> &str {
+        &self.value
+    }
+
+    pub fn get_description(&self) -> Option<&str> {
+        self.description.as_deref()
+    }
+}
+
 #[derive(Debug, Deserialize)]
-pub(crate) struct Struct {
+pub struct Struct {
     #[serde(rename = "@name")]
     name: String,
     #[serde(rename = "@size")]
@@ -234,6 +270,8 @@ pub(crate) struct Struct {
     module: Option<String>,
     #[serde(rename = "@versions")]
     versions: Option<String>,
+    #[serde(rename = "@generic")]
+    generic: Option<String>,
     #[serde(rename = "field")]
     fields: Vec<StructField>,
     #[serde(rename = "$text")]
@@ -241,21 +279,25 @@ pub(crate) struct Struct {
 }
 
 impl Struct {
-    pub(crate) fn get_name(&self) -> &str {
+    pub fn get_name(&self) -> &str {
         &self.name
     }
 
-    pub(crate) fn get_fields(&self) -> &Vec<StructField> {
+    pub fn is_generic(&self) -> bool {
+        self.generic.as_ref().map(|g| g == "true").unwrap_or(false)
+    }
+
+    pub fn get_fields(&self) -> &Vec<StructField> {
         &self.fields
     }
 
-    pub(crate) fn get_description(&self) -> Option<&str> {
-        self.description.as_ref().map(|s| s.as_str())
+    pub fn get_description(&self) -> Option<&str> {
+        self.description.as_deref()
     }
 }
 
 #[derive(Debug, Deserialize)]
-pub(crate) struct StructField {
+pub struct StructField {
     #[serde(rename = "@name")]
     name: String,
     #[serde(rename = "@type")]
@@ -270,34 +312,40 @@ pub(crate) struct StructField {
     until: Option<String>,
     #[serde(rename = "@since")]
     since: Option<String>,
+    #[serde(rename = "@template")]
+    template: Option<String>,
     #[serde(rename = "$text")]
     description: Option<String>,
 }
 
 impl StructField {
-    pub(crate) fn get_name(&self) -> &str {
+    pub fn get_name(&self) -> &str {
         &self.name
     }
 
-    pub(crate) fn get_type(&self) -> &str {
+    pub fn get_type(&self) -> &str {
         &self.r#type
     }
 
-    pub(crate) fn get_version_range(&self) -> (&Option<String>, &Option<String>) {
+    pub fn get_template(&self) -> Option<&str> {
+        self.template.as_deref()
+    }
+
+    pub fn get_version_range(&self) -> (&Option<String>, &Option<String>) {
         (&self.since, &self.until)
     }
 
-    pub(crate) fn get_description(&self) -> Option<&str> {
-        self.description.as_ref().map(|s| s.as_str())
+    pub fn get_description(&self) -> Option<&str> {
+        self.description.as_deref()
     }
 
-    pub(crate) fn get_length_field(&self) -> Option<&str> {
-        self.length.as_ref().map(|s| s.as_str())
+    pub fn get_length_field(&self) -> Option<&str> {
+        self.length.as_deref()
     }
 }
 
 #[derive(Debug, Deserialize)]
-pub(crate) struct NiObject {
+pub struct NiObject {
     #[serde(rename = "@name")]
     name: String,
     #[serde(rename = "@abstract")]
@@ -319,25 +367,25 @@ pub(crate) struct NiObject {
 }
 
 impl NiObject {
-    pub(crate) fn get_name(&self) -> &str {
+    pub fn get_name(&self) -> &str {
         &self.name
     }
 
-    pub(crate) fn get_fields(&self) -> &Vec<NiObjectField> {
+    pub fn get_fields(&self) -> &Vec<NiObjectField> {
         &self.fields
     }
 
-    pub(crate) fn get_base(&self) -> Option<&str> {
-        self.inherit.as_ref().map(|s| s.as_str())
+    pub fn get_base(&self) -> Option<&str> {
+        self.inherit.as_deref()
     }
 
-    pub(crate) fn get_description(&self) -> Option<&str> {
-        self.description.as_ref().map(|s| s.as_str())
+    pub fn get_description(&self) -> Option<&str> {
+        self.description.as_deref()
     }
 }
 
 #[derive(Debug, Deserialize)]
-pub(crate) struct NiObjectField {
+pub struct NiObjectField {
     #[serde(rename = "@name")]
     name: String,
     #[serde(rename = "@type")]
@@ -361,20 +409,24 @@ pub(crate) struct NiObjectField {
 }
 
 impl NiObjectField {
-    pub(crate) fn get_name(&self) -> &str {
+    pub fn get_name(&self) -> &str {
         &self.name
     }
 
-    pub(crate) fn get_type(&self) -> &str {
+    pub fn get_type(&self) -> &str {
         &self.r#type
     }
 
-    pub(crate) fn get_version_range(&self) -> (&Option<String>, &Option<String>) {
+    pub fn get_template(&self) -> Option<&str> {
+        self.template.as_deref()
+    }
+
+    pub fn get_version_range(&self) -> (&Option<String>, &Option<String>) {
         (&self.since, &self.until)
     }
 
-    pub(crate) fn get_description(&self) -> Option<&str> {
-        self.description.as_ref().map(|s| s.as_str())
+    pub fn get_description(&self) -> Option<&str> {
+        self.description.as_deref()
     }
 }
 
@@ -386,7 +438,6 @@ mod tests {
     #[test]
     fn it_parses() {
         let xml_text = std::fs::read_to_string("tests/nif.xml").unwrap();
-        let xml: NifToolsXml = from_str(&xml_text).unwrap();
-        // dbg!(&xml);
+        let _: NifToolsXml = from_str(&xml_text).unwrap();
     }
 }

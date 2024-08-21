@@ -1,5 +1,5 @@
 [package]
-name = "nif-xml"
+name = "nif-codegen-rs"
 version = "0.1.0"
 edition = "2021"
 
@@ -7,5 +7,4 @@ edition = "2021"
 
 [dependencies]
 anyhow.workspace = true
-quick-xml = { version = "0.31.0", features = ["serialize", "overlapped-lists"] }
-serde = { version = "1.0.197", features = ["derive"] }
+nif-xml = { path = "../nif-xml" }
