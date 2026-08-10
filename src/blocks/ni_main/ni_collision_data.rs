@@ -1,10 +1,7 @@
 use super::ni_collision_object::NiCollisionObject;
 use crate::common::{NiPlane, Vector3};
 
-use binrw::{
-    io::{Read, Seek},
-    BinRead, BinReaderExt,
-};
+use binrw::BinRead;
 
 #[derive(Debug, PartialEq, BinRead)]
 pub struct NiCollisionData {
@@ -97,10 +94,4 @@ pub enum CollisionMode {
     NoTest,
     #[br(magic = 4u32)]
     UseNiBound,
-}
-
-impl NiCollisionData {
-    pub fn parse<R: Read + Seek>(reader: &mut R) -> anyhow::Result<Self> {
-        Ok(reader.read_le()?)
-    }
 }

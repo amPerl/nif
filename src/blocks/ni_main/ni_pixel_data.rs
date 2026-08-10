@@ -1,7 +1,4 @@
-use binrw::{
-    io::{Read, Seek},
-    BinRead, BinReaderExt,
-};
+use binrw::BinRead;
 
 use crate::common::BlockRef;
 
@@ -33,10 +30,4 @@ pub struct MipMap {
     pub width: u32,
     pub height: u32,
     pub offset: u32,
-}
-
-impl NiPixelData {
-    pub fn parse<R: Read + Seek>(reader: &mut R) -> anyhow::Result<Self> {
-        Ok(reader.read_le()?)
-    }
 }

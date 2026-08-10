@@ -1,7 +1,4 @@
-use binrw::{
-    io::{Read, Seek},
-    BinRead, BinReaderExt,
-};
+use binrw::BinRead;
 
 use super::NiPSysModifier;
 use crate::common::{BlockRef, Vector3};
@@ -16,10 +13,4 @@ pub struct NiPSysGravityModifier {
     pub force_type: u32, // ForceType
     pub turbulence: f32,
     pub turbulence_scale: f32,
-}
-
-impl NiPSysGravityModifier {
-    pub fn parse<R: Read + Seek>(reader: &mut R) -> anyhow::Result<Self> {
-        Ok(reader.read_le()?)
-    }
 }

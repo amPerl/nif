@@ -1,7 +1,4 @@
-use binrw::{
-    io::{Read, Seek},
-    BinRead, BinReaderExt,
-};
+use binrw::BinRead;
 
 use crate::{blocks::NiParticlesData, common::Vector3};
 
@@ -29,10 +26,4 @@ pub struct NiParticleInfo {
     pub last_update: f32,
     pub spawn_generation: u16,
     pub code: u16,
-}
-
-impl NiPSysData {
-    pub fn parse<R: Read + Seek>(reader: &mut R) -> anyhow::Result<Self> {
-        Ok(reader.read_le()?)
-    }
 }

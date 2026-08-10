@@ -2,10 +2,7 @@ use crate::common::BlockRef;
 
 use super::ni_object_net::NiObjectNET;
 use super::ni_string::NiString;
-use binrw::{
-    io::{Read, Seek},
-    BinRead, BinReaderExt,
-};
+use binrw::BinRead;
 
 #[derive(Debug, PartialEq, BinRead)]
 pub struct NiSourceTexture {
@@ -66,12 +63,6 @@ pub enum AlphaFormat {
     #[br(magic = 3u32)]
     Default,
     Unknown,
-}
-
-impl NiSourceTexture {
-    pub fn parse<R: Read + Seek>(reader: &mut R) -> anyhow::Result<Self> {
-        Ok(reader.read_le()?)
-    }
 }
 
 impl std::ops::Deref for NiSourceTexture {

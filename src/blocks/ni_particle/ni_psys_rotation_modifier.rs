@@ -1,7 +1,4 @@
-use binrw::{
-    io::{Read, Seek},
-    BinRead, BinReaderExt,
-};
+use binrw::BinRead;
 
 use super::NiPSysModifier;
 use crate::common::Vector3;
@@ -18,10 +15,4 @@ pub struct NiPSysRotationModifier {
     #[br(map = |x: u8| x > 0)]
     pub random_initial_axis: bool,
     pub initial_axis: Vector3,
-}
-
-impl NiPSysRotationModifier {
-    pub fn parse<R: Read + Seek>(reader: &mut R) -> anyhow::Result<Self> {
-        Ok(reader.read_le()?)
-    }
 }

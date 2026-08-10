@@ -24,16 +24,16 @@ pub struct Header {
     pub unknown: u32,
 }
 
+impl Header {
+    pub fn parse<R: Read + Seek>(reader: &mut R) -> Result<Self, NifError> {
+        Ok(reader.read_le()?)
+    }
+}
+
 #[derive(Debug, PartialEq, BinRead)]
 pub enum EndianType {
     #[br(magic = 1u8)]
     LittleEndian,
     #[br(magic = 0u8)]
     BigEndian,
-}
-
-impl Header {
-    pub fn parse<R: Read + Seek>(reader: &mut R) -> anyhow::Result<Self> {
-        Ok(reader.read_le()?)
-    }
 }

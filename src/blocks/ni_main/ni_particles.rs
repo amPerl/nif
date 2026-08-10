@@ -1,19 +1,10 @@
-use binrw::{
-    io::{Read, Seek},
-    BinRead, BinReaderExt,
-};
+use binrw::BinRead;
 
 use super::NiGeometry;
 
 #[derive(Debug, PartialEq, BinRead)]
 pub struct NiParticles {
     pub base: NiGeometry,
-}
-
-impl NiParticles {
-    pub fn parse<R: Read + Seek>(reader: &mut R) -> anyhow::Result<Self> {
-        Ok(reader.read_le()?)
-    }
 }
 
 impl std::ops::Deref for NiParticles {

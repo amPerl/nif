@@ -1,7 +1,4 @@
-use binrw::{
-    io::{Read, Seek},
-    BinRead, BinReaderExt,
-};
+use binrw::BinRead;
 
 use super::NiObjectNET;
 use crate::common::Color3;
@@ -14,12 +11,6 @@ pub struct NiMaterialProperty {
     pub color_emissive: Color3,
     pub glossiness: f32,
     pub alpha: f32,
-}
-
-impl NiMaterialProperty {
-    pub fn parse<R: Read + Seek>(reader: &mut R) -> anyhow::Result<Self> {
-        Ok(reader.read_le()?)
-    }
 }
 
 impl std::ops::Deref for NiMaterialProperty {

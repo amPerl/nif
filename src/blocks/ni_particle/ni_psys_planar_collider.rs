@@ -1,7 +1,4 @@
-use binrw::{
-    io::{Read, Seek},
-    BinRead, BinReaderExt,
-};
+use binrw::BinRead;
 
 use super::NiPSysCollider;
 use crate::common::Vector3;
@@ -13,10 +10,4 @@ pub struct NiPSysPlanarCollider {
     pub height: f32,
     pub x_axis: Vector3,
     pub y_axis: Vector3,
-}
-
-impl NiPSysPlanarCollider {
-    pub fn parse<R: Read + Seek>(reader: &mut R) -> anyhow::Result<Self> {
-        Ok(reader.read_le()?)
-    }
 }

@@ -1,10 +1,7 @@
 use crate::common::BlockRef;
 
 use super::ni_string::NiString;
-use binrw::{
-    io::{Read, Seek},
-    BinRead, BinReaderExt,
-};
+use binrw::BinRead;
 
 #[derive(Debug, PartialEq, BinRead)]
 pub struct NiObjectNET {
@@ -13,10 +10,4 @@ pub struct NiObjectNET {
     #[br(count = num_extra_data_refs)]
     pub extra_data_refs: Vec<BlockRef>,
     pub controller_ref: BlockRef,
-}
-
-impl NiObjectNET {
-    pub fn parse<R: Read + Seek>(reader: &mut R) -> anyhow::Result<Self> {
-        Ok(reader.read_le()?)
-    }
 }

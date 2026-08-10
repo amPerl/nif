@@ -1,10 +1,7 @@
 use super::ni_object_net::NiObjectNET;
 use crate::common::{BlockRef, TexCoord};
 
-use binrw::{
-    io::{Read, Seek},
-    BinRead, BinReaderExt,
-};
+use binrw::BinRead;
 
 #[derive(Debug, PartialEq, BinRead)]
 pub struct NiTexturingProperty {
@@ -123,12 +120,6 @@ pub enum TexFilterMode {
     #[br(magic = 5u32)]
     BilerpMipNearest,
     Unknown,
-}
-
-impl NiTexturingProperty {
-    pub fn parse<R: Read + Seek>(reader: &mut R) -> anyhow::Result<Self> {
-        Ok(reader.read_le()?)
-    }
 }
 
 impl std::ops::Deref for NiTexturingProperty {

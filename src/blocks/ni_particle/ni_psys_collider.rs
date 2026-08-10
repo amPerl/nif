@@ -1,7 +1,4 @@
-use binrw::{
-    io::{Read, Seek},
-    BinRead, BinReaderExt,
-};
+use binrw::BinRead;
 
 use crate::common::BlockRef;
 
@@ -16,10 +13,4 @@ pub struct NiPSysCollider {
     pub parent_ref: BlockRef,
     pub next_collider_ref: BlockRef,
     pub collider_object_ref: BlockRef,
-}
-
-impl NiPSysCollider {
-    pub fn parse<R: Read + Seek>(reader: &mut R) -> anyhow::Result<Self> {
-        Ok(reader.read_le()?)
-    }
 }

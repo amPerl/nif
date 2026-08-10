@@ -1,7 +1,4 @@
-use binrw::{
-    io::{Read, Seek},
-    BinRead, BinReaderExt,
-};
+use binrw::BinRead;
 
 use crate::common::BlockRef;
 
@@ -14,10 +11,4 @@ pub struct NiTimeController {
     pub start_time: f32,
     pub end_time: f32,
     pub target_ref: BlockRef,
-}
-
-impl NiTimeController {
-    pub fn parse<R: Read + Seek>(reader: &mut R) -> anyhow::Result<Self> {
-        Ok(reader.read_le()?)
-    }
 }

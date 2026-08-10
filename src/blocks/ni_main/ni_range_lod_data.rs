@@ -1,8 +1,5 @@
 use crate::common::Vector3;
-use binrw::{
-    io::{Read, Seek},
-    BinRead, BinReaderExt,
-};
+use binrw::BinRead;
 
 #[derive(Debug, PartialEq, BinRead)]
 pub struct NiRangeLODData {
@@ -16,10 +13,4 @@ pub struct NiRangeLODData {
 pub struct LODRange {
     pub near: f32,
     pub far: f32,
-}
-
-impl NiRangeLODData {
-    pub fn parse<R: Read + Seek>(reader: &mut R) -> anyhow::Result<Self> {
-        Ok(reader.read_le()?)
-    }
 }

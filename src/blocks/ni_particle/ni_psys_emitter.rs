@@ -1,7 +1,4 @@
-use binrw::{
-    io::{Read, Seek},
-    BinRead, BinReaderExt,
-};
+use binrw::BinRead;
 
 use super::NiPSysModifier;
 use crate::common::Color4;
@@ -20,10 +17,4 @@ pub struct NiPSysEmitter {
     pub radius_variation: f32,
     pub life_span: f32,
     pub life_span_variation: f32,
-}
-
-impl NiPSysEmitter {
-    pub fn parse<R: Read + Seek>(reader: &mut R) -> anyhow::Result<Self> {
-        Ok(reader.read_le()?)
-    }
 }

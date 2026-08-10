@@ -1,7 +1,4 @@
-use binrw::{
-    io::{Read, Seek},
-    BinRead, BinReaderExt,
-};
+use binrw::BinRead;
 
 use crate::common::{KeyGroup, KeyType, QuatKey, Vector3};
 use crate::parse_utils;
@@ -18,10 +15,4 @@ pub struct NiTransformData {
     pub xyz_rotations: Option<Vec<KeyGroup<f32>>>,
     pub translations: KeyGroup<Vector3>,
     pub scales: KeyGroup<f32>,
-}
-
-impl NiTransformData {
-    pub fn parse<R: Read + Seek>(reader: &mut R) -> anyhow::Result<Self> {
-        Ok(reader.read_le()?)
-    }
 }

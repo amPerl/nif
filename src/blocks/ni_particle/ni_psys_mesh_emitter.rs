@@ -1,7 +1,4 @@
-use binrw::{
-    io::{Read, Seek},
-    BinRead, BinReaderExt,
-};
+use binrw::BinRead;
 
 use super::NiPSysEmitter;
 use crate::common::{BlockRef, Vector3};
@@ -39,10 +36,4 @@ pub enum EmitFrom {
     FaceSurface,
     #[br(magic = 4u32)]
     EdgeSurface,
-}
-
-impl NiPSysMeshEmitter {
-    pub fn parse<R: Read + Seek>(reader: &mut R) -> anyhow::Result<Self> {
-        Ok(reader.read_le()?)
-    }
 }

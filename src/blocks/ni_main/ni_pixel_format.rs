@@ -1,7 +1,4 @@
-use binrw::{
-    io::{Read, Seek},
-    BinRead, BinReaderExt,
-};
+use binrw::BinRead;
 
 #[derive(Debug, PartialEq, BinRead)]
 pub struct NiPixelFormat {
@@ -22,12 +19,6 @@ pub struct PixelFormatComponent {
     pub bits_per_channel: u8,
     #[br(map = |x: u8| x > 0)]
     pub is_signed: bool,
-}
-
-impl NiPixelFormat {
-    pub fn parse<R: Read + Seek>(reader: &mut R) -> anyhow::Result<Self> {
-        Ok(reader.read_le()?)
-    }
 }
 
 /// Describes the pixel format used by the NiPixelData object to store a texture.

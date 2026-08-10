@@ -1,8 +1,5 @@
 use super::ni_node::NiNode;
-use binrw::{
-    io::{Read, Seek},
-    BinRead, BinReaderExt,
-};
+use binrw::BinRead;
 
 #[derive(Debug, PartialEq, BinRead)]
 pub struct NiBillboardNode {
@@ -26,12 +23,6 @@ pub enum BillboardMode {
     BSRotateAboutUp,
     #[br(magic = 9u16)]
     RotateAboutUp2,
-}
-
-impl NiBillboardNode {
-    pub fn parse<R: Read + Seek>(reader: &mut R) -> anyhow::Result<Self> {
-        Ok(reader.read_le()?)
-    }
 }
 
 impl std::ops::Deref for NiBillboardNode {

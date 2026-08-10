@@ -1,7 +1,4 @@
-use binrw::{
-    io::{Read, Seek},
-    BinRead, BinReaderExt,
-};
+use binrw::BinRead;
 
 use crate::common::BlockRef;
 
@@ -23,12 +20,6 @@ pub struct MaterialData {
     pub shader_name: Option<NiString>,
     #[br(if(has_shader))]
     pub shader_extra_data_ref: Option<BlockRef>,
-}
-
-impl NiGeometry {
-    pub fn parse<R: Read + Seek>(reader: &mut R) -> anyhow::Result<Self> {
-        Ok(reader.read_le()?)
-    }
 }
 
 impl std::ops::Deref for NiGeometry {

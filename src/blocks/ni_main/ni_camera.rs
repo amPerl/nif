@@ -2,10 +2,7 @@ use crate::common::BlockRef;
 
 use super::NiAvObject;
 
-use binrw::{
-    io::{Read, Seek},
-    BinRead, BinReaderExt,
-};
+use binrw::BinRead;
 
 #[derive(Debug, PartialEq, BinRead)]
 pub struct NiCamera {
@@ -27,12 +24,6 @@ pub struct NiCamera {
     pub scene: BlockRef,
     pub num_screen_polygons: u32,
     pub num_screen_textures: u32,
-}
-
-impl NiCamera {
-    pub fn parse<R: Read + Seek>(reader: &mut R) -> anyhow::Result<Self> {
-        Ok(reader.read_le()?)
-    }
 }
 
 impl std::ops::Deref for NiCamera {

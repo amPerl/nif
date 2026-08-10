@@ -1,7 +1,4 @@
-use binrw::{
-    io::{Read, Seek},
-    BinRead, BinReaderExt,
-};
+use binrw::BinRead;
 
 use super::NiPSysVolumeEmitter;
 
@@ -11,10 +8,4 @@ pub struct NiPSysBoxEmitter {
     pub width: f32,
     pub height: f32,
     pub depth: f32,
-}
-
-impl NiPSysBoxEmitter {
-    pub fn parse<R: Read + Seek>(reader: &mut R) -> anyhow::Result<Self> {
-        Ok(reader.read_le()?)
-    }
 }

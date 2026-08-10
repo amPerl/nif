@@ -1,7 +1,4 @@
-use binrw::{
-    io::{Read, Seek},
-    BinRead, BinReaderExt,
-};
+use binrw::BinRead;
 
 use crate::{blocks::NiParticles, common::BlockRef};
 
@@ -13,12 +10,6 @@ pub struct NiParticleSystem {
     pub num_modifiers: u32,
     #[br(count = num_modifiers)]
     pub modifiers_refs: Vec<BlockRef>,
-}
-
-impl NiParticleSystem {
-    pub fn parse<R: Read + Seek>(reader: &mut R) -> anyhow::Result<Self> {
-        Ok(reader.read_le()?)
-    }
 }
 
 impl std::ops::Deref for NiParticleSystem {

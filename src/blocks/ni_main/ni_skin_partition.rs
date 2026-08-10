@@ -1,7 +1,4 @@
-use binrw::{
-    io::{Read, Seek},
-    BinRead, BinReaderExt,
-};
+use binrw::BinRead;
 
 use crate::common::Triangle;
 
@@ -52,10 +49,4 @@ pub struct SkinPartition {
 pub struct VertexWeights {
     #[br(count = num_weights_per_vertex)]
     pub weights: Vec<f32>,
-}
-
-impl NiSkinPartition {
-    pub fn parse<R: Read + Seek>(reader: &mut R) -> anyhow::Result<Self> {
-        Ok(reader.read_le()?)
-    }
 }

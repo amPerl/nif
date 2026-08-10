@@ -1,7 +1,4 @@
-use binrw::{
-    io::{Read, Seek},
-    BinRead, BinReaderExt,
-};
+use binrw::BinRead;
 
 use super::NiString;
 use crate::common::{BlockRef, Color4, TexCoord, Vector3};
@@ -50,10 +47,4 @@ pub struct NiGeometryData {
 pub struct UvSet {
     #[br(count = num_vertices)]
     pub uvs: Vec<TexCoord>,
-}
-
-impl NiGeometryData {
-    pub fn parse<R: Read + Seek>(reader: &mut R) -> anyhow::Result<Self> {
-        Ok(reader.read_le()?)
-    }
 }

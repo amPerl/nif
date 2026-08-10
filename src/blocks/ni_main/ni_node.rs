@@ -1,10 +1,7 @@
 use crate::common::BlockRef;
 
 use super::ni_av_object::NiAvObject;
-use binrw::{
-    io::{Read, Seek},
-    BinRead, BinReaderExt,
-};
+use binrw::BinRead;
 
 #[derive(Debug, PartialEq, BinRead)]
 pub struct NiNode {
@@ -15,12 +12,6 @@ pub struct NiNode {
     pub num_effect_refs: u32,
     #[br(count = num_effect_refs)]
     pub effect_refs: Vec<BlockRef>,
-}
-
-impl NiNode {
-    pub fn parse<R: Read + Seek>(reader: &mut R) -> anyhow::Result<Self> {
-        Ok(reader.read_le()?)
-    }
 }
 
 impl std::ops::Deref for NiNode {

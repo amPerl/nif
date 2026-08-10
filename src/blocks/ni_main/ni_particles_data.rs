@@ -1,7 +1,4 @@
-use binrw::{
-    io::{Read, Seek},
-    BinRead, BinReaderExt,
-};
+use binrw::BinRead;
 
 use super::NiGeometryData;
 use crate::common::{Quaternion, Vector3};
@@ -36,12 +33,6 @@ pub struct NiParticlesData {
     pub has_rotation_axes: bool,
     #[br(if(has_rotation_axes), count = base.num_vertices)]
     pub rotation_axes: Option<Vec<Vector3>>,
-}
-
-impl NiParticlesData {
-    pub fn parse<R: Read + Seek>(reader: &mut R) -> anyhow::Result<Self> {
-        Ok(reader.read_le()?)
-    }
 }
 
 impl std::ops::Deref for NiParticlesData {

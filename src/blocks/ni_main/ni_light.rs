@@ -1,7 +1,4 @@
-use binrw::{
-    io::{Read, Seek},
-    BinRead, BinReaderExt,
-};
+use binrw::BinRead;
 
 use super::NiDynamicEffect;
 use crate::common::Color3;
@@ -13,12 +10,6 @@ pub struct NiLight {
     pub ambient_color: Color3,
     pub diffuse_color: Color3,
     pub specular_color: Color3,
-}
-
-impl NiLight {
-    pub fn parse<R: Read + Seek>(reader: &mut R) -> anyhow::Result<Self> {
-        Ok(reader.read_le()?)
-    }
 }
 
 impl std::ops::Deref for NiLight {

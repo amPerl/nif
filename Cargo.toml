@@ -11,23 +11,14 @@ license = "MIT"
 readme = "README.md"
 exclude = ["tests/*"]
 
-[[bin]]
-name = "nif2obj"
-required-features = ["obj_export"]
-
-[[bin]]
-name = "nif2gltf"
-required-features = ["gltf_export"]
-
 [features]
-default = ["obj_export", "gltf_export"]
-obj_export = []
-gltf_export = ["gltf", "gltf-json"]
+default = []
+glam = ["dep:glam"]
 
 [dependencies]
-anyhow = "1.0.72"
 thiserror = "1.0.43"
-glam = "0.28.0"
-gltf = { version = "1.4.1", optional = true }
-gltf-json = { version = "1.4.1", optional = true }
 binrw = "0.14.0"
+glam = { version = "0.28.0", optional = true }
+
+[dev-dependencies]
+anyhow = "1.0.72"

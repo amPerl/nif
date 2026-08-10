@@ -1,7 +1,4 @@
-use binrw::{
-    io::{Read, Seek},
-    BinRead, BinReaderExt,
-};
+use binrw::BinRead;
 
 use super::{NiDynamicEffect, TexClampMode, TexFilterMode};
 use crate::common::{BlockRef, Matrix33, NiPlane, Vector3};
@@ -18,12 +15,6 @@ pub struct NiTextureEffect {
     pub source_texture_ref: BlockRef,
     pub enable_plane: u8,
     pub plane: NiPlane,
-}
-
-impl NiTextureEffect {
-    pub fn parse<R: Read + Seek>(reader: &mut R) -> anyhow::Result<Self> {
-        Ok(reader.read_le()?)
-    }
 }
 
 impl std::ops::Deref for NiTextureEffect {

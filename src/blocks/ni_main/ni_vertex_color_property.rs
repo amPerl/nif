@@ -1,8 +1,5 @@
 use super::ni_object_net::NiObjectNET;
-use binrw::{
-    io::{Read, Seek},
-    BinRead, BinReaderExt,
-};
+use binrw::BinRead;
 
 #[derive(Debug, PartialEq, BinRead)]
 pub struct NiVertexColorProperty {
@@ -30,12 +27,6 @@ pub enum LightMode {
     #[br(magic = 1u32)]
     EmissiveAmbientDiffuse,
     Unknown,
-}
-
-impl NiVertexColorProperty {
-    pub fn parse<R: Read + Seek>(reader: &mut R) -> anyhow::Result<Self> {
-        Ok(reader.read_le()?)
-    }
 }
 
 impl std::ops::Deref for NiVertexColorProperty {

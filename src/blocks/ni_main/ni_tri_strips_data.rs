@@ -1,7 +1,4 @@
-use binrw::{
-    io::{Read, Seek},
-    BinRead, BinReaderExt,
-};
+use binrw::BinRead;
 
 use super::NiTriBasedGeomData;
 
@@ -16,12 +13,6 @@ pub struct NiTriStripsData {
     pub has_points: bool,
     #[br(if(has_points), count = num_strips * strip_lengths.iter().sum::<u16>())]
     pub points: Option<Vec<u16>>,
-}
-
-impl NiTriStripsData {
-    pub fn parse<R: Read + Seek>(reader: &mut R) -> anyhow::Result<Self> {
-        Ok(reader.read_le()?)
-    }
 }
 
 impl std::ops::Deref for NiTriStripsData {

@@ -1,8 +1,5 @@
 use super::ni_object_net::NiObjectNET;
-use binrw::{
-    io::{Read, Seek},
-    BinRead, BinReaderExt,
-};
+use binrw::BinRead;
 
 #[derive(Debug, PartialEq, BinRead)]
 pub struct NiStencilProperty {
@@ -63,12 +60,6 @@ pub enum StencilTestFunc {
     GreaterEqual,
     #[br(magic = 7u32)]
     Always,
-}
-
-impl NiStencilProperty {
-    pub fn parse<R: Read + Seek>(reader: &mut R) -> anyhow::Result<Self> {
-        Ok(reader.read_le()?)
-    }
 }
 
 impl std::ops::Deref for NiStencilProperty {

@@ -1,7 +1,4 @@
-use binrw::{
-    io::{Read, Seek},
-    BinRead, BinReaderExt,
-};
+use binrw::BinRead;
 
 use crate::{blocks::NiString, common::Vector3};
 
@@ -21,10 +18,4 @@ pub struct Morph {
     pub legacy_weight: f32,
     #[br(count = num_vertices)]
     pub vectors: Vec<Vector3>,
-}
-
-impl NiMorphData {
-    pub fn parse<R: Read + Seek>(reader: &mut R) -> anyhow::Result<Self> {
-        Ok(reader.read_le()?)
-    }
 }
