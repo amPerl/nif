@@ -10,12 +10,12 @@ pub struct NiPSysData {
     pub particle_info: Vec<NiParticleInfo>,
 
     #[br(map = |x: u8| x > 0)]
-    pub has_unknown_floats: bool,
-    #[br(if(has_unknown_floats), count = base.base.num_vertices)]
-    pub unknown_floats: Option<Vec<f32>>,
+    pub has_rotation_speeds: bool,
+    #[br(if(has_rotation_speeds), count = base.base.num_vertices)]
+    pub rotation_speeds: Option<Vec<f32>>,
 
-    pub unknown_short_1: u16,
-    pub unknown_short_2: u16,
+    pub num_added_particles: u16,
+    pub added_particles_base: u16,
 }
 
 #[derive(Debug, PartialEq, BinRead)]

@@ -426,6 +426,15 @@ pub fn parse_blocks(strings: Vec<String>, block_type_indices: Vec<u16>) -> BinRe
                             "NiTriShapeDynamicData" => Block::NiTriShapeDynamicData(
                                 NiTriShapeDynamicData::read_options(reader, endian, ())?,
                             ),
+                            "NiKeyframeController" => Block::NiTransformController(
+                                NiTransformController::read_options(reader, endian, ())?,
+                            ),
+                            "NiKeyframeData" => Block::NiTransformData(
+                                NiTransformData::read_options(reader, endian, ())?,
+                            ),
+                            "NiVisData" => {
+                                Block::NiBoolData(NiBoolData::read_options(reader, endian, ())?)
+                            }
                             "NiAmbientLight" => Block::NiAmbientLight(
                                 NiAmbientLight::read_options(reader, endian, ())?,
                             ),

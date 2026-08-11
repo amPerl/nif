@@ -10,7 +10,16 @@ pub struct NiPSysGravityModifier {
     pub gravity_axis: Vector3,
     pub decay: f32,
     pub strength: f32,
-    pub force_type: u32, // ForceType
+    pub force_type: ForceType,
     pub turbulence: f32,
     pub turbulence_scale: f32,
+}
+
+#[derive(Debug, PartialEq, BinRead)]
+pub enum ForceType {
+    #[br(magic = 0u32)]
+    Planar,
+    #[br(magic = 1u32)]
+    Spherical,
+    Unknown(u32),
 }
