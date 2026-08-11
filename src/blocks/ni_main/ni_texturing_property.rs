@@ -12,32 +12,32 @@ pub struct NiTexturingProperty {
     #[br(map = |x: u8| x > 0)]
     pub has_base_texture: bool,
     #[br(if(has_base_texture))]
-    pub base_texture: Option<TexDesc>,
+    pub base_texture: Option<Box<TexDesc>>,
 
     #[br(map = |x: u8| x > 0)]
     pub has_dark_texture: bool,
     #[br(if(has_dark_texture))]
-    pub dark_texture: Option<TexDesc>,
+    pub dark_texture: Option<Box<TexDesc>>,
 
     #[br(map = |x: u8| x > 0)]
     pub has_detail_texture: bool,
     #[br(if(has_detail_texture))]
-    pub detail_texture: Option<TexDesc>,
+    pub detail_texture: Option<Box<TexDesc>>,
 
     #[br(map = |x: u8| x > 0)]
     pub has_gloss_texture: bool,
     #[br(if(has_gloss_texture))]
-    pub gloss_texture: Option<TexDesc>,
+    pub gloss_texture: Option<Box<TexDesc>>,
 
     #[br(map = |x: u8| x > 0)]
     pub has_glow_texture: bool,
     #[br(if(has_glow_texture))]
-    pub glow_texture: Option<TexDesc>,
+    pub glow_texture: Option<Box<TexDesc>>,
 
     #[br(if(texture_count > 5), map = |x: Option<u8>| x.is_some_and(|x| x > 0))]
     pub has_bump_map_texture: bool,
     #[br(if(has_bump_map_texture))]
-    pub bump_map_texture: Option<TexDesc>,
+    pub bump_map_texture: Option<Box<TexDesc>>,
     #[br(if(has_bump_map_texture))]
     pub bump_map_luma_scale: Option<f32>,
     #[br(if(has_bump_map_texture))]
@@ -48,22 +48,22 @@ pub struct NiTexturingProperty {
     #[br(if(texture_count > 6), map = |x: Option<u8>| x.is_some_and(|x| x > 0))]
     pub has_decal0_texture: bool,
     #[br(if(has_decal0_texture))]
-    pub decal0_texture: Option<TexDesc>,
+    pub decal0_texture: Option<Box<TexDesc>>,
 
     #[br(if(texture_count > 7), map = |x: Option<u8>| x.is_some_and(|x| x > 0))]
     pub has_decal1_texture: bool,
     #[br(if(has_decal1_texture))]
-    pub decal1_texture: Option<TexDesc>,
+    pub decal1_texture: Option<Box<TexDesc>>,
 
     #[br(if(texture_count > 8), map = |x: Option<u8>| x.is_some_and(|x| x > 0))]
     pub has_decal2_texture: bool,
     #[br(if(has_decal2_texture))]
-    pub decal2_texture: Option<TexDesc>,
+    pub decal2_texture: Option<Box<TexDesc>>,
 
     #[br(if(texture_count > 9), map = |x: Option<u8>| x.is_some_and(|x| x > 0))]
     pub has_decal3_texture: bool,
     #[br(if(has_decal3_texture))]
-    pub decal3_texture: Option<TexDesc>,
+    pub decal3_texture: Option<Box<TexDesc>>,
 
     pub num_shader_textures: u32,
     #[br(count=num_shader_textures)]

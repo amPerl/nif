@@ -116,9 +116,11 @@ pub fn parse_int_prefixed_string() -> BinResult<String> {
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+const MAX_PREALLOCATED_BLOCKS: usize = 8192;
+
 #[binrw::parser(reader, endian)]
 pub fn parse_blocks(strings: Vec<String>, block_type_indices: Vec<u16>) -> BinResult<Vec<Block>> {
-    let mut blocks = Vec::new();
+    let mut blocks = Vec::with_capacity(block_type_indices.len().min(MAX_PREALLOCATED_BLOCKS));
     let mut previous_offset = 0u64;
 
     for block_type_index in block_type_indices {
@@ -239,7 +241,9 @@ pub fn parse_blocks(strings: Vec<String>, block_type_indices: Vec<u16>) -> BinRe
                                 Block::NiColorData(NiColorData::read_options(reader, endian, ())?)
                             }
                             "NiPSysData" => {
-                                Block::NiPSysData(NiPSysData::read_options(reader, endian, ())?)
+                                Block::NiPSysData(Box::new(NiPSysData::read_options(
+                                    reader, endian, (),
+                                )?))
                             }
                             "NiPSysAgeDeathModifier" => Block::NiPSysAgeDeathModifier(
                                 NiPSysAgeDeathModifier::read_options(reader, endian, ())?,
@@ -418,9 +422,9 @@ pub fn parse_blocks(strings: Vec<String>, block_type_indices: Vec<u16>) -> BinRe
                             "NiBoneLODController" => Block::NiBoneLODController(
                                 NiBoneLODController::read_options(reader, endian, ())?,
                             ),
-                            "NiMeshPSysData" => Block::NiMeshPSysData(
+                            "NiMeshPSysData" => Block::NiMeshPSysData(Box::new(
                                 NiMeshPSysData::read_options(reader, endian, ())?,
-                            ),
+                            )),
                             "NiPSysModifierBoolCtlr" => Block::NiPSysModifierBoolCtlr(
                                 NiPSysModifierBoolCtlr::read_options(reader, endian, ())?,
                             ),
