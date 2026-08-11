@@ -75,32 +75,45 @@ pub fn parse_version() -> BinResult<u32> {
     Ok((major & 0xFF) << 24 | (minor & 0xFF) << 16 | (patch & 0xFF) << 8 | (build & 0xFF))
 }
 
+const MAX_LF_TERMINATED_STRING_LEN: usize = 64;
+
 #[binrw::parser(reader)]
 pub fn parse_lf_terminated_string() -> BinResult<String> {
-    Ok(String::from_utf8_lossy(
-        reader
-            .bytes()
-            .filter_map(Result::ok)
-            .take_while(|&b| b != b'\n')
-            .collect::<Vec<u8>>()
-            .as_slice(),
-    )
-    .to_string())
+    let pos = reader.stream_position()?;
+    let mut bytes = Vec::new();
+    let mut byte = [0u8; 1];
+
+    loop {
+        reader.read_exact(&mut byte)?;
+        if byte[0] == b'\n' {
+            return Ok(String::from_utf8_lossy(&bytes).into_owned());
+        }
+        if bytes.len() == MAX_LF_TERMINATED_STRING_LEN {
+            return Err(binrw::Error::Custom {
+                pos,
+                err: Box::new(NifError::StringParseError),
+            });
+        }
+        bytes.push(byte[0]);
+    }
 }
 
 #[binrw::parser(reader, endian)]
 pub fn parse_int_prefixed_string() -> BinResult<String> {
+    let pos = reader.stream_position()?;
     let count = u32::read_options(reader, endian, ())?;
 
-    Ok(String::from_utf8_lossy(
-        reader
-            .bytes()
-            .take(count as usize)
-            .filter_map(Result::ok)
-            .collect::<Vec<u8>>()
-            .as_slice(),
-    )
-    .to_string())
+    let mut bytes = Vec::new();
+    let read = reader.take(count.into()).read_to_end(&mut bytes)?;
+
+    if read as u64 != u64::from(count) {
+        return Err(binrw::Error::Custom {
+            pos,
+            err: Box::new(NifError::StringParseError),
+        });
+    }
+
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 #[binrw::parser(reader, endian)]
@@ -482,4 +495,65 @@ pub fn parse_blocks(strings: Vec<String>, block_type_indices: Vec<u16>) -> BinRe
     // println!("Finished reading at {}", reader.seek(SeekFrom::Current(0))?);
 
     Ok(blocks)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use binrw::Endian;
+    use std::io::Cursor;
+
+    fn int_prefixed(bytes: &[u8]) -> BinResult<(String, u64)> {
+        let mut reader = Cursor::new(bytes.to_vec());
+        let value = parse_int_prefixed_string(&mut reader, Endian::Little, ())?;
+        Ok((value, reader.position()))
+    }
+
+    fn lf_terminated(bytes: &[u8]) -> BinResult<(String, u64)> {
+        let mut reader = Cursor::new(bytes.to_vec());
+        let value = parse_lf_terminated_string(&mut reader, Endian::Little, ())?;
+        Ok((value, reader.position()))
+    }
+
+    #[test]
+    fn int_prefixed_string_leaves_the_reader_after_the_payload() {
+        let (value, position) = int_prefixed(b"\x04\x00\x00\x00name\xAA").expect("parse");
+        assert_eq!(value, "name");
+        assert_eq!(position, 8);
+    }
+
+    #[test]
+    fn int_prefixed_string_accepts_an_empty_payload() {
+        let (value, position) = int_prefixed(b"\x00\x00\x00\x00\xAA").expect("parse");
+        assert_eq!(value, "");
+        assert_eq!(position, 4);
+    }
+
+    #[test]
+    fn int_prefixed_string_rejects_a_truncated_payload() {
+        assert!(int_prefixed(b"\x08\x00\x00\x00name").is_err());
+    }
+
+    #[test]
+    fn int_prefixed_string_rejects_a_count_beyond_the_stream() {
+        assert!(int_prefixed(b"\xFF\xFF\xFF\xFFname").is_err());
+    }
+
+    #[test]
+    fn lf_terminated_string_leaves_the_reader_after_the_newline() {
+        let (value, position) = lf_terminated(b"20.0.0.4\n\xAA").expect("parse");
+        assert_eq!(value, "20.0.0.4");
+        assert_eq!(position, 9);
+    }
+
+    #[test]
+    fn lf_terminated_string_rejects_a_missing_newline() {
+        assert!(lf_terminated(b"20.0.0.4").is_err());
+    }
+
+    #[test]
+    fn lf_terminated_string_rejects_an_unterminated_run() {
+        let bytes = vec![b'x'; MAX_LF_TERMINATED_STRING_LEN * 2];
+        assert!(lf_terminated(&bytes).is_err());
+    }
 }
