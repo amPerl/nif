@@ -9,10 +9,12 @@ use binrw::{
 #[derive(Debug, PartialEq, BinRead)]
 #[br(magic = b"Gamebryo File Format, Version ")]
 #[br(assert(version == 0x14000004, NifError::NotImplemented("Version not implemented")))]
+#[br(assert(version_from_str == version, NifError::InvalidValueError))]
 pub struct Header {
     #[br(parse_with = parse_utils::parse_version)]
     pub version_from_str: u32,
     pub version: u32,
+    #[br(assert(endian_type == EndianType::LittleEndian, NifError::NotImplemented("big-endian files")))]
     pub endian_type: EndianType,
     pub user_version: u32,
     pub num_blocks: u32,

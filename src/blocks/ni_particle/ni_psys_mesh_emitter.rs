@@ -22,6 +22,7 @@ pub enum VelocityType {
     UseRandom,
     #[br(magic = 2u32)]
     UseDirection,
+    Unknown(u32),
 }
 
 #[derive(Debug, PartialEq, BinRead)]
@@ -36,4 +37,5 @@ pub enum EmitFrom {
     FaceSurface,
     #[br(magic = 4u32)]
     EdgeSurface,
+    Unknown(u32),
 }

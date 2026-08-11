@@ -15,7 +15,12 @@ where
     if num_keys == 0 {
         return Ok(Vec::new());
     }
-    let key_type = key_type.expect("num_keys was >0, key_type should exist");
+    let Some(key_type) = key_type else {
+        return Err(binrw::Error::Custom {
+            pos: reader.stream_position()?,
+            err: Box::new(NifError::InvalidValueError),
+        });
+    };
 
     let mut keys = Vec::new();
     for _ in 0..num_keys {
@@ -34,7 +39,12 @@ pub fn parse_quat_keys(
     if num_keys == 0 {
         return Ok(Vec::new());
     }
-    let key_type = key_type.expect("num_keys was >0, key_type should exist");
+    let Some(key_type) = key_type else {
+        return Err(binrw::Error::Custom {
+            pos: reader.stream_position()?,
+            err: Box::new(NifError::InvalidValueError),
+        });
+    };
     if key_type == common::KeyType::XyzRotation {
         return Ok(Vec::new());
     }
@@ -56,9 +66,13 @@ pub fn parse_version() -> BinResult<u32> {
         .map(|s| s.parse())
         .filter_map(Result::ok)
         .collect::<Vec<u32>>();
-    let version: u32 =
-        version_split[0] << 24 | version_split[1] << 16 | version_split[2] << 8 | version_split[3];
-    Ok(version)
+    let [major, minor, patch, build] = version_split[..] else {
+        return Err(binrw::Error::Custom {
+            pos: reader.stream_position()?,
+            err: Box::new(NifError::StringParseError),
+        });
+    };
+    Ok((major & 0xFF) << 24 | (minor & 0xFF) << 16 | (patch & 0xFF) << 8 | (build & 0xFF))
 }
 
 #[binrw::parser(reader)]
@@ -156,6 +170,9 @@ pub fn parse_blocks(strings: Vec<String>, block_type_indices: Vec<u16>) -> BinRe
                             ),
                             "NiBooleanExtraData" => Block::NiBooleanExtraData(
                                 NiBooleanExtraData::read_options(reader, endian, ())?,
+                            ),
+                            "NiCollisionObject" => Block::NiCollisionObject(
+                                NiCollisionObject::read_options(reader, endian, ())?,
                             ),
                             "NiCollisionData" => Block::NiCollisionData(
                                 NiCollisionData::read_options(reader, endian, ())?,

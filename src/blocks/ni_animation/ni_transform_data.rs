@@ -11,7 +11,7 @@ pub struct NiTransformData {
     #[br(args(num_rotation_keys, rotation_type))]
     #[br(parse_with = parse_utils::parse_quat_keys)]
     pub quaternion_keys: Vec<QuatKey>,
-    #[br(if(rotation_type.is_some() && rotation_type.unwrap() == KeyType::XyzRotation), count = 3)]
+    #[br(if(matches!(rotation_type, Some(KeyType::XyzRotation))), count = 3)]
     pub xyz_rotations: Option<Vec<KeyGroup<f32>>>,
     pub translations: KeyGroup<Vector3>,
     pub scales: KeyGroup<f32>,
