@@ -14,6 +14,7 @@ pub enum NiSwitchFlags {
     UpdateOnlyActiveChild,
     #[br(magic = 1u16)]
     UpdateControllers,
+    Unknown(u16),
 }
 
 impl std::ops::Deref for NiSwitchNode {

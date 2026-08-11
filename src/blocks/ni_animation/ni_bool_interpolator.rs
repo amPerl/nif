@@ -7,7 +7,16 @@ use super::NiKeyBasedInterpolator;
 #[derive(Debug, PartialEq, BinRead)]
 pub struct NiBoolInterpolator {
     pub base: NiKeyBasedInterpolator,
-    #[br(map = |x: u8| x > 0)]
-    pub value: bool, // Pose value if lacking NiBoolData
+    pub value: u8,
     pub data_ref: BlockRef,
+}
+
+impl NiBoolInterpolator {
+    pub fn pose_value(&self) -> Option<bool> {
+        match self.value {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        }
+    }
 }

@@ -47,13 +47,13 @@ impl NiAlphaProperty {
     }
     pub fn test_func(&self) -> TestFunction {
         match (self.flags & 0x1C00) >> 10 {
-            0 => TestFunction::TestLess,
-            1 => TestFunction::TestEqual,
-            2 => TestFunction::TestLessEqual,
-            3 => TestFunction::TestGreater,
-            4 => TestFunction::TestNotEqual,
-            5 => TestFunction::TestGreaterEqual,
-            6 => TestFunction::TestAlways,
+            0 => TestFunction::TestAlways,
+            1 => TestFunction::TestLess,
+            2 => TestFunction::TestEqual,
+            3 => TestFunction::TestLessEqual,
+            4 => TestFunction::TestGreater,
+            5 => TestFunction::TestNotEqual,
+            6 => TestFunction::TestGreaterEqual,
             _ => TestFunction::TestNever,
         }
     }

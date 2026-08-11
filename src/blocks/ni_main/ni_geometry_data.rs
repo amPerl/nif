@@ -1,11 +1,10 @@
 use binrw::BinRead;
 
-use super::NiString;
 use crate::common::{BlockRef, Color4, TexCoord, Vector3};
 
 #[derive(Debug, PartialEq, BinRead)]
 pub struct NiGeometryData {
-    pub name: NiString,
+    pub group_id: i32,
     pub num_vertices: u16,
     pub keep_flags: u8,
     pub compress_flags: u8,

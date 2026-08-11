@@ -20,4 +20,5 @@ pub enum GeomMorpherFlags {
     UpdateNormalsDisabled,
     #[br(magic = 1u16)]
     UpdateNormalsEnabled,
+    Unknown(u16),
 }

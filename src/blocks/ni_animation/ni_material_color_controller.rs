@@ -17,4 +17,5 @@ pub enum MaterialColor {
     Specular,
     #[br(magic = 3u16)]
     SelfIllum,
+    Unknown(u16),
 }
