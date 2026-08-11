@@ -12,6 +12,14 @@ pub enum NifError {
     InvalidValueError,
     #[error("invalid string")]
     StringParseError,
-    #[error("binrw error")]
+    #[error("block {index} ({block_type}) at offset {offset}, previous block started at {previous_offset}: {detail}")]
+    BlockParse {
+        index: usize,
+        block_type: String,
+        offset: u64,
+        previous_offset: u64,
+        detail: String,
+    },
+    #[error("binrw error: {0}")]
     BinReadError(#[from] binrw::error::Error),
 }

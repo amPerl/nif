@@ -35,3 +35,11 @@ impl Default for Color4 {
         }
     }
 }
+
+#[derive(Debug, PartialEq, BinRead, Clone, Copy, Default)]
+pub struct ByteColor4 {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+    pub a: u8,
+}

@@ -92,262 +92,357 @@ pub fn parse_int_prefixed_string() -> BinResult<String> {
 #[binrw::parser(reader, endian)]
 pub fn parse_blocks(strings: Vec<String>, block_type_indices: Vec<u16>) -> BinResult<Vec<Block>> {
     let mut blocks = Vec::new();
+    let mut previous_offset = 0u64;
 
     for block_type_index in block_type_indices {
         match strings.get(block_type_index as usize) {
             Some(block_type) => {
-                // println!(
-                //     "Reading block {} at {}",
-                //     block_type,
-                //     reader.seek(SeekFrom::Current(0))?
-                // );
+                let offset = reader.stream_position()?;
+                let index = blocks.len();
+                let parsed =
+                    (|| -> BinResult<Block> {
+                        Ok(match block_type.as_ref() {
+                            "NiObjectNET" => {
+                                Block::NiObjectNET(NiObjectNET::read_options(reader, endian, ())?)
+                            }
+                            "NiAvObject" => {
+                                Block::NiAvObject(NiAvObject::read_options(reader, endian, ())?)
+                            }
+                            "NiNode" => Block::NiNode(NiNode::read_options(reader, endian, ())?),
+                            "NiZBufferProperty" => Block::NiZBufferProperty(
+                                NiZBufferProperty::read_options(reader, endian, ())?,
+                            ),
+                            "NiVertexColorProperty" => Block::NiVertexColorProperty(
+                                NiVertexColorProperty::read_options(reader, endian, ())?,
+                            ),
+                            "NiTriShape" => {
+                                Block::NiTriShape(NiTriShape::read_options(reader, endian, ())?)
+                            }
+                            "NiStringExtraData" => Block::NiStringExtraData(
+                                NiStringExtraData::read_options(reader, endian, ())?,
+                            ),
+                            "NiTexturingProperty" => Block::NiTexturingProperty(
+                                NiTexturingProperty::read_options(reader, endian, ())?,
+                            ),
+                            "NiSourceTexture" => Block::NiSourceTexture(
+                                NiSourceTexture::read_options(reader, endian, ())?,
+                            ),
+                            "NiAlphaProperty" => Block::NiAlphaProperty(
+                                NiAlphaProperty::read_options(reader, endian, ())?,
+                            ),
+                            "NiMaterialProperty" => Block::NiMaterialProperty(
+                                NiMaterialProperty::read_options(reader, endian, ())?,
+                            ),
+                            "NiTriShapeData" => Block::NiTriShapeData(
+                                NiTriShapeData::read_options(reader, endian, ())?,
+                            ),
+                            "NiIntegerExtraData" => Block::NiIntegerExtraData(
+                                NiIntegerExtraData::read_options(reader, endian, ())?,
+                            ),
+                            "NiSpecularProperty" => Block::NiSpecularProperty(
+                                NiSpecularProperty::read_options(reader, endian, ())?,
+                            ),
+                            "NiSwitchNode" => {
+                                Block::NiSwitchNode(NiSwitchNode::read_options(reader, endian, ())?)
+                            }
+                            "NiLODNode" => {
+                                Block::NiLODNode(NiLODNode::read_options(reader, endian, ())?)
+                            }
+                            "NiRangeLODData" => Block::NiRangeLODData(
+                                NiRangeLODData::read_options(reader, endian, ())?,
+                            ),
+                            "NiBillboardNode" => Block::NiBillboardNode(
+                                NiBillboardNode::read_options(reader, endian, ())?,
+                            ),
+                            "NiBooleanExtraData" => Block::NiBooleanExtraData(
+                                NiBooleanExtraData::read_options(reader, endian, ())?,
+                            ),
+                            "NiCollisionData" => Block::NiCollisionData(
+                                NiCollisionData::read_options(reader, endian, ())?,
+                            ),
+                            "NiStencilProperty" => Block::NiStencilProperty(
+                                NiStencilProperty::read_options(reader, endian, ())?,
+                            ),
+                            "NiTimeController" => Block::NiTimeController(
+                                NiTimeController::read_options(reader, endian, ())?,
+                            ),
+                            "NiInterpController" => Block::NiInterpController(
+                                NiInterpController::read_options(reader, endian, ())?,
+                            ),
+                            "NiSingleInterpController" => Block::NiSingleInterpController(
+                                NiSingleInterpController::read_options(reader, endian, ())?,
+                            ),
+                            "NiFloatInterpController" => Block::NiFloatInterpController(
+                                NiFloatInterpController::read_options(reader, endian, ())?,
+                            ),
+                            "NiAlphaController" => Block::NiAlphaController(
+                                NiAlphaController::read_options(reader, endian, ())?,
+                            ),
+                            "NiInterpolator" => Block::NiInterpolator(
+                                NiInterpolator::read_options(reader, endian, ())?,
+                            ),
+                            "NiKeyBasedInterpolator" => Block::NiKeyBasedInterpolator(
+                                NiKeyBasedInterpolator::read_options(reader, endian, ())?,
+                            ),
+                            "NiFloatInterpolator" => Block::NiFloatInterpolator(
+                                NiFloatInterpolator::read_options(reader, endian, ())?,
+                            ),
+                            "NiFloatData" => {
+                                Block::NiFloatData(NiFloatData::read_options(reader, endian, ())?)
+                            }
+                            "NiParticleSystem" => Block::NiParticleSystem(
+                                NiParticleSystem::read_options(reader, endian, ())?,
+                            ),
+                            "NiPSysEmitterCtlr" => Block::NiPSysEmitterCtlr(
+                                NiPSysEmitterCtlr::read_options(reader, endian, ())?,
+                            ),
+                            "NiPSysUpdateCtlr" => Block::NiPSysUpdateCtlr(
+                                NiPSysUpdateCtlr::read_options(reader, endian, ())?,
+                            ),
+                            "NiBoolInterpolator" => Block::NiBoolInterpolator(
+                                NiBoolInterpolator::read_options(reader, endian, ())?,
+                            ),
+                            "NiBoolData" => {
+                                Block::NiBoolData(NiBoolData::read_options(reader, endian, ())?)
+                            }
+                            "NiColorData" => {
+                                Block::NiColorData(NiColorData::read_options(reader, endian, ())?)
+                            }
+                            "NiPSysData" => {
+                                Block::NiPSysData(NiPSysData::read_options(reader, endian, ())?)
+                            }
+                            "NiPSysAgeDeathModifier" => Block::NiPSysAgeDeathModifier(
+                                NiPSysAgeDeathModifier::read_options(reader, endian, ())?,
+                            ),
+                            "NiPSysBoxEmitter" => Block::NiPSysBoxEmitter(
+                                NiPSysBoxEmitter::read_options(reader, endian, ())?,
+                            ),
+                            "NiPSysSpawnModifier" => Block::NiPSysSpawnModifier(
+                                NiPSysSpawnModifier::read_options(reader, endian, ())?,
+                            ),
+                            "NiPSysGrowFadeModifier" => Block::NiPSysGrowFadeModifier(
+                                NiPSysGrowFadeModifier::read_options(reader, endian, ())?,
+                            ),
+                            "NiPSysColorModifier" => Block::NiPSysColorModifier(
+                                NiPSysColorModifier::read_options(reader, endian, ())?,
+                            ),
+                            "NiPSysRotationModifier" => Block::NiPSysRotationModifier(
+                                NiPSysRotationModifier::read_options(reader, endian, ())?,
+                            ),
+                            "NiPSysPositionModifier" => Block::NiPSysPositionModifier(
+                                NiPSysPositionModifier::read_options(reader, endian, ())?,
+                            ),
+                            "NiPSysBoundUpdateModifier" => Block::NiPSysBoundUpdateModifier(
+                                NiPSysBoundUpdateModifier::read_options(reader, endian, ())?,
+                            ),
+                            "NiPSysGravityModifier" => Block::NiPSysGravityModifier(
+                                NiPSysGravityModifier::read_options(reader, endian, ())?,
+                            ),
+                            "NiPSysColliderManager" => Block::NiPSysColliderManager(
+                                NiPSysColliderManager::read_options(reader, endian, ())?,
+                            ),
+                            "NiPSysPlanarCollider" => Block::NiPSysPlanarCollider(
+                                NiPSysPlanarCollider::read_options(reader, endian, ())?,
+                            ),
+                            "NiTransformController" => Block::NiTransformController(
+                                NiTransformController::read_options(reader, endian, ())?,
+                            ),
+                            "NiTransformInterpolator" => Block::NiTransformInterpolator(
+                                NiTransformInterpolator::read_options(reader, endian, ())?,
+                            ),
+                            "NiTransformData" => Block::NiTransformData(
+                                NiTransformData::read_options(reader, endian, ())?,
+                            ),
+                            "NiColorExtraData" => Block::NiColorExtraData(
+                                NiColorExtraData::read_options(reader, endian, ())?,
+                            ),
+                            "NiFlipController" => Block::NiFlipController(
+                                NiFlipController::read_options(reader, endian, ())?,
+                            ),
+                            "NiFloatExtraData" => Block::NiFloatExtraData(
+                                NiFloatExtraData::read_options(reader, endian, ())?,
+                            ),
+                            "NiTextureTransformController" => Block::NiTextureTransformController(
+                                NiTextureTransformController::read_options(reader, endian, ())?,
+                            ),
+                            "NiPixelData" => {
+                                Block::NiPixelData(NiPixelData::read_options(reader, endian, ())?)
+                            }
+                            "NiVisController" => Block::NiVisController(
+                                NiVisController::read_options(reader, endian, ())?,
+                            ),
+                            "NiTextureEffect" => Block::NiTextureEffect(
+                                NiTextureEffect::read_options(reader, endian, ())?,
+                            ),
+                            "NiSourceCubeMap" => Block::NiSourceCubeMap(
+                                NiSourceCubeMap::read_options(reader, endian, ())?,
+                            ),
+                            "NiShadeProperty" => Block::NiShadeProperty(
+                                NiShadeProperty::read_options(reader, endian, ())?,
+                            ),
+                            "NiGeomMorpherController" => Block::NiGeomMorpherController(
+                                NiGeomMorpherController::read_options(reader, endian, ())?,
+                            ),
+                            "NiMorphData" => {
+                                Block::NiMorphData(NiMorphData::read_options(reader, endian, ())?)
+                            }
+                            "NiDitherProperty" => Block::NiDitherProperty(
+                                NiDitherProperty::read_options(reader, endian, ())?,
+                            ),
+                            "NiMaterialColorController" => Block::NiMaterialColorController(
+                                NiMaterialColorController::read_options(reader, endian, ())?,
+                            ),
+                            "NiPoint3Interpolator" => Block::NiPoint3Interpolator(
+                                NiPoint3Interpolator::read_options(reader, endian, ())?,
+                            ),
+                            "NiPosData" => {
+                                Block::NiPosData(NiPosData::read_options(reader, endian, ())?)
+                            }
+                            "NiSkinInstance" => Block::NiSkinInstance(
+                                NiSkinInstance::read_options(reader, endian, ())?,
+                            ),
+                            "NiSkinData" => {
+                                Block::NiSkinData(NiSkinData::read_options(reader, endian, ())?)
+                            }
+                            "NiSkinPartition" => Block::NiSkinPartition(
+                                NiSkinPartition::read_options(reader, endian, ())?,
+                            ),
+                            "NiPathInterpolator" => Block::NiPathInterpolator(
+                                NiPathInterpolator::read_options(reader, endian, ())?,
+                            ),
+                            "NiTriStrips" => {
+                                Block::NiTriStrips(NiTriStrips::read_options(reader, endian, ())?)
+                            }
+                            "NiTriStripsData" => Block::NiTriStripsData(
+                                NiTriStripsData::read_options(reader, endian, ())?,
+                            ),
+                            "NiPSysMeshEmitter" => Block::NiPSysMeshEmitter(
+                                NiPSysMeshEmitter::read_options(reader, endian, ())?,
+                            ),
+                            "NiPSysCylinderEmitter" => Block::NiPSysCylinderEmitter(
+                                NiPSysCylinderEmitter::read_options(reader, endian, ())?,
+                            ),
+                            "NiPSysSphereEmitter" => Block::NiPSysSphereEmitter(
+                                NiPSysSphereEmitter::read_options(reader, endian, ())?,
+                            ),
+                            "NiPSysResetOnLoopCtlr" => Block::NiPSysResetOnLoopCtlr(
+                                NiPSysResetOnLoopCtlr::read_options(reader, endian, ())?,
+                            ),
+                            "NiDirectionalLight" => Block::NiDirectionalLight(
+                                NiDirectionalLight::read_options(reader, endian, ())?,
+                            ),
+                            "NiFloatsExtraData" => Block::NiFloatsExtraData(
+                                NiFloatsExtraData::read_options(reader, endian, ())?,
+                            ),
+                            "NiCamera" => {
+                                Block::NiCamera(NiCamera::read_options(reader, endian, ())?)
+                            }
+                            "NiPointLight" => {
+                                Block::NiPointLight(NiPointLight::read_options(reader, endian, ())?)
+                            }
+                            "NiLookAtInterpolator" => Block::NiLookAtInterpolator(
+                                NiLookAtInterpolator::read_options(reader, endian, ())?,
+                            ),
+                            "NiSpotLight" => {
+                                Block::NiSpotLight(NiSpotLight::read_options(reader, endian, ())?)
+                            }
+                            "NiWireframeProperty" => Block::NiWireframeProperty(
+                                NiWireframeProperty::read_options(reader, endian, ())?,
+                            ),
+                            "NiIntegersExtraData" => Block::NiIntegersExtraData(
+                                NiIntegersExtraData::read_options(reader, endian, ())?,
+                            ),
+                            "NiPalette" => {
+                                Block::NiPalette(NiPalette::read_options(reader, endian, ())?)
+                            }
+                            "NiSortAdjustNode" => Block::NiSortAdjustNode(
+                                NiSortAdjustNode::read_options(reader, endian, ())?,
+                            ),
+                            "NiMultiTargetTransformController" => {
+                                Block::NiMultiTargetTransformController(
+                                    NiMultiTargetTransformController::read_options(
+                                        reader,
+                                        endian,
+                                        (),
+                                    )?,
+                                )
+                            }
+                            "NiExtraDataController" => Block::NiExtraDataController(
+                                NiExtraDataController::read_options(reader, endian, ())?,
+                            ),
+                            "NiFloatExtraDataController" => Block::NiFloatExtraDataController(
+                                NiFloatExtraDataController::read_options(reader, endian, ())?,
+                            ),
+                            "NiLightDimmerController" => Block::NiLightDimmerController(
+                                NiLightDimmerController::read_options(reader, endian, ())?,
+                            ),
+                            "NiPSysModifierFloatCtlr" => Block::NiPSysModifierFloatCtlr(
+                                NiPSysModifierFloatCtlr::read_options(reader, endian, ())?,
+                            ),
+                            "NiPSysInitialRotAngleCtlr" => Block::NiPSysInitialRotAngleCtlr(
+                                NiPSysInitialRotAngleCtlr::read_options(reader, endian, ())?,
+                            ),
+                            "NiMeshParticleSystem" => Block::NiMeshParticleSystem(
+                                NiMeshParticleSystem::read_options(reader, endian, ())?,
+                            ),
+                            "NiBoneLODController" => Block::NiBoneLODController(
+                                NiBoneLODController::read_options(reader, endian, ())?,
+                            ),
+                            "NiMeshPSysData" => Block::NiMeshPSysData(
+                                NiMeshPSysData::read_options(reader, endian, ())?,
+                            ),
+                            "NiPSysModifierBoolCtlr" => Block::NiPSysModifierBoolCtlr(
+                                NiPSysModifierBoolCtlr::read_options(reader, endian, ())?,
+                            ),
+                            "NiPSysModifierActiveCtlr" => Block::NiPSysModifierActiveCtlr(
+                                NiPSysModifierActiveCtlr::read_options(reader, endian, ())?,
+                            ),
+                            "NiPSysMeshUpdateModifier" => Block::NiPSysMeshUpdateModifier(
+                                NiPSysMeshUpdateModifier::read_options(reader, endian, ())?,
+                            ),
+                            "NiBoolTimelineInterpolator" => Block::NiBoolTimelineInterpolator(
+                                NiBoolTimelineInterpolator::read_options(reader, endian, ())?,
+                            ),
+                            "NiPSysDragModifier" => Block::NiPSysDragModifier(
+                                NiPSysDragModifier::read_options(reader, endian, ())?,
+                            ),
+                            "NiTriShapeDynamicData" => Block::NiTriShapeDynamicData(
+                                NiTriShapeDynamicData::read_options(reader, endian, ())?,
+                            ),
+                            "NiAmbientLight" => Block::NiAmbientLight(
+                                NiAmbientLight::read_options(reader, endian, ())?,
+                            ),
+                            _ => {
+                                return Err(binrw::Error::Custom {
+                                    pos: reader.stream_position()?,
+                                    err: Box::new(NifError::UnknownBlock(
+                                        index,
+                                        block_type.clone(),
+                                    )),
+                                });
+                            }
+                        })
+                    })();
 
-                let block = match block_type.as_ref() {
-                    "NiObjectNET" => {
-                        Block::NiObjectNET(NiObjectNET::read_options(reader, endian, ())?)
+                let block = match parsed {
+                    Ok(block) => block,
+                    Err(e) if matches!(e.root_cause(), binrw::Error::Custom { .. }) => {
+                        return Err(e);
                     }
-                    "NiAvObject" => {
-                        Block::NiAvObject(NiAvObject::read_options(reader, endian, ())?)
-                    }
-                    "NiNode" => Block::NiNode(NiNode::read_options(reader, endian, ())?),
-                    "NiZBufferProperty" => Block::NiZBufferProperty(
-                        NiZBufferProperty::read_options(reader, endian, ())?,
-                    ),
-                    "NiVertexColorProperty" => Block::NiVertexColorProperty(
-                        NiVertexColorProperty::read_options(reader, endian, ())?,
-                    ),
-                    "NiTriShape" => {
-                        Block::NiTriShape(NiTriShape::read_options(reader, endian, ())?)
-                    }
-                    "NiStringExtraData" => Block::NiStringExtraData(
-                        NiStringExtraData::read_options(reader, endian, ())?,
-                    ),
-                    "NiTexturingProperty" => Block::NiTexturingProperty(
-                        NiTexturingProperty::read_options(reader, endian, ())?,
-                    ),
-                    "NiSourceTexture" => {
-                        Block::NiSourceTexture(NiSourceTexture::read_options(reader, endian, ())?)
-                    }
-                    "NiAlphaProperty" => {
-                        Block::NiAlphaProperty(NiAlphaProperty::read_options(reader, endian, ())?)
-                    }
-                    "NiMaterialProperty" => Block::NiMaterialProperty(
-                        NiMaterialProperty::read_options(reader, endian, ())?,
-                    ),
-                    "NiTriShapeData" => {
-                        Block::NiTriShapeData(NiTriShapeData::read_options(reader, endian, ())?)
-                    }
-                    "NiIntegerExtraData" => Block::NiIntegerExtraData(
-                        NiIntegerExtraData::read_options(reader, endian, ())?,
-                    ),
-                    "NiSpecularProperty" => Block::NiSpecularProperty(
-                        NiSpecularProperty::read_options(reader, endian, ())?,
-                    ),
-                    "NiSwitchNode" => {
-                        Block::NiSwitchNode(NiSwitchNode::read_options(reader, endian, ())?)
-                    }
-                    "NiLODNode" => Block::NiLODNode(NiLODNode::read_options(reader, endian, ())?),
-                    "NiRangeLODData" => {
-                        Block::NiRangeLODData(NiRangeLODData::read_options(reader, endian, ())?)
-                    }
-                    "NiBillboardNode" => {
-                        Block::NiBillboardNode(NiBillboardNode::read_options(reader, endian, ())?)
-                    }
-                    "NiCollisionData" => {
-                        Block::NiCollisionData(NiCollisionData::read_options(reader, endian, ())?)
-                    }
-                    "NiStencilProperty" => Block::NiStencilProperty(
-                        NiStencilProperty::read_options(reader, endian, ())?,
-                    ),
-                    "NiTimeController" => {
-                        Block::NiTimeController(NiTimeController::read_options(reader, endian, ())?)
-                    }
-                    "NiInterpController" => Block::NiInterpController(
-                        NiInterpController::read_options(reader, endian, ())?,
-                    ),
-                    "NiSingleInterpController" => Block::NiSingleInterpController(
-                        NiSingleInterpController::read_options(reader, endian, ())?,
-                    ),
-                    "NiFloatInterpController" => Block::NiFloatInterpController(
-                        NiFloatInterpController::read_options(reader, endian, ())?,
-                    ),
-                    "NiAlphaController" => Block::NiAlphaController(
-                        NiAlphaController::read_options(reader, endian, ())?,
-                    ),
-                    "NiInterpolator" => {
-                        Block::NiInterpolator(NiInterpolator::read_options(reader, endian, ())?)
-                    }
-                    "NiKeyBasedInterpolator" => Block::NiKeyBasedInterpolator(
-                        NiKeyBasedInterpolator::read_options(reader, endian, ())?,
-                    ),
-                    "NiFloatInterpolator" => Block::NiFloatInterpolator(
-                        NiFloatInterpolator::read_options(reader, endian, ())?,
-                    ),
-                    "NiFloatData" => {
-                        Block::NiFloatData(NiFloatData::read_options(reader, endian, ())?)
-                    }
-                    "NiParticleSystem" => {
-                        Block::NiParticleSystem(NiParticleSystem::read_options(reader, endian, ())?)
-                    }
-                    "NiPSysEmitterCtlr" => Block::NiPSysEmitterCtlr(
-                        NiPSysEmitterCtlr::read_options(reader, endian, ())?,
-                    ),
-                    "NiPSysUpdateCtlr" => {
-                        Block::NiPSysUpdateCtlr(NiPSysUpdateCtlr::read_options(reader, endian, ())?)
-                    }
-                    "NiBoolInterpolator" => Block::NiBoolInterpolator(
-                        NiBoolInterpolator::read_options(reader, endian, ())?,
-                    ),
-                    "NiBoolData" => {
-                        Block::NiBoolData(NiBoolData::read_options(reader, endian, ())?)
-                    }
-                    "NiColorData" => {
-                        Block::NiColorData(NiColorData::read_options(reader, endian, ())?)
-                    }
-                    "NiPSysData" => {
-                        Block::NiPSysData(NiPSysData::read_options(reader, endian, ())?)
-                    }
-                    "NiPSysAgeDeathModifier" => Block::NiPSysAgeDeathModifier(
-                        NiPSysAgeDeathModifier::read_options(reader, endian, ())?,
-                    ),
-                    "NiPSysBoxEmitter" => {
-                        Block::NiPSysBoxEmitter(NiPSysBoxEmitter::read_options(reader, endian, ())?)
-                    }
-                    "NiPSysSpawnModifier" => Block::NiPSysSpawnModifier(
-                        NiPSysSpawnModifier::read_options(reader, endian, ())?,
-                    ),
-                    "NiPSysGrowFadeModifier" => Block::NiPSysGrowFadeModifier(
-                        NiPSysGrowFadeModifier::read_options(reader, endian, ())?,
-                    ),
-                    "NiPSysColorModifier" => Block::NiPSysColorModifier(
-                        NiPSysColorModifier::read_options(reader, endian, ())?,
-                    ),
-                    "NiPSysRotationModifier" => Block::NiPSysRotationModifier(
-                        NiPSysRotationModifier::read_options(reader, endian, ())?,
-                    ),
-                    "NiPSysPositionModifier" => Block::NiPSysPositionModifier(
-                        NiPSysPositionModifier::read_options(reader, endian, ())?,
-                    ),
-                    "NiPSysBoundUpdateModifier" => Block::NiPSysBoundUpdateModifier(
-                        NiPSysBoundUpdateModifier::read_options(reader, endian, ())?,
-                    ),
-                    "NiPSysGravityModifier" => Block::NiPSysGravityModifier(
-                        NiPSysGravityModifier::read_options(reader, endian, ())?,
-                    ),
-                    "NiPSysColliderManager" => Block::NiPSysColliderManager(
-                        NiPSysColliderManager::read_options(reader, endian, ())?,
-                    ),
-                    "NiPSysPlanarCollider" => Block::NiPSysPlanarCollider(
-                        NiPSysPlanarCollider::read_options(reader, endian, ())?,
-                    ),
-                    "NiTransformController" => Block::NiTransformController(
-                        NiTransformController::read_options(reader, endian, ())?,
-                    ),
-                    "NiTransformInterpolator" => Block::NiTransformInterpolator(
-                        NiTransformInterpolator::read_options(reader, endian, ())?,
-                    ),
-                    "NiTransformData" => {
-                        Block::NiTransformData(NiTransformData::read_options(reader, endian, ())?)
-                    }
-                    "NiColorExtraData" => {
-                        Block::NiColorExtraData(NiColorExtraData::read_options(reader, endian, ())?)
-                    }
-                    "NiFlipController" => {
-                        Block::NiFlipController(NiFlipController::read_options(reader, endian, ())?)
-                    }
-                    "NiFloatExtraData" => {
-                        Block::NiFloatExtraData(NiFloatExtraData::read_options(reader, endian, ())?)
-                    }
-                    "NiTextureTransformController" => Block::NiTextureTransformController(
-                        NiTextureTransformController::read_options(reader, endian, ())?,
-                    ),
-                    "NiPixelData" => {
-                        Block::NiPixelData(NiPixelData::read_options(reader, endian, ())?)
-                    }
-                    "NiVisController" => {
-                        Block::NiVisController(NiVisController::read_options(reader, endian, ())?)
-                    }
-                    "NiTextureEffect" => {
-                        Block::NiTextureEffect(NiTextureEffect::read_options(reader, endian, ())?)
-                    }
-                    "NiSourceCubeMap" => {
-                        Block::NiSourceCubeMap(NiSourceCubeMap::read_options(reader, endian, ())?)
-                    }
-                    "NiShadeProperty" => {
-                        Block::NiShadeProperty(NiShadeProperty::read_options(reader, endian, ())?)
-                    }
-                    "NiGeomMorpherController" => Block::NiGeomMorpherController(
-                        NiGeomMorpherController::read_options(reader, endian, ())?,
-                    ),
-                    "NiMorphData" => {
-                        Block::NiMorphData(NiMorphData::read_options(reader, endian, ())?)
-                    }
-                    "NiDitherProperty" => {
-                        Block::NiDitherProperty(NiDitherProperty::read_options(reader, endian, ())?)
-                    }
-                    "NiMaterialColorController" => Block::NiMaterialColorController(
-                        NiMaterialColorController::read_options(reader, endian, ())?,
-                    ),
-                    "NiPoint3Interpolator" => Block::NiPoint3Interpolator(
-                        NiPoint3Interpolator::read_options(reader, endian, ())?,
-                    ),
-                    "NiPosData" => Block::NiPosData(NiPosData::read_options(reader, endian, ())?),
-                    "NiSkinInstance" => {
-                        Block::NiSkinInstance(NiSkinInstance::read_options(reader, endian, ())?)
-                    }
-                    "NiSkinData" => {
-                        Block::NiSkinData(NiSkinData::read_options(reader, endian, ())?)
-                    }
-                    "NiSkinPartition" => {
-                        Block::NiSkinPartition(NiSkinPartition::read_options(reader, endian, ())?)
-                    }
-                    "NiPathInterpolator" => Block::NiPathInterpolator(
-                        NiPathInterpolator::read_options(reader, endian, ())?,
-                    ),
-                    "NiTriStrips" => {
-                        Block::NiTriStrips(NiTriStrips::read_options(reader, endian, ())?)
-                    }
-                    "NiTriStripsData" => {
-                        Block::NiTriStripsData(NiTriStripsData::read_options(reader, endian, ())?)
-                    }
-                    "NiPSysMeshEmitter" => Block::NiPSysMeshEmitter(
-                        NiPSysMeshEmitter::read_options(reader, endian, ())?,
-                    ),
-                    "NiPSysCylinderEmitter" => Block::NiPSysCylinderEmitter(
-                        NiPSysCylinderEmitter::read_options(reader, endian, ())?,
-                    ),
-                    "NiPSysSphereEmitter" => Block::NiPSysSphereEmitter(
-                        NiPSysSphereEmitter::read_options(reader, endian, ())?,
-                    ),
-                    "NiPSysResetOnLoopCtlr" => Block::NiPSysResetOnLoopCtlr(
-                        NiPSysResetOnLoopCtlr::read_options(reader, endian, ())?,
-                    ),
-                    "NiDirectionalLight" => Block::NiDirectionalLight(
-                        NiDirectionalLight::read_options(reader, endian, ())?,
-                    ),
-                    "NiFloatsExtraData" => Block::NiFloatsExtraData(
-                        NiFloatsExtraData::read_options(reader, endian, ())?,
-                    ),
-                    "NiCamera" => Block::NiCamera(NiCamera::read_options(reader, endian, ())?),
-                    "NiPointLight" => {
-                        Block::NiPointLight(NiPointLight::read_options(reader, endian, ())?)
-                    }
-                    "NiLookAtInterpolator" => Block::NiLookAtInterpolator(
-                        NiLookAtInterpolator::read_options(reader, endian, ())?,
-                    ),
-                    "NiSpotLight" => {
-                        Block::NiSpotLight(NiSpotLight::read_options(reader, endian, ())?)
-                    }
-                    "NiAmbientLight" => {
-                        Block::NiAmbientLight(NiAmbientLight::read_options(reader, endian, ())?)
-                    }
-                    _ => {
+                    Err(e) => {
                         return Err(binrw::Error::Custom {
-                            pos: reader.stream_position()?,
-                            err: Box::new(NifError::UnknownBlock(blocks.len(), block_type.clone())),
+                            pos: offset,
+                            err: Box::new(NifError::BlockParse {
+                                index,
+                                block_type: block_type.clone(),
+                                offset,
+                                previous_offset,
+                                detail: e.to_string(),
+                            }),
                         });
                     }
                 };
+                previous_offset = offset;
                 blocks.push(block);
             }
             None => {
