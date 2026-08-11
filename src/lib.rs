@@ -8,6 +8,7 @@ pub mod blocks;
 pub mod common;
 pub mod error;
 pub mod header;
+pub mod walk;
 
 #[cfg(feature = "glam")]
 pub use glam;

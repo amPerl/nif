@@ -20,7 +20,7 @@ impl From<Vector2> for glam::Vec2 {
     }
 }
 
-#[derive(Debug, PartialEq, BinRead, Clone)]
+#[derive(Debug, PartialEq, BinRead, Clone, Copy, Default)]
 pub struct Vector3 {
     pub x: f32,
     pub y: f32,

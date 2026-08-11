@@ -185,88 +185,106 @@ impl Block {
         }
     }
 
-    pub fn child_refs(&self) -> Option<Vec<BlockRef>> {
-        let child_refs = match self {
-            Block::NiNode(block) => Some(&block.child_refs),
-            Block::NiSwitchNode(block) => Some(&block.child_refs),
-            Block::NiBillboardNode(block) => Some(&block.child_refs),
-            Block::NiLODNode(block) => Some(&block.child_refs),
-            _ => None,
+    pub fn object_net(&self) -> Option<&NiObjectNET> {
+        let obj: &NiObjectNET = match self {
+            Block::NiObjectNET(b) => b,
+            Block::NiAvObject(b) => b,
+            Block::NiNode(b) => b,
+            Block::NiSwitchNode(b) => b,
+            Block::NiLODNode(b) => b,
+            Block::NiBillboardNode(b) => b,
+            Block::NiTriShape(b) => b,
+            Block::NiTriStrips(b) => b,
+            Block::NiParticleSystem(b) => b,
+            Block::NiTextureEffect(b) => b,
+            Block::NiCamera(b) => b,
+            Block::NiPointLight(b) => b,
+            Block::NiSpotLight(b) => b,
+            Block::NiAmbientLight(b) => b,
+            Block::NiDirectionalLight(b) => b,
+            Block::NiZBufferProperty(b) => b,
+            Block::NiVertexColorProperty(b) => b,
+            Block::NiTexturingProperty(b) => b,
+            Block::NiSourceTexture(b) => b,
+            Block::NiSourceCubeMap(b) => b,
+            Block::NiAlphaProperty(b) => b,
+            Block::NiMaterialProperty(b) => b,
+            Block::NiSpecularProperty(b) => b,
+            Block::NiStencilProperty(b) => b,
+            Block::NiShadeProperty(b) => b,
+            Block::NiDitherProperty(b) => b,
+            _ => return None,
         };
+        Some(obj)
+    }
 
-        Some(child_refs?.clone())
+    pub fn av_object(&self) -> Option<&NiAvObject> {
+        let obj: &NiAvObject = match self {
+            Block::NiAvObject(b) => b,
+            Block::NiNode(b) => b,
+            Block::NiSwitchNode(b) => b,
+            Block::NiLODNode(b) => b,
+            Block::NiBillboardNode(b) => b,
+            Block::NiTriShape(b) => b,
+            Block::NiTriStrips(b) => b,
+            Block::NiParticleSystem(b) => b,
+            Block::NiTextureEffect(b) => b,
+            Block::NiCamera(b) => b,
+            Block::NiPointLight(b) => b,
+            Block::NiSpotLight(b) => b,
+            Block::NiAmbientLight(b) => b,
+            Block::NiDirectionalLight(b) => b,
+            _ => return None,
+        };
+        Some(obj)
+    }
+
+    pub fn node(&self) -> Option<&NiNode> {
+        let obj: &NiNode = match self {
+            Block::NiNode(b) => b,
+            Block::NiSwitchNode(b) => b,
+            Block::NiLODNode(b) => b,
+            Block::NiBillboardNode(b) => b,
+            _ => return None,
+        };
+        Some(obj)
+    }
+
+    pub fn child_refs(&self) -> Option<&[BlockRef]> {
+        Some(&self.node()?.child_refs)
     }
 
     pub fn children<'b>(&self, blocks: &'b [Block]) -> Option<Vec<(BlockRef, &'b Block)>> {
         Some(
             self.child_refs()?
-                .into_iter()
-                .filter_map(|r| r.get(blocks).map(|b| (r, b)))
+                .iter()
+                .filter_map(|r| r.get(blocks).map(|b| (*r, b)))
                 .collect(),
         )
     }
 
-    pub fn property_refs(&self) -> Option<Vec<BlockRef>> {
-        let property_refs = match self {
-            Block::NiAvObject(block) => Some(&block.property_refs),
-            Block::NiTextureEffect(block) => Some(&block.property_refs),
-            Block::NiDirectionalLight(block) => Some(&block.property_refs),
-            Block::NiParticleSystem(block) => Some(&block.property_refs),
-            Block::NiTriShape(block) => Some(&block.property_refs),
-            Block::NiTriStrips(block) => Some(&block.property_refs),
-            Block::NiNode(block) => Some(&block.property_refs),
-            Block::NiSwitchNode(block) => Some(&block.property_refs),
-            Block::NiBillboardNode(block) => Some(&block.property_refs),
-            Block::NiLODNode(block) => Some(&block.property_refs),
-            _ => None,
-        };
-
-        Some(property_refs?.clone())
+    pub fn property_refs(&self) -> Option<&[BlockRef]> {
+        Some(&self.av_object()?.property_refs)
     }
 
     pub fn properties<'b>(&self, blocks: &'b [Block]) -> Option<Vec<(BlockRef, &'b Block)>> {
         Some(
             self.property_refs()?
-                .into_iter()
-                .filter_map(|r| r.get(blocks).map(|b| (r, b)))
+                .iter()
+                .filter_map(|r| r.get(blocks).map(|b| (*r, b)))
                 .collect(),
         )
     }
 
-    pub fn extra_data_refs(&self) -> Option<Vec<BlockRef>> {
-        let extra_data_refs = match self {
-            Block::NiObjectNET(block) => Some(&block.extra_data_refs),
-            Block::NiAvObject(block) => Some(&block.extra_data_refs),
-            Block::NiNode(block) => Some(&block.extra_data_refs),
-            Block::NiTriShape(block) => Some(&block.extra_data_refs),
-            Block::NiSwitchNode(block) => Some(&block.extra_data_refs),
-            Block::NiLODNode(block) => Some(&block.extra_data_refs),
-            Block::NiBillboardNode(block) => Some(&block.extra_data_refs),
-            Block::NiParticleSystem(block) => Some(&block.extra_data_refs),
-            Block::NiTextureEffect(block) => Some(&block.extra_data_refs),
-            Block::NiTriStrips(block) => Some(&block.extra_data_refs),
-            Block::NiDirectionalLight(block) => Some(&block.extra_data_refs),
-            Block::NiZBufferProperty(block) => Some(&block.extra_data_refs),
-            Block::NiVertexColorProperty(block) => Some(&block.extra_data_refs),
-            Block::NiTexturingProperty(block) => Some(&block.extra_data_refs),
-            Block::NiSourceTexture(block) => Some(&block.extra_data_refs),
-            Block::NiAlphaProperty(block) => Some(&block.extra_data_refs),
-            Block::NiMaterialProperty(block) => Some(&block.extra_data_refs),
-            Block::NiSpecularProperty(block) => Some(&block.extra_data_refs),
-            Block::NiStencilProperty(block) => Some(&block.extra_data_refs),
-            Block::NiShadeProperty(block) => Some(&block.extra_data_refs),
-            Block::NiDitherProperty(block) => Some(&block.extra_data_refs),
-            _ => None,
-        };
-
-        Some(extra_data_refs?.clone())
+    pub fn extra_data_refs(&self) -> Option<&[BlockRef]> {
+        Some(&self.object_net()?.extra_data_refs)
     }
 
     pub fn extra_data<'b>(&self, blocks: &'b [Block]) -> Option<Vec<(BlockRef, &'b Block)>> {
         Some(
             self.extra_data_refs()?
-                .into_iter()
-                .filter_map(|r| r.get(blocks).map(|b| (r, b)))
+                .iter()
+                .filter_map(|r| r.get(blocks).map(|b| (*r, b)))
                 .collect(),
         )
     }
