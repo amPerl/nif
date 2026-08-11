@@ -33,14 +33,14 @@ pub struct SkinPartition {
     pub strip_lengths: Vec<u16>,
     #[br(map = |x: u8| x > 0)]
     pub has_faces: bool,
-    #[br(if(has_faces && num_strips != 0), count = num_strips * strip_lengths.iter().sum::<u16>())]
+    #[br(if(has_faces && num_strips != 0), count = strip_lengths.iter().map(|l| *l as usize).sum::<usize>())]
     pub strips: Option<Vec<u16>>,
     #[br(if(has_faces && num_strips == 0), count = num_triangles)]
     pub triangles: Option<Vec<Triangle>>,
 
     #[br(map = |x: u8| x > 0)]
     pub has_bone_indices: bool,
-    #[br(if(has_bone_indices), count = num_vertices * num_weights_per_vertex)]
+    #[br(if(has_bone_indices), count = num_vertices as usize * num_weights_per_vertex as usize)]
     pub bone_indices: Option<Vec<u8>>,
 }
 

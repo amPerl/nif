@@ -2,6 +2,14 @@ use super::Vector3;
 use binrw::BinRead;
 
 #[derive(Debug, PartialEq, BinRead, Clone, Copy)]
+pub struct Matrix22 {
+    pub m11: f32,
+    pub m21: f32,
+    pub m12: f32,
+    pub m22: f32,
+}
+
+#[derive(Debug, PartialEq, BinRead, Clone, Copy)]
 pub struct Matrix33 {
     pub column_major: [f32; 9],
 }

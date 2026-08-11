@@ -1,5 +1,5 @@
 use super::ni_object_net::NiObjectNET;
-use crate::common::{BlockRef, TexCoord};
+use crate::common::{BlockRef, Matrix22, TexCoord};
 
 use binrw::BinRead;
 
@@ -34,15 +34,36 @@ pub struct NiTexturingProperty {
     #[br(if(has_glow_texture))]
     pub glow_texture: Option<TexDesc>,
 
-    #[br(map = |x: u8| x > 0)]
+    #[br(if(texture_count > 5), map = |x: Option<u8>| x.is_some_and(|x| x > 0))]
     pub has_bump_map_texture: bool,
     #[br(if(has_bump_map_texture))]
     pub bump_map_texture: Option<TexDesc>,
+    #[br(if(has_bump_map_texture))]
+    pub bump_map_luma_scale: Option<f32>,
+    #[br(if(has_bump_map_texture))]
+    pub bump_map_luma_offset: Option<f32>,
+    #[br(if(has_bump_map_texture))]
+    pub bump_map_matrix: Option<Matrix22>,
 
-    #[br(map = |x: u8| x > 0)]
+    #[br(if(texture_count > 6), map = |x: Option<u8>| x.is_some_and(|x| x > 0))]
     pub has_decal0_texture: bool,
     #[br(if(has_decal0_texture))]
     pub decal0_texture: Option<TexDesc>,
+
+    #[br(if(texture_count > 7), map = |x: Option<u8>| x.is_some_and(|x| x > 0))]
+    pub has_decal1_texture: bool,
+    #[br(if(has_decal1_texture))]
+    pub decal1_texture: Option<TexDesc>,
+
+    #[br(if(texture_count > 8), map = |x: Option<u8>| x.is_some_and(|x| x > 0))]
+    pub has_decal2_texture: bool,
+    #[br(if(has_decal2_texture))]
+    pub decal2_texture: Option<TexDesc>,
+
+    #[br(if(texture_count > 9), map = |x: Option<u8>| x.is_some_and(|x| x > 0))]
+    pub has_decal3_texture: bool,
+    #[br(if(has_decal3_texture))]
+    pub decal3_texture: Option<TexDesc>,
 
     pub num_shader_textures: u32,
     #[br(count=num_shader_textures)]
@@ -74,7 +95,8 @@ pub struct ShaderTexDesc {
     pub has_map: bool,
     #[br(if(has_map))]
     pub map: Option<TexDesc>,
-    pub map_id: u32,
+    #[br(if(has_map))]
+    pub map_id: Option<u32>,
 }
 
 #[derive(Debug, PartialEq, BinRead)]
