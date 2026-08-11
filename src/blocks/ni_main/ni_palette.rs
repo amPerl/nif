@@ -6,6 +6,6 @@ pub struct NiPalette {
     #[br(map = |x: u8| x > 0)]
     pub has_alpha: bool,
     pub num_entries: u32,
-    #[br(count = if num_entries == 16 { 16 } else { 256 })]
+    #[br(count = num_entries)]
     pub palette: Vec<ByteColor4>,
 }

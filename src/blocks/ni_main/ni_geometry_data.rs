@@ -47,3 +47,38 @@ pub struct UvSet {
     #[br(count = num_vertices)]
     pub uvs: Vec<TexCoord>,
 }
+
+impl NiGeometryData {
+    pub fn data_flags(&self) -> u16 {
+        (self.tspace_flag as u16) << 8 | self.num_uv_sets as u16
+    }
+    pub fn uv_set_count(&self) -> u16 {
+        self.data_flags() & 0x003F
+    }
+    pub fn havok_material(&self) -> u16 {
+        (self.data_flags() & 0x0FC0) >> 6
+    }
+    pub fn nbt_method(&self) -> u16 {
+        (self.data_flags() & 0xF000) >> 12
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{blocks::Block, Nif};
+    use std::io::Cursor;
+
+    #[test]
+    fn uv_set_count_agrees_with_parsed_uv_sets() {
+        for n in 1..=26 {
+            let bytes = std::fs::read(format!("tests/{}.nif", n)).unwrap();
+            let nif = Nif::parse(&mut Cursor::new(bytes)).unwrap();
+            for block in &nif.blocks {
+                if let Block::NiTriShapeData(d) = block {
+                    assert_eq!(d.uv_set_count() as usize, d.uv_sets.len(), "file {}", n);
+                    assert_eq!(d.havok_material(), 0, "file {}", n);
+                }
+            }
+        }
+    }
+}

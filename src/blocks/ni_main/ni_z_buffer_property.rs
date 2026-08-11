@@ -36,3 +36,12 @@ impl std::ops::Deref for NiZBufferProperty {
         &self.base
     }
 }
+
+impl NiZBufferProperty {
+    pub fn depth_test(&self) -> bool {
+        self.flags & 0x0001 != 0
+    }
+    pub fn depth_write(&self) -> bool {
+        self.flags & 0x0002 != 0
+    }
+}

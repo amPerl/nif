@@ -18,3 +18,15 @@ pub struct NiLookAtInterpolator {
     pub interpolator_roll: BlockRef,
     pub interpolator_scale: BlockRef,
 }
+
+impl NiLookAtInterpolator {
+    pub fn flip(&self) -> bool {
+        self.flags & 0x0001 != 0
+    }
+    pub fn look_y_axis(&self) -> bool {
+        self.flags & 0x0002 != 0
+    }
+    pub fn look_z_axis(&self) -> bool {
+        self.flags & 0x0004 != 0
+    }
+}

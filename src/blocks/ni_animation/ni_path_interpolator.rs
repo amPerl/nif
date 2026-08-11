@@ -15,3 +15,27 @@ pub struct NiPathInterpolator {
     pub path_data_ref: BlockRef,
     pub percent_data_ref: BlockRef,
 }
+
+impl NiPathInterpolator {
+    pub fn cv_data_needs_update(&self) -> bool {
+        self.flags & 0x0001 != 0
+    }
+    pub fn curve_type_open(&self) -> bool {
+        self.flags & 0x0002 != 0
+    }
+    pub fn allow_flip(&self) -> bool {
+        self.flags & 0x0004 != 0
+    }
+    pub fn bank(&self) -> bool {
+        self.flags & 0x0008 != 0
+    }
+    pub fn constant_velocity(&self) -> bool {
+        self.flags & 0x0010 != 0
+    }
+    pub fn follow(&self) -> bool {
+        self.flags & 0x0020 != 0
+    }
+    pub fn flip(&self) -> bool {
+        self.flags & 0x0040 != 0
+    }
+}

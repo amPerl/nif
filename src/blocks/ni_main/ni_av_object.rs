@@ -23,3 +23,9 @@ impl std::ops::Deref for NiAvObject {
         &self.base
     }
 }
+
+impl NiAvObject {
+    pub fn is_hidden(&self) -> bool {
+        self.flags & 0x0001 != 0
+    }
+}
