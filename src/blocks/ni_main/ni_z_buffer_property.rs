@@ -26,7 +26,7 @@ pub enum ZCompareMode {
     ZCompGreaterEqual,
     #[br(magic = 7u32)]
     ZCompNever,
-    Unknown,
+    Unknown(u32),
 }
 
 impl std::ops::Deref for NiZBufferProperty {

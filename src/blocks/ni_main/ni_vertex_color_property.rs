@@ -17,7 +17,7 @@ pub enum VertMode {
     SourceEmissive,
     #[br(magic = 2u32)]
     SourceAmbientDiffuse,
-    Unknown,
+    Unknown(u32),
 }
 
 #[derive(Debug, PartialEq, BinRead)]
@@ -26,7 +26,7 @@ pub enum LightMode {
     Emissive,
     #[br(magic = 1u32)]
     EmissiveAmbientDiffuse,
-    Unknown,
+    Unknown(u32),
 }
 
 impl std::ops::Deref for NiVertexColorProperty {

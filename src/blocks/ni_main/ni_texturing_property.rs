@@ -89,7 +89,7 @@ pub enum ApplyMode {
     Hilight,
     #[br(magic = 4u32)]
     Hilight2,
-    Unknown,
+    Unknown(u32),
 }
 
 #[derive(Debug, PartialEq, BinRead)]
@@ -102,7 +102,7 @@ pub enum TexClampMode {
     WrapSClampT,
     #[br(magic = 3u32)]
     WrapSWrapT,
-    Unknown,
+    Unknown(u32),
 }
 
 #[derive(Debug, PartialEq, BinRead)]
@@ -119,7 +119,7 @@ pub enum TexFilterMode {
     NearestMipLerp,
     #[br(magic = 5u32)]
     BilerpMipNearest,
-    Unknown,
+    Unknown(u32),
 }
 
 impl std::ops::Deref for NiTexturingProperty {

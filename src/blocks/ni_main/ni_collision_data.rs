@@ -32,7 +32,7 @@ pub enum BoundingVolumeData {
     HalfSpace(HalfSpaceBV),
     #[br(magic = 0xFFFFFFFFu32)]
     Default,
-    Unknown,
+    Unknown(u32),
 }
 
 #[derive(Debug, PartialEq, BinRead)]

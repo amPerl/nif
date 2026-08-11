@@ -38,7 +38,7 @@ pub enum PixelLayout {
     Palettised4,
     #[br(magic = 6u32)]
     Default,
-    Unknown,
+    Unknown(u32),
 }
 
 #[derive(Debug, PartialEq, BinRead)]
@@ -49,7 +49,7 @@ pub enum MipMapFormat {
     Yes,
     #[br(magic = 2u32)]
     Default,
-    Unknown,
+    Unknown(u32),
 }
 
 #[derive(Debug, PartialEq, BinRead)]
@@ -62,7 +62,7 @@ pub enum AlphaFormat {
     Smooth,
     #[br(magic = 3u32)]
     Default,
-    Unknown,
+    Unknown(u32),
 }
 
 impl std::ops::Deref for NiSourceTexture {

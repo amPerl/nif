@@ -56,5 +56,5 @@ pub enum PixelFormat {
     Fmt4Ch, // Generic descriptor for formats with 4 components.
     #[br(magic = 15u32)]
     FmtDepthStencil, // Indicates the NiPixelFormat is meant to be used on a depth/stencil surface.
-    Unknown,
+    Unknown(u32),
 }
