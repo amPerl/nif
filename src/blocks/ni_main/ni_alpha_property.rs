@@ -1,7 +1,7 @@
 use super::ni_object_net::NiObjectNET;
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct NiAlphaProperty {
     pub base: NiObjectNET,
     pub flags: u16,
@@ -76,48 +76,48 @@ impl std::ops::Deref for NiAlphaProperty {
     }
 }
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub enum TestFunction {
-    #[br(magic = 0u32)]
+    #[brw(magic = 0u32)]
     TestAlways, // Always true. Buffer is ignored.
-    #[br(magic = 1u32)]
+    #[brw(magic = 1u32)]
     TestLess, // VRef ‹ VBuf
-    #[br(magic = 2u32)]
+    #[brw(magic = 2u32)]
     TestEqual, // VRef = VBuf
-    #[br(magic = 3u32)]
+    #[brw(magic = 3u32)]
     TestLessEqual, // VRef ≤ VBuf
-    #[br(magic = 4u32)]
+    #[brw(magic = 4u32)]
     TestGreater, // VRef › VBuf
-    #[br(magic = 5u32)]
+    #[brw(magic = 5u32)]
     TestNotEqual, // VRef ≠ VBuf
-    #[br(magic = 6u32)]
+    #[brw(magic = 6u32)]
     TestGreaterEqual, // VRef ≥ VBuf
-    #[br(magic = 7u32)]
+    #[brw(magic = 7u32)]
     TestNever, // Always false. Ref value is ignored.
 }
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub enum AlphaFunction {
-    #[br(magic = 0u32)]
+    #[brw(magic = 0u32)]
     One,
-    #[br(magic = 1u32)]
+    #[brw(magic = 1u32)]
     Zero,
-    #[br(magic = 2u32)]
+    #[brw(magic = 2u32)]
     SrcColor,
-    #[br(magic = 3u32)]
+    #[brw(magic = 3u32)]
     InvSrcColor,
-    #[br(magic = 4u32)]
+    #[brw(magic = 4u32)]
     DestColor,
-    #[br(magic = 5u32)]
+    #[brw(magic = 5u32)]
     InvDestColor,
-    #[br(magic = 6u32)]
+    #[brw(magic = 6u32)]
     SrcAlpha,
-    #[br(magic = 7u32)]
+    #[brw(magic = 7u32)]
     InvSrcAlpha,
-    #[br(magic = 8u32)]
+    #[brw(magic = 8u32)]
     DestAlpha,
-    #[br(magic = 9u32)]
+    #[brw(magic = 9u32)]
     InvDestAlpha,
-    #[br(magic = 10u32)]
+    #[brw(magic = 10u32)]
     SrcAlphaSaturate,
 }

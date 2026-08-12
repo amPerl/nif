@@ -1,10 +1,10 @@
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
 use crate::common::BlockRef;
 
 use super::NiPSysEmitter;
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct NiPSysVolumeEmitter {
     pub base: NiPSysEmitter,
     pub emitter_object_ref: BlockRef,

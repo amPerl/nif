@@ -2,9 +2,9 @@ use crate::common::BlockRef;
 
 use super::NiAvObject;
 
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct NiCamera {
     pub base: NiAvObject,
     pub flags: u16,
@@ -15,6 +15,7 @@ pub struct NiCamera {
     pub frustum_near: f32,
     pub frustum_far: f32,
     #[br(map = |x: u8| x > 0)]
+    #[bw(map = |x: &bool| u8::from(*x))]
     pub use_orthographic_projection: bool,
     pub viewport_left: f32,
     pub viewport_right: f32,

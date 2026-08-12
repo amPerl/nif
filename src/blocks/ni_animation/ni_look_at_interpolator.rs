@@ -1,4 +1,4 @@
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
 use crate::{
     blocks::NiString,
@@ -7,7 +7,7 @@ use crate::{
 
 use super::NiInterpolator;
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct NiLookAtInterpolator {
     pub base: NiInterpolator,
     pub flags: u16,

@@ -1,9 +1,9 @@
 use super::ni_collision_object::NiCollisionObject;
 use crate::common::{NiPlane, Vector3};
 
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct NiCollisionData {
     pub base: NiCollisionObject,
     pub propagation_mode: PropagationMode,
@@ -13,35 +13,35 @@ pub struct NiCollisionData {
     pub bounding_volume: Option<BoundingVolume>,
 }
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct BoundingVolume {
     pub bounding_volume_data: BoundingVolumeData,
 }
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub enum BoundingVolumeData {
-    #[br(magic = 0u32)]
+    #[brw(magic = 0u32)]
     Sphere(NiBound),
-    #[br(magic = 1u32)]
+    #[brw(magic = 1u32)]
     Box(BoxBV),
-    #[br(magic = 2u32)]
+    #[brw(magic = 2u32)]
     Capsule(CapsuleBV),
-    #[br(magic = 4u32)]
+    #[brw(magic = 4u32)]
     Union(UnionBV),
-    #[br(magic = 5u32)]
+    #[brw(magic = 5u32)]
     HalfSpace(HalfSpaceBV),
-    #[br(magic = 0xFFFFFFFFu32)]
+    #[brw(magic = 0xFFFFFFFFu32)]
     Default,
     Unknown(u32),
 }
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct NiBound {
     pub center: Vector3,
     pub radius: f32,
 }
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct BoxBV {
     pub center: Vector3,
     #[br(count = 3)]
@@ -49,7 +49,7 @@ pub struct BoxBV {
     pub extent: Vector3,
 }
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct CapsuleBV {
     pub center: Vector3,
     pub origin: Vector3,
@@ -57,41 +57,41 @@ pub struct CapsuleBV {
     pub radius: f32,
 }
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct HalfSpaceBV {
     pub plane: NiPlane,
     pub center: Vector3,
 }
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct UnionBV {
     pub num_bv: u32,
     #[br(count=num_bv)]
     pub bounding_volumes: Vec<BoundingVolume>,
 }
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub enum PropagationMode {
-    #[br(magic = 0u32)]
+    #[brw(magic = 0u32)]
     OnSuccess,
-    #[br(magic = 1u32)]
+    #[brw(magic = 1u32)]
     OnFailure,
-    #[br(magic = 2u32)]
+    #[brw(magic = 2u32)]
     Always,
-    #[br(magic = 3u32)]
+    #[brw(magic = 3u32)]
     Never,
 }
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub enum CollisionMode {
-    #[br(magic = 0u32)]
+    #[brw(magic = 0u32)]
     UseOBB,
-    #[br(magic = 1u32)]
+    #[brw(magic = 1u32)]
     UseTri,
-    #[br(magic = 2u32)]
+    #[brw(magic = 2u32)]
     UseABV,
-    #[br(magic = 3u32)]
+    #[brw(magic = 3u32)]
     NoTest,
-    #[br(magic = 4u32)]
+    #[brw(magic = 4u32)]
     UseNiBound,
 }

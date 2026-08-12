@@ -1,8 +1,8 @@
 use super::NiPSysModifier;
 use crate::common::{BlockRef, Vector3};
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct NiPSysDragModifier {
     pub base: NiPSysModifier,
     pub drag_object_ref: BlockRef,

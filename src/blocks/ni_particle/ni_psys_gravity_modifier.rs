@@ -1,9 +1,9 @@
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
 use super::NiPSysModifier;
 use crate::common::{BlockRef, Vector3};
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct NiPSysGravityModifier {
     pub base: NiPSysModifier,
     pub gravity_object_ref: BlockRef,
@@ -15,11 +15,11 @@ pub struct NiPSysGravityModifier {
     pub turbulence_scale: f32,
 }
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub enum ForceType {
-    #[br(magic = 0u32)]
+    #[brw(magic = 0u32)]
     Planar,
-    #[br(magic = 1u32)]
+    #[brw(magic = 1u32)]
     Spherical,
     Unknown(u32),
 }

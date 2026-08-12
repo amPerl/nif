@@ -1,8 +1,8 @@
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
 use super::NiSourceTexture;
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct NiSourceCubeMap {
     pub base: NiSourceTexture,
 }

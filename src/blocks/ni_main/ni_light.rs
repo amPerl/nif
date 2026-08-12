@@ -1,9 +1,9 @@
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
 use super::NiDynamicEffect;
 use crate::common::Color3;
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct NiLight {
     pub base: NiDynamicEffect,
     pub dimmer: f32,

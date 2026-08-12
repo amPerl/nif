@@ -1,9 +1,9 @@
 use super::ni_object_net::NiObjectNET;
 use crate::common::{BlockRef, Matrix33, Vector3};
 
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct NiAvObject {
     pub base: NiObjectNET,
     pub flags: u16,

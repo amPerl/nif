@@ -1,9 +1,9 @@
 use crate::common::BlockRef;
 
 use super::ni_interp_controller::NiInterpController;
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct NiGeomMorpherController {
     pub base: NiInterpController,
     pub morpher_flags: GeomMorpherFlags,
@@ -14,11 +14,11 @@ pub struct NiGeomMorpherController {
     pub interpolator_refs: Vec<BlockRef>,
 }
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub enum GeomMorpherFlags {
-    #[br(magic = 0u16)]
+    #[brw(magic = 0u16)]
     UpdateNormalsDisabled,
-    #[br(magic = 1u16)]
+    #[brw(magic = 1u16)]
     UpdateNormalsEnabled,
     Unknown(u16),
 }

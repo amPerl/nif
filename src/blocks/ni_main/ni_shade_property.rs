@@ -1,17 +1,17 @@
 use super::ni_object_net::NiObjectNET;
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct NiShadeProperty {
     pub base: NiObjectNET,
     pub flags: ShadeFlags,
 }
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub enum ShadeFlags {
-    #[br(magic = 0u16)]
+    #[brw(magic = 0u16)]
     Hard,
-    #[br(magic = 1u16)]
+    #[brw(magic = 1u16)]
     Smooth,
 }
 

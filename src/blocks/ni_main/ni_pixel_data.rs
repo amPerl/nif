@@ -1,10 +1,10 @@
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
 use crate::common::BlockRef;
 
 use super::NiPixelFormat;
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct NiPixelData {
     pub base: NiPixelFormat,
     pub palette_ref: BlockRef,
@@ -18,14 +18,14 @@ pub struct NiPixelData {
     pub pixel_data: Vec<PixelData>,
 }
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 #[br(import(num_pixels: u32))]
 pub struct PixelData {
     #[br(count = num_pixels)]
     pub data: Vec<u8>,
 }
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct MipMap {
     pub width: u32,
     pub height: u32,

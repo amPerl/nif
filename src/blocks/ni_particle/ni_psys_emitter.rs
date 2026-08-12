@@ -1,9 +1,9 @@
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
 use super::NiPSysModifier;
 use crate::common::Color4;
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct NiPSysEmitter {
     pub base: NiPSysModifier,
     pub speed: f32,

@@ -7,9 +7,10 @@ pub use ni_main::*;
 pub use ni_particle::*;
 
 use crate::common::BlockRef;
+use binrw::BinWrite;
 
 #[allow(clippy::large_enum_variant)]
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, BinWrite)]
 pub enum Block {
     NiObjectNET(NiObjectNET),
     NiAvObject(NiAvObject),

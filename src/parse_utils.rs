@@ -1,7 +1,7 @@
 use super::blocks::{Block, *};
 use super::common;
 use crate::error::NifError;
-use binrw::{io::Read, BinRead, BinResult};
+use binrw::{io::Read, BinRead, BinWrite, BinResult};
 
 #[binrw::parser(reader, endian)]
 pub fn parse_keys<T>(
@@ -9,8 +9,9 @@ pub fn parse_keys<T>(
     key_type: Option<common::KeyType>,
 ) -> BinResult<Vec<common::Key<T>>>
 where
-    T: BinRead,
+    T: BinRead + BinWrite,
     T: for<'a> BinRead<Args<'a> = ()>,
+    T: for<'a> BinWrite<Args<'a> = ()>,
 {
     if num_keys == 0 {
         return Ok(Vec::new());
@@ -75,6 +76,19 @@ pub fn parse_version() -> BinResult<u32> {
     Ok((major & 0xFF) << 24 | (minor & 0xFF) << 16 | (patch & 0xFF) << 8 | (build & 0xFF))
 }
 
+#[binrw::writer(writer)]
+pub fn write_version(version: &u32) -> BinResult<()> {
+    let text = format!(
+        "{}.{}.{}.{}\n",
+        version >> 24 & 0xFF,
+        version >> 16 & 0xFF,
+        version >> 8 & 0xFF,
+        version & 0xFF
+    );
+    writer.write_all(text.as_bytes())?;
+    Ok(())
+}
+
 const MAX_LF_TERMINATED_STRING_LEN: usize = 64;
 
 #[binrw::parser(reader)]
@@ -99,7 +113,7 @@ pub fn parse_lf_terminated_string() -> BinResult<String> {
 }
 
 #[binrw::parser(reader, endian)]
-pub fn parse_int_prefixed_string() -> BinResult<String> {
+pub fn parse_int_prefixed_bytes() -> BinResult<Vec<u8>> {
     let pos = reader.stream_position()?;
     let count = u32::read_options(reader, endian, ())?;
 
@@ -113,7 +127,22 @@ pub fn parse_int_prefixed_string() -> BinResult<String> {
         });
     }
 
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
+    Ok(bytes)
+}
+
+#[binrw::writer(writer, endian)]
+#[allow(clippy::ptr_arg)]
+pub fn write_int_prefixed_bytes(value: &Vec<u8>) -> BinResult<()> {
+    let Ok(count) = u32::try_from(value.len()) else {
+        return Err(binrw::Error::Custom {
+            pos: writer.stream_position()?,
+            err: Box::new(NifError::StringParseError),
+        });
+    };
+
+    count.write_options(writer, endian, ())?;
+    writer.write_all(value)?;
+    Ok(())
 }
 
 const MAX_PREALLOCATED_BLOCKS: usize = 8192;
@@ -507,10 +536,22 @@ mod tests {
     use binrw::Endian;
     use std::io::Cursor;
 
-    fn int_prefixed(bytes: &[u8]) -> BinResult<(String, u64)> {
+    fn int_prefixed(bytes: &[u8]) -> BinResult<(Vec<u8>, u64)> {
         let mut reader = Cursor::new(bytes.to_vec());
-        let value = parse_int_prefixed_string(&mut reader, Endian::Little, ())?;
+        let value = parse_int_prefixed_bytes(&mut reader, Endian::Little, ())?;
         Ok((value, reader.position()))
+    }
+
+    fn int_prefixed_written(value: &[u8]) -> Vec<u8> {
+        let mut written = Vec::new();
+        write_int_prefixed_bytes(
+            &value.to_vec(),
+            &mut Cursor::new(&mut written),
+            Endian::Little,
+            (),
+        )
+        .expect("write");
+        written
     }
 
     fn lf_terminated(bytes: &[u8]) -> BinResult<(String, u64)> {
@@ -522,15 +563,23 @@ mod tests {
     #[test]
     fn int_prefixed_string_leaves_the_reader_after_the_payload() {
         let (value, position) = int_prefixed(b"\x04\x00\x00\x00name\xAA").expect("parse");
-        assert_eq!(value, "name");
+        assert_eq!(value, b"name");
         assert_eq!(position, 8);
     }
 
     #[test]
     fn int_prefixed_string_accepts_an_empty_payload() {
         let (value, position) = int_prefixed(b"\x00\x00\x00\x00\xAA").expect("parse");
-        assert_eq!(value, "");
+        assert_eq!(value, b"");
         assert_eq!(position, 4);
+    }
+
+    #[test]
+    fn int_prefixed_string_preserves_bytes_that_are_not_utf8() {
+        let euc_kr = [0x04, 0x00, 0x00, 0x00, 0xbe, 0xcb, 0xc6, 0xc4];
+        let (value, _) = int_prefixed(&euc_kr).expect("parse");
+        assert_eq!(value, [0xbe, 0xcb, 0xc6, 0xc4]);
+        assert_eq!(int_prefixed_written(&value), euc_kr);
     }
 
     #[test]

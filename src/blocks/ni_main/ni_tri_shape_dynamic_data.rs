@@ -1,7 +1,7 @@
 use super::NiTriShapeData;
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct NiTriShapeDynamicData {
     pub base: NiTriShapeData,
     pub active_vertices: u16,

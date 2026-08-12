@@ -1,8 +1,8 @@
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
 use super::NiGeometryData;
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct NiTriBasedGeomData {
     pub base: NiGeometryData,
     pub num_triangles: u16,

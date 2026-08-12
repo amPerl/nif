@@ -1,9 +1,9 @@
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
 use super::NiBound;
 use crate::common::NiTransform;
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct NiSkinData {
     pub skin_transform: NiTransform,
     pub num_bones: u32,
@@ -12,7 +12,7 @@ pub struct NiSkinData {
     pub bone_list: Vec<BoneData>,
 }
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 #[br(import(has_vertex_weights: u8))]
 pub struct BoneData {
     pub skin_transform: NiTransform,
@@ -22,7 +22,7 @@ pub struct BoneData {
     pub vertex_weights: Option<Vec<BoneVertData>>,
 }
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct BoneVertData {
     pub index: u16,
     pub weight: f32,

@@ -1,7 +1,7 @@
 use super::ni_object_net::NiObjectNET;
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct NiVertexColorProperty {
     pub base: NiObjectNET,
     pub flags: u16,
@@ -9,22 +9,22 @@ pub struct NiVertexColorProperty {
     pub lighting_mode: LightMode,
 }
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub enum VertMode {
-    #[br(magic = 0u32)]
+    #[brw(magic = 0u32)]
     SourceIgnore,
-    #[br(magic = 1u32)]
+    #[brw(magic = 1u32)]
     SourceEmissive,
-    #[br(magic = 2u32)]
+    #[brw(magic = 2u32)]
     SourceAmbientDiffuse,
     Unknown(u32),
 }
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub enum LightMode {
-    #[br(magic = 0u32)]
+    #[brw(magic = 0u32)]
     Emissive,
-    #[br(magic = 1u32)]
+    #[brw(magic = 1u32)]
     EmissiveAmbientDiffuse,
     Unknown(u32),
 }

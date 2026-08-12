@@ -1,9 +1,9 @@
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
 use super::NiKeyBasedInterpolator;
 use crate::common::{BlockRef, NiQuatTransform};
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct NiTransformInterpolator {
     pub base: NiKeyBasedInterpolator,
     pub transform: NiQuatTransform,

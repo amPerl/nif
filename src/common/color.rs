@@ -1,6 +1,6 @@
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
-#[derive(Debug, PartialEq, BinRead, Clone, Copy)]
+#[derive(Debug, PartialEq, BinRead, BinWrite, Clone, Copy)]
 pub struct Color3 {
     pub r: f32,
     pub g: f32,
@@ -17,7 +17,7 @@ impl Default for Color3 {
     }
 }
 
-#[derive(Debug, PartialEq, BinRead, Clone, Copy)]
+#[derive(Debug, PartialEq, BinRead, BinWrite, Clone, Copy)]
 pub struct Color4 {
     pub r: f32,
     pub g: f32,
@@ -36,7 +36,7 @@ impl Default for Color4 {
     }
 }
 
-#[derive(Debug, PartialEq, BinRead, Clone, Copy, Default)]
+#[derive(Debug, PartialEq, BinRead, BinWrite, Clone, Copy, Default)]
 pub struct ByteColor4 {
     pub r: u8,
     pub g: u8,

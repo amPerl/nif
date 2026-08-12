@@ -1,21 +1,21 @@
 use super::ni_single_interp_controller::NiSingleInterpController;
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct NiMaterialColorController {
     pub base: NiSingleInterpController,
     pub target_color: MaterialColor,
 }
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub enum MaterialColor {
-    #[br(magic = 0u16)]
+    #[brw(magic = 0u16)]
     Ambient,
-    #[br(magic = 1u16)]
+    #[brw(magic = 1u16)]
     Diffuse,
-    #[br(magic = 2u16)]
+    #[brw(magic = 2u16)]
     Specular,
-    #[br(magic = 3u16)]
+    #[brw(magic = 3u16)]
     SelfIllum,
     Unknown(u16),
 }

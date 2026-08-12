@@ -1,9 +1,9 @@
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
 use crate::common::{KeyGroup, KeyType, QuatKey, Vector3};
 use crate::parse_utils;
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct NiTransformData {
     pub num_rotation_keys: u32,
     #[br(if(num_rotation_keys > 0))]

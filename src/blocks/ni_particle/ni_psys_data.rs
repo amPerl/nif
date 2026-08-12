@@ -1,8 +1,8 @@
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
 use crate::{blocks::NiParticlesData, common::Vector3};
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct NiPSysData {
     pub base: NiParticlesData,
 
@@ -10,6 +10,7 @@ pub struct NiPSysData {
     pub particle_info: Vec<NiParticleInfo>,
 
     #[br(map = |x: u8| x > 0)]
+    #[bw(map = |x: &bool| u8::from(*x))]
     pub has_rotation_speeds: bool,
     #[br(if(has_rotation_speeds), count = base.base.num_vertices)]
     pub rotation_speeds: Option<Vec<f32>>,
@@ -18,7 +19,7 @@ pub struct NiPSysData {
     pub added_particles_base: u16,
 }
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct NiParticleInfo {
     pub velocity: Vector3,
     pub age: f32,

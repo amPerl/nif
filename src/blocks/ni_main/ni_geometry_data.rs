@@ -1,8 +1,8 @@
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
 use crate::common::{BlockRef, Color4, TexCoord, Vector3};
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct NiGeometryData {
     pub group_id: i32,
     pub num_vertices: u16,
@@ -10,6 +10,7 @@ pub struct NiGeometryData {
     pub compress_flags: u8,
 
     #[br(map = |x: u8| x > 0)]
+    #[bw(map = |x: &bool| u8::from(*x))]
     pub has_vertices: bool,
     #[br(if(has_vertices), count = num_vertices)]
     pub vertices: Option<Vec<Vector3>>,
@@ -18,6 +19,7 @@ pub struct NiGeometryData {
     pub tspace_flag: u8,
 
     #[br(map = |x: u8| x > 0)]
+    #[bw(map = |x: &bool| u8::from(*x))]
     pub has_normals: bool,
     #[br(if(has_normals), count = num_vertices)]
     pub normals: Option<Vec<Vector3>>,
@@ -30,6 +32,7 @@ pub struct NiGeometryData {
     pub radius: f32,
 
     #[br(map = |x: u8| x > 0)]
+    #[bw(map = |x: &bool| u8::from(*x))]
     pub has_vertex_colors: bool,
     #[br(if(has_vertex_colors), count = num_vertices)]
     pub vertex_colors: Option<Vec<Color4>>,
@@ -41,7 +44,7 @@ pub struct NiGeometryData {
     pub additional_data_ref: BlockRef,
 }
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 #[br(import(num_vertices: u16))]
 pub struct UvSet {
     #[br(count = num_vertices)]

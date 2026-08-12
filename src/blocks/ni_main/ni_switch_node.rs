@@ -1,18 +1,18 @@
 use super::ni_node::NiNode;
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct NiSwitchNode {
     pub base: NiNode,
     pub switch_node_flags: NiSwitchFlags,
     pub index: u32,
 }
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub enum NiSwitchFlags {
-    #[br(magic = 0u16)]
+    #[brw(magic = 0u16)]
     UpdateOnlyActiveChild,
-    #[br(magic = 1u16)]
+    #[brw(magic = 1u16)]
     UpdateControllers,
     Unknown(u16),
 }

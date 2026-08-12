@@ -1,7 +1,7 @@
 use super::ni_node::NiNode;
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct NiSortAdjustNode {
     pub base: NiNode,
     pub sorting_mode: u32,

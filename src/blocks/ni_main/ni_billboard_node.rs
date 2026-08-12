@@ -1,27 +1,27 @@
 use super::ni_node::NiNode;
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct NiBillboardNode {
     pub base: NiNode,
     pub billboard_mode: BillboardMode,
 }
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub enum BillboardMode {
-    #[br(magic = 0u16)]
+    #[brw(magic = 0u16)]
     AlwaysFaceCamera,
-    #[br(magic = 1u16)]
+    #[brw(magic = 1u16)]
     RotateAboutUp,
-    #[br(magic = 2u16)]
+    #[brw(magic = 2u16)]
     RigidFaceCamera,
-    #[br(magic = 3u16)]
+    #[brw(magic = 3u16)]
     AlwaysFaceCenter,
-    #[br(magic = 4u16)]
+    #[brw(magic = 4u16)]
     RigidFaceCenter,
-    #[br(magic = 5u16)]
+    #[brw(magic = 5u16)]
     BSRotateAboutUp,
-    #[br(magic = 9u16)]
+    #[brw(magic = 9u16)]
     RotateAboutUp2,
 }
 

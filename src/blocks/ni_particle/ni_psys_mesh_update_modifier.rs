@@ -1,8 +1,8 @@
 use super::NiPSysModifier;
 use crate::common::BlockRef;
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct NiPSysMeshUpdateModifier {
     pub base: NiPSysModifier,
     pub num_meshes: u32,

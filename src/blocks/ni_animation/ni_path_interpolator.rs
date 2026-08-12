@@ -1,10 +1,10 @@
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
 use crate::common::BlockRef;
 
 use super::NiKeyBasedInterpolator;
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct NiPathInterpolator {
     pub base: NiKeyBasedInterpolator,
     pub flags: u16,

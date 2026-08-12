@@ -1,11 +1,12 @@
 use super::Quaternion;
 use crate::parse_utils;
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
-#[derive(Debug, PartialEq, BinRead)]
-pub struct KeyGroup<T: BinRead>
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
+pub struct KeyGroup<T: BinRead + BinWrite + 'static>
 where
     T: for<'a> BinRead<Args<'a> = ()>,
+    T: for<'a> BinWrite<Args<'a> = ()>,
 {
     pub num_keys: u32,
     #[br(if(num_keys > 0))]
@@ -15,11 +16,12 @@ where
     pub keys: Vec<Key<T>>,
 }
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 #[br(import(key_type: KeyType))]
-pub struct Key<T: BinRead>
+pub struct Key<T: BinRead + BinWrite + 'static>
 where
     T: for<'a> BinRead<Args<'a> = ()>,
+    T: for<'a> BinWrite<Args<'a> = ()>,
 {
     pub time: f32,
     pub value: T,
@@ -31,7 +33,7 @@ where
     pub tbc: Option<Tbc>,
 }
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 #[br(import(key_type: KeyType))]
 pub struct QuatKey {
     #[br(if(key_type != KeyType::XyzRotation))]
@@ -42,24 +44,24 @@ pub struct QuatKey {
     pub tbc: Option<Tbc>,
 }
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct Tbc {
     pub tension: f32,
     pub bias: f32,
     pub continuity: f32,
 }
 
-#[derive(Debug, PartialEq, BinRead, Clone, Copy)]
+#[derive(Debug, PartialEq, BinRead, BinWrite, Clone, Copy)]
 pub enum KeyType {
-    #[br(magic = 1u32)]
+    #[brw(magic = 1u32)]
     Linear,
-    #[br(magic = 2u32)]
+    #[brw(magic = 2u32)]
     Quadratic,
-    #[br(magic = 3u32)]
+    #[brw(magic = 3u32)]
     Tbc,
-    #[br(magic = 4u32)]
+    #[brw(magic = 4u32)]
     XyzRotation,
-    #[br(magic = 5u32)]
+    #[brw(magic = 5u32)]
     Const,
     Invalid(u32),
 }

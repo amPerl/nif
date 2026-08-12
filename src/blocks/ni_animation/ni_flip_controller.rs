@@ -1,9 +1,9 @@
 use crate::common::BlockRef;
 
 use super::ni_float_interp_controller::NiFloatInterpController;
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct NiFlipController {
     pub base: NiFloatInterpController,
     pub texture_slot: u32, // TexType

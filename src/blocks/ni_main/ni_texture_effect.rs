@@ -1,9 +1,9 @@
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
 use super::{NiDynamicEffect, TexClampMode, TexFilterMode};
 use crate::common::{BlockRef, Matrix33, NiPlane, Vector3};
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct NiTextureEffect {
     pub base: NiDynamicEffect,
     pub model_projection_matrix: Matrix33,

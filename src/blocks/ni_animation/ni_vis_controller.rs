@@ -1,7 +1,7 @@
 use super::NiBoolInterpController;
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct NiVisController {
     pub base: NiBoolInterpController,
 }

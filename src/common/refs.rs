@@ -1,8 +1,8 @@
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
 use crate::blocks::Block;
 
-#[derive(Debug, PartialEq, BinRead, Clone, Copy, Hash)]
+#[derive(Debug, PartialEq, BinRead, BinWrite, Clone, Copy, Hash)]
 pub struct BlockRef(pub i32);
 
 impl BlockRef {

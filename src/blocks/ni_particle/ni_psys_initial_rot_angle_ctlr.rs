@@ -1,7 +1,7 @@
 use super::NiPSysModifierFloatCtlr;
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct NiPSysInitialRotAngleCtlr {
     pub base: NiPSysModifierFloatCtlr,
 }

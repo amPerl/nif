@@ -1,6 +1,6 @@
 use binrw::{
-    io::{Read, Seek},
-    BinRead, BinReaderExt,
+    io::{Read, Seek, Write},
+    BinRead, BinReaderExt, BinWrite, BinWriterExt,
 };
 pub use error::NifError;
 
@@ -15,11 +15,11 @@ pub use glam;
 
 mod parse_utils;
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct Nif {
     pub header: header::Header,
     #[br(args(
-        header.block_types.iter().map(|b| b.value.clone()).collect(),
+        header.block_types.iter().map(|b| b.to_string_lossy().into_owned()).collect(),
         header.block_type_index.clone(),
     ))]
     #[br(parse_with = parse_utils::parse_blocks)]
@@ -27,7 +27,7 @@ pub struct Nif {
     pub footer: Footer,
 }
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct Footer {
     pub num_roots: u32,
     #[br(count = num_roots)]
@@ -37,6 +37,11 @@ pub struct Footer {
 impl Nif {
     pub fn parse<R: Read + Seek>(reader: &mut R) -> Result<Self, NifError> {
         Ok(reader.read_le()?)
+    }
+
+    pub fn write<W: Write + Seek>(&self, writer: &mut W) -> Result<(), NifError> {
+        writer.write_le(self)?;
+        Ok(())
     }
 
     pub fn roots(&self) -> impl Iterator<Item = (usize, &blocks::Block)> {

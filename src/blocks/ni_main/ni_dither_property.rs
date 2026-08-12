@@ -1,17 +1,17 @@
 use super::ni_object_net::NiObjectNET;
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct NiDitherProperty {
     pub base: NiObjectNET,
     pub flags: DitherFlags,
 }
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub enum DitherFlags {
-    #[br(magic = 0u16)]
+    #[brw(magic = 0u16)]
     Disabled,
-    #[br(magic = 1u16)]
+    #[brw(magic = 1u16)]
     Enabled,
 }
 

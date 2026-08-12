@@ -1,9 +1,9 @@
 use crate::common::BlockRef;
 
 use super::ni_switch_node::NiSwitchNode;
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct NiLODNode {
     pub base: NiSwitchNode,
     pub lod_level_data_ref: BlockRef,

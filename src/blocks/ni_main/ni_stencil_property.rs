@@ -1,7 +1,7 @@
 use super::ni_object_net::NiObjectNET;
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct NiStencilProperty {
     pub base: NiObjectNET,
     pub stencil_enabled: u8,
@@ -14,51 +14,51 @@ pub struct NiStencilProperty {
     pub draw_mode: StencilDrawMode,
 }
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub enum StencilAction {
-    #[br(magic = 0u32)]
+    #[brw(magic = 0u32)]
     Keep,
-    #[br(magic = 1u32)]
+    #[brw(magic = 1u32)]
     Zero,
-    #[br(magic = 2u32)]
+    #[brw(magic = 2u32)]
     Replace,
-    #[br(magic = 3u32)]
+    #[brw(magic = 3u32)]
     Increment,
-    #[br(magic = 4u32)]
+    #[brw(magic = 4u32)]
     Decrement,
-    #[br(magic = 5u32)]
+    #[brw(magic = 5u32)]
     Invert,
 }
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub enum StencilDrawMode {
-    #[br(magic = 0u32)]
+    #[brw(magic = 0u32)]
     CcwOrBoth,
-    #[br(magic = 1u32)]
+    #[brw(magic = 1u32)]
     Ccw,
-    #[br(magic = 2u32)]
+    #[brw(magic = 2u32)]
     Cw,
-    #[br(magic = 3u32)]
+    #[brw(magic = 3u32)]
     Both,
 }
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub enum StencilTestFunc {
-    #[br(magic = 0u32)]
+    #[brw(magic = 0u32)]
     Never,
-    #[br(magic = 1u32)]
+    #[brw(magic = 1u32)]
     Less,
-    #[br(magic = 2u32)]
+    #[brw(magic = 2u32)]
     Equal,
-    #[br(magic = 3u32)]
+    #[brw(magic = 3u32)]
     LessEqual,
-    #[br(magic = 4u32)]
+    #[brw(magic = 4u32)]
     Greater,
-    #[br(magic = 5u32)]
+    #[brw(magic = 5u32)]
     NotEqual,
-    #[br(magic = 6u32)]
+    #[brw(magic = 6u32)]
     GreaterEqual,
-    #[br(magic = 7u32)]
+    #[brw(magic = 7u32)]
     Always,
 }
 

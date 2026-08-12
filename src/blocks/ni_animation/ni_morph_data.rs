@@ -1,8 +1,8 @@
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
 use crate::{blocks::NiString, common::Vector3};
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct NiMorphData {
     pub num_morphs: u32,
     pub num_vertices: u32,
@@ -11,7 +11,7 @@ pub struct NiMorphData {
     pub morphs: Vec<Morph>,
 }
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 #[br(import(num_vertices: u32))]
 pub struct Morph {
     pub frame_name: NiString,

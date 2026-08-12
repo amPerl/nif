@@ -3,15 +3,16 @@ use super::error::NifError;
 use super::parse_utils;
 use binrw::{
     io::{Read, Seek},
-    BinRead, BinReaderExt,
+    BinRead, BinReaderExt, BinWrite,
 };
 
-#[derive(Debug, PartialEq, BinRead)]
-#[br(magic = b"Gamebryo File Format, Version ")]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[brw(magic = b"Gamebryo File Format, Version ")]
 #[br(assert(version == 0x14000004, NifError::NotImplemented("Version not implemented")))]
 #[br(assert(version_from_str == version, NifError::InvalidValueError))]
 pub struct Header {
     #[br(parse_with = parse_utils::parse_version)]
+    #[bw(write_with = parse_utils::write_version)]
     pub version_from_str: u32,
     pub version: u32,
     #[br(assert(endian_type == EndianType::LittleEndian, NifError::NotImplemented("big-endian files")))]
@@ -32,10 +33,10 @@ impl Header {
     }
 }
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub enum EndianType {
-    #[br(magic = 1u8)]
+    #[brw(magic = 1u8)]
     LittleEndian,
-    #[br(magic = 0u8)]
+    #[brw(magic = 0u8)]
     BigEndian,
 }

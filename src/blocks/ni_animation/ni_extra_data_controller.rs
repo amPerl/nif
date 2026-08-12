@@ -1,8 +1,8 @@
 use super::NiSingleInterpController;
 use crate::blocks::NiString;
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct NiExtraDataController {
     pub base: NiSingleInterpController,
     pub extra_data_name: NiString,

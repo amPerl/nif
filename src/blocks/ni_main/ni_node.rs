@@ -1,9 +1,9 @@
 use crate::common::BlockRef;
 
 use super::ni_av_object::NiAvObject;
-use binrw::BinRead;
+use binrw::{BinRead, BinWrite};
 
-#[derive(Debug, PartialEq, BinRead)]
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct NiNode {
     pub base: NiAvObject,
     pub num_child_refs: u32,
