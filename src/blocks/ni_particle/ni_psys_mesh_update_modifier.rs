@@ -1,11 +1,13 @@
 use super::NiPSysModifier;
 use crate::common::BlockRef;
-use binrw::{BinRead, BinWrite};
 
-#[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[binrw::binrw]
+#[derive(Debug, PartialEq)]
 pub struct NiPSysMeshUpdateModifier {
     pub base: NiPSysModifier,
-    pub num_meshes: u32,
+    #[br(temp)]
+    #[bw(calc = mesh_refs.len() as u32)]
+    num_meshes: u32,
     #[br(count = num_meshes)]
     pub mesh_refs: Vec<BlockRef>,
 }

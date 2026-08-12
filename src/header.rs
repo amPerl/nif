@@ -6,7 +6,8 @@ use binrw::{
     BinRead, BinReaderExt, BinWrite,
 };
 
-#[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[binrw::binrw]
+#[derive(Debug, PartialEq)]
 #[brw(magic = b"Gamebryo File Format, Version ")]
 #[br(assert(version == 0x14000004, NifError::NotImplemented("Version not implemented")))]
 #[br(assert(version_from_str == version, NifError::InvalidValueError))]
@@ -18,8 +19,12 @@ pub struct Header {
     #[br(assert(endian_type == EndianType::LittleEndian, NifError::NotImplemented("big-endian files")))]
     pub endian_type: EndianType,
     pub user_version: u32,
-    pub num_blocks: u32,
-    pub num_block_types: u16,
+    #[br(temp)]
+    #[bw(calc = block_type_index.len() as u32)]
+    num_blocks: u32,
+    #[br(temp)]
+    #[bw(calc = block_types.len() as u16)]
+    num_block_types: u16,
     #[br(count = num_block_types)]
     pub block_types: Vec<NiString>,
     #[br(count = num_blocks)]

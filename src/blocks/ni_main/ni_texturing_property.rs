@@ -3,7 +3,8 @@ use crate::common::{BlockRef, Matrix22, TexCoord};
 
 use binrw::{BinRead, BinWrite};
 
-#[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[binrw::binrw]
+#[derive(Debug, PartialEq)]
 pub struct NiTexturingProperty {
     pub base: NiObjectNET,
     pub apply_mode: ApplyMode,
@@ -75,7 +76,9 @@ pub struct NiTexturingProperty {
     #[br(if(has_decal3_texture))]
     pub decal3_texture: Option<Box<TexDesc>>,
 
-    pub num_shader_textures: u32,
+    #[br(temp)]
+    #[bw(calc = shader_textures.len() as u32)]
+    num_shader_textures: u32,
     #[br(count=num_shader_textures)]
     pub shader_textures: Vec<ShaderTexDesc>,
 }

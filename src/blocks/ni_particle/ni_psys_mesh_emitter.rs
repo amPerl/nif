@@ -3,10 +3,13 @@ use binrw::{BinRead, BinWrite};
 use super::NiPSysEmitter;
 use crate::common::{BlockRef, Vector3};
 
-#[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[binrw::binrw]
+#[derive(Debug, PartialEq)]
 pub struct NiPSysMeshEmitter {
     pub base: NiPSysEmitter,
-    pub num_emitter_meshes: u32,
+    #[br(temp)]
+    #[bw(calc = emitter_mesh_refs.len() as u32)]
+    num_emitter_meshes: u32,
     #[br(count = num_emitter_meshes)]
     pub emitter_mesh_refs: Vec<BlockRef>,
     pub initial_velocity_type: VelocityType,

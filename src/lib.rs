@@ -27,9 +27,12 @@ pub struct Nif {
     pub footer: Footer,
 }
 
-#[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[binrw::binrw]
+#[derive(Debug, PartialEq)]
 pub struct Footer {
-    pub num_roots: u32,
+    #[br(temp)]
+    #[bw(calc = root_refs.len() as u32)]
+    num_roots: u32,
     #[br(count = num_roots)]
     pub root_refs: Vec<common::BlockRef>,
 }

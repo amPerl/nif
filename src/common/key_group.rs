@@ -2,13 +2,16 @@ use super::Quaternion;
 use crate::parse_utils;
 use binrw::{BinRead, BinWrite};
 
-#[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[binrw::binrw]
+#[derive(Debug, PartialEq)]
 pub struct KeyGroup<T: BinRead + BinWrite + 'static>
 where
     T: for<'a> BinRead<Args<'a> = ()>,
     T: for<'a> BinWrite<Args<'a> = ()>,
 {
-    pub num_keys: u32,
+    #[br(temp)]
+    #[bw(calc = keys.len() as u32)]
+    num_keys: u32,
     #[br(if(num_keys > 0))]
     pub interpolation: Option<KeyType>,
     #[br(args(num_keys, interpolation))]

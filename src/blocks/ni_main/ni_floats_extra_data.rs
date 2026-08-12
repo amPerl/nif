@@ -1,10 +1,12 @@
 use super::ni_string::NiString;
-use binrw::{BinRead, BinWrite};
 
-#[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[binrw::binrw]
+#[derive(Debug, PartialEq)]
 pub struct NiFloatsExtraData {
     pub name: NiString,
-    pub num_floats: u32,
+    #[br(temp)]
+    #[bw(calc = data.len() as u32)]
+    num_floats: u32,
     #[br(count = num_floats)]
     pub data: Vec<f32>,
 }

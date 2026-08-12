@@ -1,12 +1,14 @@
-use binrw::{BinRead, BinWrite};
 
 use super::NiTriBasedGeomData;
 
-#[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[binrw::binrw]
+#[derive(Debug, PartialEq)]
 pub struct NiTriStripsData {
     pub base: NiTriBasedGeomData,
 
-    pub num_strips: u16,
+    #[br(temp)]
+    #[bw(calc = strip_lengths.len() as u16)]
+    num_strips: u16,
     #[br(count = num_strips)]
     pub strip_lengths: Vec<u16>,
     #[br(map = |x: u8| x > 0)]

@@ -1,9 +1,9 @@
-use binrw::{BinRead, BinWrite};
 
 use super::NiTriBasedGeomData;
 use crate::common::Triangle;
 
-#[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[binrw::binrw]
+#[derive(Debug, PartialEq)]
 pub struct NiTriShapeData {
     pub base: NiTriBasedGeomData,
 
@@ -15,13 +15,18 @@ pub struct NiTriShapeData {
     #[br(count=base.num_triangles)]
     pub triangles: Option<Vec<Triangle>>,
 
-    pub num_match_groups: u16,
+    #[br(temp)]
+    #[bw(calc = match_groups.len() as u16)]
+    num_match_groups: u16,
     #[br(count=num_match_groups)]
     pub match_groups: Vec<MatchGroup>,
 }
-#[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[binrw::binrw]
+#[derive(Debug, PartialEq)]
 pub struct MatchGroup {
-    pub num_vertices: u16,
+    #[br(temp)]
+    #[bw(calc = vertex_indices.len() as u16)]
+    num_vertices: u16,
     #[br(count=num_vertices)]
     pub vertex_indices: Vec<u16>,
 }

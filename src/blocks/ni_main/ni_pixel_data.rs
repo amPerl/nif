@@ -4,16 +4,21 @@ use crate::common::BlockRef;
 
 use super::NiPixelFormat;
 
-#[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[binrw::binrw]
+#[derive(Debug, PartialEq)]
 pub struct NiPixelData {
     pub base: NiPixelFormat,
     pub palette_ref: BlockRef,
-    pub num_mipmaps: u32,
+    #[br(temp)]
+    #[bw(calc = mipmaps.len() as u32)]
+    num_mipmaps: u32,
     pub bytes_per_pixel: u32,
     #[br(count = num_mipmaps)]
     pub mipmaps: Vec<MipMap>,
     pub num_pixels: u32,
-    pub num_faces: u32,
+    #[br(temp)]
+    #[bw(calc = pixel_data.len() as u32)]
+    num_faces: u32,
     #[br(args { count: num_faces as _, inner: (num_pixels,) })]
     pub pixel_data: Vec<PixelData>,
 }

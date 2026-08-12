@@ -1,11 +1,13 @@
 use super::NiInterpController;
 use crate::common::BlockRef;
-use binrw::{BinRead, BinWrite};
 
-#[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[binrw::binrw]
+#[derive(Debug, PartialEq)]
 pub struct NiMultiTargetTransformController {
     pub base: NiInterpController,
-    pub num_extra_targets: u16,
+    #[br(temp)]
+    #[bw(calc = extra_target_refs.len() as u16)]
+    num_extra_targets: u16,
     #[br(count = num_extra_targets)]
     pub extra_target_refs: Vec<BlockRef>,
 }

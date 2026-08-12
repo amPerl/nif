@@ -2,9 +2,12 @@ use crate::blocks::NiTimeController;
 use crate::common::BlockRef;
 use binrw::{BinRead, BinWrite};
 
-#[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[binrw::binrw]
+#[derive(Debug, PartialEq)]
 pub struct NodeSet {
-    pub num_nodes: u32,
+    #[br(temp)]
+    #[bw(calc = node_refs.len() as u32)]
+    num_nodes: u32,
     #[br(count = num_nodes)]
     pub node_refs: Vec<BlockRef>,
 }
@@ -15,25 +18,35 @@ pub struct SkinInfo {
     pub skin_instance_ref: BlockRef,
 }
 
-#[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[binrw::binrw]
+#[derive(Debug, PartialEq)]
 pub struct SkinInfoSet {
-    pub num_skin_info: u32,
+    #[br(temp)]
+    #[bw(calc = skin_info.len() as u32)]
+    num_skin_info: u32,
     #[br(count = num_skin_info)]
     pub skin_info: Vec<SkinInfo>,
 }
 
-#[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[binrw::binrw]
+#[derive(Debug, PartialEq)]
 pub struct NiBoneLODController {
     pub base: NiTimeController,
     pub lod: u32,
-    pub num_lods: u32,
+    #[br(temp)]
+    #[bw(calc = node_groups.len() as u32)]
+    num_lods: u32,
     pub num_node_groups: u32,
     #[br(count = num_lods)]
     pub node_groups: Vec<NodeSet>,
-    pub num_shape_groups: u32,
+    #[br(temp)]
+    #[bw(calc = shape_groups_1.len() as u32)]
+    num_shape_groups: u32,
     #[br(count = num_shape_groups)]
     pub shape_groups_1: Vec<SkinInfoSet>,
-    pub num_shape_groups_2: u32,
+    #[br(temp)]
+    #[bw(calc = shape_groups_2.len() as u32)]
+    num_shape_groups_2: u32,
     #[br(count = num_shape_groups_2)]
     pub shape_groups_2: Vec<BlockRef>,
 }

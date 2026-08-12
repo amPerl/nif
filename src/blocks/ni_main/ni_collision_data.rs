@@ -63,9 +63,12 @@ pub struct HalfSpaceBV {
     pub center: Vector3,
 }
 
-#[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[binrw::binrw]
+#[derive(Debug, PartialEq)]
 pub struct UnionBV {
-    pub num_bv: u32,
+    #[br(temp)]
+    #[bw(calc = bounding_volumes.len() as u32)]
+    num_bv: u32,
     #[br(count=num_bv)]
     pub bounding_volumes: Vec<BoundingVolume>,
 }

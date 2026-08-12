@@ -2,18 +2,24 @@ use binrw::{BinRead, BinWrite};
 
 use crate::common::Triangle;
 
-#[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[binrw::binrw]
+#[derive(Debug, PartialEq)]
 pub struct NiSkinPartition {
-    pub num_partitions: u32,
+    #[br(temp)]
+    #[bw(calc = partitions.len() as u32)]
+    num_partitions: u32,
     #[br(count = num_partitions)]
     pub partitions: Vec<SkinPartition>,
 }
 
-#[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[binrw::binrw]
+#[derive(Debug, PartialEq)]
 pub struct SkinPartition {
     pub num_vertices: u16,
     pub num_triangles: u16,
-    pub num_bones: u16,
+    #[br(temp)]
+    #[bw(calc = bones.len() as u16)]
+    num_bones: u16,
     pub num_strips: u16,
     pub num_weights_per_vertex: u16,
 

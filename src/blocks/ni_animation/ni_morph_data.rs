@@ -2,9 +2,12 @@ use binrw::{BinRead, BinWrite};
 
 use crate::{blocks::NiString, common::Vector3};
 
-#[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[binrw::binrw]
+#[derive(Debug, PartialEq)]
 pub struct NiMorphData {
-    pub num_morphs: u32,
+    #[br(temp)]
+    #[bw(calc = morphs.len() as u32)]
+    num_morphs: u32,
     pub num_vertices: u32,
     pub relative_targets: u8,
     #[br(args { count: num_morphs as _, inner: (num_vertices,) })]
