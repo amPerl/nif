@@ -2,10 +2,17 @@ use binrw::{BinRead, BinWrite};
 
 use crate::common::{BlockRef, Color4, TexCoord, Vector3};
 
-#[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[binrw::binrw]
+#[derive(Debug, PartialEq)]
 pub struct NiGeometryData {
     pub group_id: i32,
-    pub num_vertices: u16,
+    #[br(temp)]
+    #[bw(calc = vertices.as_ref().map(|v| v.len())
+        .or_else(|| normals.as_ref().map(|v| v.len()))
+        .or_else(|| vertex_colors.as_ref().map(|v| v.len()))
+        .or_else(|| uv_sets.first().map(|s| s.uvs.len()))
+        .unwrap_or(0) as u16)]
+    num_vertices: u16,
     pub keep_flags: u8,
     pub compress_flags: u8,
 
@@ -52,6 +59,15 @@ pub struct UvSet {
 }
 
 impl NiGeometryData {
+    pub fn vertex_count(&self) -> usize {
+        self.vertices
+            .as_ref()
+            .map(|v| v.len())
+            .or_else(|| self.normals.as_ref().map(|v| v.len()))
+            .or_else(|| self.vertex_colors.as_ref().map(|v| v.len()))
+            .or_else(|| self.uv_sets.first().map(|s| s.uvs.len()))
+            .unwrap_or(0)
+    }
     pub fn data_flags(&self) -> u16 {
         (self.tspace_flag as u16) << 8 | self.num_uv_sets as u16
     }

@@ -5,6 +5,7 @@ use crate::common::Triangle;
 #[binrw::binrw]
 #[derive(Debug, PartialEq)]
 pub struct NiTriShapeData {
+    #[bw(args(triangles.as_ref().map_or(base.num_triangles, |t| t.len() as u16)))]
     pub base: NiTriBasedGeomData,
 
     pub num_triangle_points: u32,

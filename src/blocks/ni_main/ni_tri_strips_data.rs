@@ -4,6 +4,7 @@ use super::NiTriBasedGeomData;
 #[binrw::binrw]
 #[derive(Debug, PartialEq)]
 pub struct NiTriStripsData {
+    #[bw(args(base.num_triangles))]
     pub base: NiTriBasedGeomData,
 
     #[br(temp)]

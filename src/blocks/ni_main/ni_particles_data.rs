@@ -10,7 +10,7 @@ pub struct NiParticlesData {
     #[br(map = |x: u8| x > 0)]
     #[bw(map = |x: &bool| u8::from(*x))]
     pub has_radii: bool,
-    #[br(if(has_radii), count = base.num_vertices)]
+    #[br(if(has_radii), count = base.vertex_count())]
     pub radii: Option<Vec<f32>>,
 
     pub num_active: u16,
@@ -18,25 +18,25 @@ pub struct NiParticlesData {
     #[br(map = |x: u8| x > 0)]
     #[bw(map = |x: &bool| u8::from(*x))]
     pub has_sizes: bool,
-    #[br(if(has_sizes), count = base.num_vertices)]
+    #[br(if(has_sizes), count = base.vertex_count())]
     pub sizes: Option<Vec<f32>>,
 
     #[br(map = |x: u8| x > 0)]
     #[bw(map = |x: &bool| u8::from(*x))]
     pub has_rotations: bool,
-    #[br(if(has_rotations), count = base.num_vertices)]
+    #[br(if(has_rotations), count = base.vertex_count())]
     pub rotations: Option<Vec<Quaternion>>,
 
     #[br(map = |x: u8| x > 0)]
     #[bw(map = |x: &bool| u8::from(*x))]
     pub has_rotation_angles: bool,
-    #[br(if(has_rotation_angles), count = base.num_vertices)]
+    #[br(if(has_rotation_angles), count = base.vertex_count())]
     pub rotation_angles: Option<Vec<f32>>,
 
     #[br(map = |x: u8| x > 0)]
     #[bw(map = |x: &bool| u8::from(*x))]
     pub has_rotation_axes: bool,
-    #[br(if(has_rotation_axes), count = base.num_vertices)]
+    #[br(if(has_rotation_axes), count = base.vertex_count())]
     pub rotation_axes: Option<Vec<Vector3>>,
 }
 

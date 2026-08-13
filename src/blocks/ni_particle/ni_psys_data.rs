@@ -6,13 +6,13 @@ use crate::{blocks::NiParticlesData, common::Vector3};
 pub struct NiPSysData {
     pub base: NiParticlesData,
 
-    #[br(count = base.base.num_vertices)]
+    #[br(count = base.base.vertex_count())]
     pub particle_info: Vec<NiParticleInfo>,
 
     #[br(map = |x: u8| x > 0)]
     #[bw(map = |x: &bool| u8::from(*x))]
     pub has_rotation_speeds: bool,
-    #[br(if(has_rotation_speeds), count = base.base.num_vertices)]
+    #[br(if(has_rotation_speeds), count = base.base.vertex_count())]
     pub rotation_speeds: Option<Vec<f32>>,
 
     pub num_added_particles: u16,

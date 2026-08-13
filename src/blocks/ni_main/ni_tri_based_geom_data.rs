@@ -1,10 +1,12 @@
-use binrw::{BinRead, BinWrite};
 
 use super::NiGeometryData;
 
-#[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[binrw::binrw]
+#[bw(import(triangle_count: u16))]
+#[derive(Debug, PartialEq)]
 pub struct NiTriBasedGeomData {
     pub base: NiGeometryData,
+    #[bw(map = |_: &u16| triangle_count)]
     pub num_triangles: u16,
 }
 
