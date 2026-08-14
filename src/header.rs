@@ -14,8 +14,8 @@ use binrw::{
 #[br(assert(version_from_str == version, NifError::InvalidValueError))]
 pub struct Header {
     #[br(parse_with = parse_utils::parse_version)]
-    #[bw(write_with = parse_utils::write_version)]
-    pub version_from_str: u32,
+    #[bw(map = |_: &u32| parse_utils::version_bytes(*version))]
+    version_from_str: u32,
     pub version: u32,
     #[br(assert(endian_type == EndianType::LittleEndian, NifError::NotImplemented("big-endian files")))]
     pub endian_type: EndianType,

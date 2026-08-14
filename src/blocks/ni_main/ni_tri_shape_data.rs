@@ -8,11 +8,13 @@ pub struct NiTriShapeData {
     #[bw(args(triangles.as_ref().map_or(base.num_triangles, |t| t.len() as u16)))]
     pub base: NiTriBasedGeomData,
 
-    pub num_triangle_points: u32,
-    #[br(map = |x: u8| x > 0)]
-    #[bw(map = |x: &bool| u8::from(*x))]
-    pub has_triangles: bool,
-    #[br(if(has_triangles))]
+    #[br(temp)]
+    #[bw(calc = triangles.as_ref().map_or(0, |t| (t.len() * 3) as u32))]
+    num_triangle_points: u32,
+    #[br(temp)]
+    #[bw(calc = u8::from(triangles.is_some()))]
+    has_triangles: u8,
+    #[br(if(has_triangles != 0))]
     #[br(count=base.num_triangles)]
     pub triangles: Option<Vec<Triangle>>,
 

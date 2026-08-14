@@ -12,14 +12,15 @@ pub struct NiGeometry {
     pub material_data: MaterialData,
 }
 
-#[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[binrw::binrw]
+#[derive(Debug, PartialEq)]
 pub struct MaterialData {
-    #[br(map = |x: u8| x > 0)]
-    #[bw(map = |x: &bool| u8::from(*x))]
-    pub has_shader: bool,
-    #[br(if(has_shader))]
+    #[br(temp)]
+    #[bw(calc = u8::from(shader_name.is_some()))]
+    has_shader: u8,
+    #[br(if(has_shader != 0))]
     pub shader_name: Option<NiString>,
-    #[br(if(has_shader))]
+    #[br(if(has_shader != 0))]
     pub shader_extra_data_ref: Option<BlockRef>,
 }
 

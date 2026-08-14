@@ -76,17 +76,16 @@ pub fn parse_version() -> BinResult<u32> {
     Ok((major & 0xFF) << 24 | (minor & 0xFF) << 16 | (patch & 0xFF) << 8 | (build & 0xFF))
 }
 
-#[binrw::writer(writer)]
-pub fn write_version(version: &u32) -> BinResult<()> {
-    let text = format!(
-        "{}.{}.{}.{}\n",
+pub fn version_bytes(version: u32) -> Vec<u8> {
+    format!(
+        "{}.{}.{}.{}
+",
         version >> 24 & 0xFF,
         version >> 16 & 0xFF,
         version >> 8 & 0xFF,
         version & 0xFF
-    );
-    writer.write_all(text.as_bytes())?;
-    Ok(())
+    )
+    .into_bytes()
 }
 
 const MAX_LF_TERMINATED_STRING_LEN: usize = 64;

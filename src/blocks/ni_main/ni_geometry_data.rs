@@ -16,35 +16,35 @@ pub struct NiGeometryData {
     pub keep_flags: u8,
     pub compress_flags: u8,
 
-    #[br(map = |x: u8| x > 0)]
-    #[bw(map = |x: &bool| u8::from(*x))]
-    pub has_vertices: bool,
-    #[br(if(has_vertices), count = num_vertices)]
+    #[br(temp)]
+    #[bw(calc = u8::from(vertices.is_some()))]
+    has_vertices: u8,
+    #[br(if(has_vertices != 0), count = num_vertices)]
     pub vertices: Option<Vec<Vector3>>,
 
-    pub num_uv_sets: u8,
-    pub tspace_flag: u8,
+    #[bw(map = |x: &u16| (*x & !0x003F) | (uv_sets.len() as u16 & 0x003F))]
+    pub data_flags: u16,
 
-    #[br(map = |x: u8| x > 0)]
-    #[bw(map = |x: &bool| u8::from(*x))]
-    pub has_normals: bool,
-    #[br(if(has_normals), count = num_vertices)]
+    #[br(temp)]
+    #[bw(calc = u8::from(normals.is_some()))]
+    has_normals: u8,
+    #[br(if(has_normals != 0), count = num_vertices)]
     pub normals: Option<Vec<Vector3>>,
-    #[br(if(has_normals && (tspace_flag & 240 ) > 0), count = num_vertices)]
+    #[br(if(has_normals != 0 && (data_flags & 0xF000) > 0), count = num_vertices)]
     pub tangents: Option<Vec<Vector3>>,
-    #[br(if(has_normals && (tspace_flag & 240 ) > 0), count = num_vertices)]
+    #[br(if(has_normals != 0 && (data_flags & 0xF000) > 0), count = num_vertices)]
     pub binormals: Option<Vec<Vector3>>,
 
     pub center: Vector3,
     pub radius: f32,
 
-    #[br(map = |x: u8| x > 0)]
-    #[bw(map = |x: &bool| u8::from(*x))]
-    pub has_vertex_colors: bool,
-    #[br(if(has_vertex_colors), count = num_vertices)]
+    #[br(temp)]
+    #[bw(calc = u8::from(vertex_colors.is_some()))]
+    has_vertex_colors: u8,
+    #[br(if(has_vertex_colors != 0), count = num_vertices)]
     pub vertex_colors: Option<Vec<Color4>>,
 
-    #[br(args { count: (num_uv_sets & 63) as _, inner: (num_vertices,) })]
+    #[br(args { count: (data_flags & 0x003F) as _, inner: (num_vertices,) })]
     pub uv_sets: Vec<UvSet>,
 
     pub consistency_flags: u16,
@@ -69,7 +69,7 @@ impl NiGeometryData {
             .unwrap_or(0)
     }
     pub fn data_flags(&self) -> u16 {
-        (self.tspace_flag as u16) << 8 | self.num_uv_sets as u16
+        self.data_flags
     }
     pub fn uv_set_count(&self) -> u16 {
         self.data_flags() & 0x003F

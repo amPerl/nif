@@ -1,42 +1,42 @@
-use binrw::{BinRead, BinWrite};
 
 use super::NiGeometryData;
 use crate::common::{Quaternion, Vector3};
 
-#[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[binrw::binrw]
+#[derive(Debug, PartialEq)]
 pub struct NiParticlesData {
     pub base: NiGeometryData,
 
-    #[br(map = |x: u8| x > 0)]
-    #[bw(map = |x: &bool| u8::from(*x))]
-    pub has_radii: bool,
-    #[br(if(has_radii), count = base.vertex_count())]
+    #[br(temp)]
+    #[bw(calc = u8::from(radii.is_some()))]
+    has_radii: u8,
+    #[br(if(has_radii != 0), count = base.vertex_count())]
     pub radii: Option<Vec<f32>>,
 
     pub num_active: u16,
 
-    #[br(map = |x: u8| x > 0)]
-    #[bw(map = |x: &bool| u8::from(*x))]
-    pub has_sizes: bool,
-    #[br(if(has_sizes), count = base.vertex_count())]
+    #[br(temp)]
+    #[bw(calc = u8::from(sizes.is_some()))]
+    has_sizes: u8,
+    #[br(if(has_sizes != 0), count = base.vertex_count())]
     pub sizes: Option<Vec<f32>>,
 
-    #[br(map = |x: u8| x > 0)]
-    #[bw(map = |x: &bool| u8::from(*x))]
-    pub has_rotations: bool,
-    #[br(if(has_rotations), count = base.vertex_count())]
+    #[br(temp)]
+    #[bw(calc = u8::from(rotations.is_some()))]
+    has_rotations: u8,
+    #[br(if(has_rotations != 0), count = base.vertex_count())]
     pub rotations: Option<Vec<Quaternion>>,
 
-    #[br(map = |x: u8| x > 0)]
-    #[bw(map = |x: &bool| u8::from(*x))]
-    pub has_rotation_angles: bool,
-    #[br(if(has_rotation_angles), count = base.vertex_count())]
+    #[br(temp)]
+    #[bw(calc = u8::from(rotation_angles.is_some()))]
+    has_rotation_angles: u8,
+    #[br(if(has_rotation_angles != 0), count = base.vertex_count())]
     pub rotation_angles: Option<Vec<f32>>,
 
-    #[br(map = |x: u8| x > 0)]
-    #[bw(map = |x: &bool| u8::from(*x))]
-    pub has_rotation_axes: bool,
-    #[br(if(has_rotation_axes), count = base.vertex_count())]
+    #[br(temp)]
+    #[bw(calc = u8::from(rotation_axes.is_some()))]
+    has_rotation_axes: u8,
+    #[br(if(has_rotation_axes != 0), count = base.vertex_count())]
     pub rotation_axes: Option<Vec<Vector3>>,
 }
 

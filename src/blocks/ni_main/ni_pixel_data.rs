@@ -15,7 +15,9 @@ pub struct NiPixelData {
     pub bytes_per_pixel: u32,
     #[br(count = num_mipmaps)]
     pub mipmaps: Vec<MipMap>,
-    pub num_pixels: u32,
+    #[br(temp)]
+    #[bw(calc = pixel_data.first().map_or(0, |f| f.data.len() as u32))]
+    num_pixels: u32,
     #[br(temp)]
     #[bw(calc = pixel_data.len() as u32)]
     num_faces: u32,
