@@ -17,10 +17,11 @@ mod parse_utils;
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct Nif {
+    #[bw(args(block_type_names(blocks), block_type_index(blocks)))]
     pub header: header::Header,
     #[br(args(
-        header.block_types.iter().map(|b| b.to_string_lossy().into_owned()).collect(),
-        header.block_type_index.clone(),
+        header.block_types().iter().map(|b| b.to_string_lossy().into_owned()).collect(),
+        header.block_type_index().to_vec(),
     ))]
     #[br(parse_with = parse_utils::parse_blocks)]
     pub blocks: Vec<blocks::Block>,
@@ -35,6 +36,28 @@ pub struct Footer {
     num_roots: u32,
     #[br(count = num_roots)]
     pub root_refs: Vec<common::BlockRef>,
+}
+
+fn block_type_names(blocks: &[blocks::Block]) -> Vec<blocks::NiString> {
+    let mut names: Vec<blocks::NiString> = Vec::new();
+    for block in blocks {
+        let name = blocks::NiString::from(block.name());
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
+}
+
+fn block_type_index(blocks: &[blocks::Block]) -> Vec<u16> {
+    let names = block_type_names(blocks);
+    blocks
+        .iter()
+        .map(|block| {
+            let name = blocks::NiString::from(block.name());
+            names.iter().position(|n| *n == name).unwrap_or(0) as u16
+        })
+        .collect()
 }
 
 impl Nif {
@@ -92,6 +115,27 @@ mod tests {
             let (root_index, _) = nif.roots().next().expect("at least one root");
             assert_eq!(first.index, root_index, "file {}", n);
             assert_eq!(first.depth, 0);
+        }
+    }
+
+    #[test]
+    fn writing_rebuilds_the_header_type_table() {
+        let mut nif = load(1);
+        nif.blocks.pop().expect("a block to drop");
+        nif.blocks.pop().expect("a block to drop");
+
+        let mut bytes = Vec::new();
+        nif.write(&mut Cursor::new(&mut bytes)).expect("write nif");
+        let reparsed = Nif::parse(&mut Cursor::new(bytes)).expect("reparse nif");
+
+        assert_eq!(reparsed.blocks.len(), nif.blocks.len());
+        assert_eq!(reparsed.header.block_type_index().len(), nif.blocks.len());
+        for (before, after) in nif.blocks.iter().zip(&reparsed.blocks) {
+            assert_eq!(before.name(), after.name());
+        }
+        for (i, block) in reparsed.blocks.iter().enumerate() {
+            let declared = reparsed.header.block_type_name(i).expect("type name");
+            assert_eq!(declared.to_string_lossy(), block.name());
         }
     }
 
