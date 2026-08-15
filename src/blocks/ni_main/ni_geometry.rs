@@ -12,16 +12,32 @@ pub struct NiGeometry {
     pub material_data: MaterialData,
 }
 
-#[binrw::binrw]
-#[derive(Debug, PartialEq)]
-pub struct MaterialData {
-    #[br(temp)]
-    #[bw(calc = u8::from(shader_name.is_some()))]
-    has_shader: u8,
-    #[br(if(has_shader != 0))]
-    pub shader_name: Option<NiString>,
-    #[br(if(has_shader != 0))]
-    pub shader_extra_data_ref: Option<BlockRef>,
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
+pub struct ShaderInfo {
+    pub name: NiString,
+    pub extra_data_ref: BlockRef,
+}
+
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
+pub enum MaterialData {
+    #[brw(magic = 0u8)]
+    None,
+    #[brw(magic = 1u8)]
+    Shader(ShaderInfo),
+    Invalid {
+        flag: u8,
+        shader: ShaderInfo,
+    },
+}
+
+impl MaterialData {
+    pub fn shader(&self) -> Option<&ShaderInfo> {
+        match self {
+            MaterialData::None => Option::None,
+            MaterialData::Shader(shader) => Some(shader),
+            MaterialData::Invalid { shader, .. } => Some(shader),
+        }
+    }
 }
 
 impl std::ops::Deref for NiGeometry {

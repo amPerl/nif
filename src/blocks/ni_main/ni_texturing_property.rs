@@ -40,17 +40,8 @@ pub struct NiTexturingProperty {
     #[br(if(has_glow_texture != 0))]
     pub glow_texture: Option<Box<TexDesc>>,
 
-    #[br(temp, if(texture_count > 5))]
-    #[bw(if(*texture_count > 5), calc = u8::from(bump_map_texture.is_some()))]
-    has_bump_map_texture: u8,
-    #[br(if(has_bump_map_texture != 0))]
-    pub bump_map_texture: Option<Box<TexDesc>>,
-    #[br(if(has_bump_map_texture != 0))]
-    pub bump_map_luma_scale: Option<f32>,
-    #[br(if(has_bump_map_texture != 0))]
-    pub bump_map_luma_offset: Option<f32>,
-    #[br(if(has_bump_map_texture != 0))]
-    pub bump_map_matrix: Option<Matrix22>,
+    #[br(if(texture_count > 5))]
+    pub bump_map: Option<BumpMap>,
 
     #[br(temp, if(texture_count > 6))]
     #[bw(if(*texture_count > 6), calc = u8::from(decal0_texture.is_some()))]
@@ -82,6 +73,36 @@ pub struct NiTexturingProperty {
     #[br(count=num_shader_textures)]
     pub shader_textures: Vec<ShaderTexDesc>,
 }
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
+pub struct BumpMapData {
+    pub texture: Box<TexDesc>,
+    pub luma_scale: f32,
+    pub luma_offset: f32,
+    pub matrix: Matrix22,
+}
+
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
+pub enum BumpMap {
+    #[brw(magic = 0u8)]
+    None,
+    #[brw(magic = 1u8)]
+    Present(BumpMapData),
+    Invalid {
+        flag: u8,
+        data: BumpMapData,
+    },
+}
+
+impl BumpMap {
+    pub fn get(&self) -> Option<&BumpMapData> {
+        match self {
+            BumpMap::None => Option::None,
+            BumpMap::Present(d) => Some(d),
+            BumpMap::Invalid { data, .. } => Some(data),
+        }
+    }
+}
+
 #[binrw::binrw]
 #[derive(Debug, PartialEq)]
 pub struct TexDesc {
@@ -89,31 +110,67 @@ pub struct TexDesc {
     pub clamp_mode: TexClampMode,
     pub filter_mode: TexFilterMode,
     pub uv_set: u32,
-    #[br(temp)]
-    #[bw(calc = u8::from(translation.is_some()))]
-    has_texture_transform: u8,
-    #[br(if(has_texture_transform != 0))]
-    pub translation: Option<TexCoord>,
-    #[br(if(has_texture_transform != 0))]
-    pub tiling: Option<TexCoord>,
-    #[br(if(has_texture_transform != 0))]
-    pub w_rotation: Option<f32>,
-    #[br(if(has_texture_transform != 0))]
-    pub transform_type: Option<u32>,
-    #[br(if(has_texture_transform != 0))]
-    pub center_offset: Option<TexCoord>,
+    pub transform: TexTransform,
+}
+
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
+pub struct TextureTransform {
+    pub translation: TexCoord,
+    pub tiling: TexCoord,
+    pub w_rotation: f32,
+    pub transform_type: u32,
+    pub center_offset: TexCoord,
+}
+
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
+pub enum TexTransform {
+    #[brw(magic = 0u8)]
+    None,
+    #[brw(magic = 1u8)]
+    Present(TextureTransform),
+    Invalid {
+        flag: u8,
+        transform: TextureTransform,
+    },
+}
+
+impl TexTransform {
+    pub fn get(&self) -> Option<&TextureTransform> {
+        match self {
+            TexTransform::None => Option::None,
+            TexTransform::Present(t) => Some(t),
+            TexTransform::Invalid { transform, .. } => Some(transform),
+        }
+    }
 }
 
 #[binrw::binrw]
 #[derive(Debug, PartialEq)]
-pub struct ShaderTexDesc {
-    #[br(temp)]
-    #[bw(calc = u8::from(map.is_some()))]
-    has_map: u8,
-    #[br(if(has_map != 0))]
-    pub map: Option<TexDesc>,
-    #[br(if(has_map != 0))]
-    pub map_id: Option<u32>,
+pub struct ShaderMap {
+    pub map: TexDesc,
+    pub map_id: u32,
+}
+
+#[derive(Debug, PartialEq, BinRead, BinWrite)]
+pub enum ShaderTexDesc {
+    #[brw(magic = 0u8)]
+    None,
+    #[brw(magic = 1u8)]
+    Map(ShaderMap),
+    Invalid {
+        flag: u8,
+        map: ShaderMap,
+    },
+}
+
+impl ShaderTexDesc {
+    pub fn get(&self) -> Option<&ShaderMap> {
+        match self {
+            ShaderTexDesc::None => Option::None,
+            ShaderTexDesc::Map(m) => Some(m),
+            ShaderTexDesc::Invalid { map, .. } => Some(map),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
