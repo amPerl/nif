@@ -71,11 +71,11 @@ impl Nif {
     }
 
     pub fn roots(&self) -> impl Iterator<Item = (usize, &blocks::Block)> {
-        self.footer.root_refs.iter().filter_map(|r| {
-            usize::try_from(r.0)
-                .ok()
-                .and_then(|i| self.blocks.get(i).map(|b| (i, b)))
-        })
+        self.footer
+            .root_refs
+            .iter()
+            .filter_map(|r| r.index())
+            .filter_map(|i| self.blocks.get(i).map(|b| (i, b)))
     }
 
     pub fn walk(&self) -> walk::Walk<'_> {
@@ -142,7 +142,7 @@ mod tests {
     #[test]
     fn roots_skip_negative_refs() {
         let mut nif = load(1);
-        nif.footer.root_refs.push(common::BlockRef(-1));
+        nif.footer.root_refs.push(common::BlockRef::None);
         assert_eq!(nif.roots().count(), nif.footer.root_refs.len() - 1);
     }
 }

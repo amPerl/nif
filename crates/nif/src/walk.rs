@@ -121,7 +121,7 @@ impl<'a> Iterator for Walk<'a> {
                     _ => Selection::All,
                 };
                 let queue = |stack: &mut Vec<Frame>, r: &crate::common::BlockRef| {
-                    if let Ok(index) = usize::try_from(r.0) {
+                    if let Some(index) = r.index() {
                         stack.push(Frame {
                             index,
                             parent: transform,
