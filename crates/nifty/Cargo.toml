@@ -1,0 +1,17 @@
+[package]
+name = "nifty"
+version = "0.1.0"
+edition = "2021"
+authors = ["Romet Tagobert <sgzfxn@gmail.com>"]
+description = "A NIF inspector"
+license = "MIT"
+publish = false
+
+[dependencies]
+nif = { path = "../nif", features = ["glam"] }
+eframe = { version = "0.35.0", features = ["wgpu"] }
+egui_dock = "0.20.1"
+egui_ltreeview = "0.8.0"
+egui-phosphor = "0.13.0"
+bytemuck = "1.25.2"
+texpresso = "2.0.2"
