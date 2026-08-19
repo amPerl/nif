@@ -280,7 +280,12 @@ impl Gfx {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            // Not the Srgb variant. eframe's target is Bgra8Unorm, which egui treats as already
+            // gamma encoded, and nothing here encodes back on the way out, so an sRGB decode at
+            // sample time would leave everything a stop too dark. Staying in gamma space also
+            // matches the engine: D3D9 fixed function modulated and blended gamma encoded texels
+            // with no sRGB awareness at all.
+            format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
