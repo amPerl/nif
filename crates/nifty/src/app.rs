@@ -573,6 +573,7 @@ impl Viewer<'_> {
                 wireframe: self.state.wireframe,
                 cull: self.state.cull,
                 selected: self.state.selected,
+                eye,
             },
         ));
     }

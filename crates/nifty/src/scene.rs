@@ -5,7 +5,10 @@ use eframe::egui;
 use eframe::egui_wgpu::{self, wgpu};
 use nif::glam::{Mat4, Vec3};
 use nif::{
-    blocks::{ApplyMode, Block, LightMode, NiGeometry, NiGeometryData, VertMode},
+    blocks::{
+        AlphaFunction, ApplyMode, Block, LightMode, NiGeometry, NiGeometryData, StencilDrawMode,
+        TestFunction, VertMode,
+    },
     common::{NiTransform, Triangle},
     Nif,
 };
@@ -17,8 +20,6 @@ pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 /// Lives in `callback_resources`, which is all `paint` can reach.
 pub struct Preview {
-    solid: wgpu::RenderPipeline,
-    solid_two_sided: wgpu::RenderPipeline,
     wire: wgpu::RenderPipeline,
     highlight: wgpu::RenderPipeline,
     camera_bind_group: wgpu::BindGroup,
@@ -30,6 +31,8 @@ pub struct Gfx {
     model_layout: wgpu::BindGroupLayout,
     texture_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
+    shader: wgpu::ShaderModule,
+    pipeline_layout: wgpu::PipelineLayout,
     pub camera_buffer: wgpu::Buffer,
 }
 
@@ -38,6 +41,10 @@ pub struct Mesh {
     pub data_block: usize,
     pub center: Vec3,
     pub radius: f32,
+    /// Blended shapes draw after the opaque ones, back to front.
+    blended: bool,
+    pipeline: wgpu::RenderPipeline,
+    pipeline_unculled: wgpu::RenderPipeline,
     texture: wgpu::BindGroup,
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
@@ -51,6 +58,55 @@ pub struct Scene {
     pub meshes: Vec<Mesh>,
     pub center: Vec3,
     pub radius: f32,
+}
+
+/// The render state a shape's properties ask for. Pipelines are cached on this, so only the
+/// combinations a file actually uses get built.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct DrawState {
+    cull: Option<wgpu::Face>,
+    depth_write: bool,
+    depth_test: bool,
+    blend: Option<(wgpu::BlendFactor, wgpu::BlendFactor)>,
+}
+
+impl DrawState {
+    fn opaque() -> Self {
+        Self {
+            cull: Some(wgpu::Face::Back),
+            depth_write: true,
+            depth_test: true,
+            blend: None,
+        }
+    }
+}
+
+/// NiStencilProperty::draw_mode maps straight to D3DRS_CULLMODE: Ccw and CcwOrBoth cull
+/// clockwise faces, Cw culls counter-clockwise ones, Both culls nothing.
+fn cull_of(draw_mode: Option<&StencilDrawMode>) -> Option<wgpu::Face> {
+    match draw_mode {
+        Some(StencilDrawMode::Both) => None,
+        Some(StencilDrawMode::Cw) => Some(wgpu::Face::Front),
+        _ => Some(wgpu::Face::Back),
+    }
+}
+
+fn blend_factor(function: &AlphaFunction, destination: bool) -> wgpu::BlendFactor {
+    match function {
+        AlphaFunction::One => wgpu::BlendFactor::One,
+        AlphaFunction::Zero => wgpu::BlendFactor::Zero,
+        AlphaFunction::SrcColor => wgpu::BlendFactor::Src,
+        AlphaFunction::InvSrcColor => wgpu::BlendFactor::OneMinusSrc,
+        AlphaFunction::DestColor => wgpu::BlendFactor::Dst,
+        AlphaFunction::InvDestColor => wgpu::BlendFactor::OneMinusDst,
+        AlphaFunction::SrcAlpha => wgpu::BlendFactor::SrcAlpha,
+        AlphaFunction::InvSrcAlpha => wgpu::BlendFactor::OneMinusSrcAlpha,
+        AlphaFunction::DestAlpha => wgpu::BlendFactor::DstAlpha,
+        AlphaFunction::InvDestAlpha => wgpu::BlendFactor::OneMinusDstAlpha,
+        // wgpu rejects a saturating destination factor
+        AlphaFunction::SrcAlphaSaturate if destination => wgpu::BlendFactor::One,
+        AlphaFunction::SrcAlphaSaturate => wgpu::BlendFactor::SrcAlphaSaturated,
+    }
 }
 
 pub struct Camera {
@@ -143,84 +199,39 @@ impl Gfx {
             ],
             immediate_size: 0,
         });
-        let build_with = |cull: Option<wgpu::Face>,
-                          topology: wgpu::PrimitiveTopology,
-                          fragment_entry: &str,
-                          depth_compare: wgpu::CompareFunction,
-                          depth_write: bool| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("nifty"),
-                layout: Some(&layout),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs_main"),
-                    buffers: &[wgpu::VertexBufferLayout {
-                        array_stride: 36,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x4, 2 => Float32x2],
-                    }],
-                    compilation_options: Default::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some(fragment_entry),
-                    targets: &[Some(render_state.target_format.into())],
-                    compilation_options: Default::default(),
-                }),
-                // Measured, not assumed: 67 of 74 closed fixture shapes have positive signed
-                // volume, i.e. triangles run counter-clockwise seen from outside. slipvillage
-                // agrees: it reverses to (c, b, a) because Godot treats clockwise as front.
-                primitive: wgpu::PrimitiveState {
-                    topology,
-                    front_face: wgpu::FrontFace::Ccw,
-                    cull_mode: cull,
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: DEPTH_FORMAT,
-                    depth_write_enabled: Some(depth_write),
-                    depth_compare: Some(depth_compare),
-                    stencil: Default::default(),
-                    bias: Default::default(),
-                }),
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
-            })
-        };
-        let build = |cull, topology, fragment_entry| {
-            build_with(
-                cull,
-                topology,
-                fragment_entry,
-                wgpu::CompareFunction::Less,
-                true,
-            )
-        };
-
-        let solid = build(
-            Some(wgpu::Face::Back),
-            wgpu::PrimitiveTopology::TriangleList,
-            "fs_main",
-        );
-        let solid_two_sided = build(None, wgpu::PrimitiveTopology::TriangleList, "fs_main");
-        let highlight = build_with(
-            None,
+        let highlight = build_pipeline(
+            device,
+            &layout,
+            &shader,
+            render_state.target_format,
+            DrawState {
+                cull: None,
+                depth_write: false,
+                depth_test: false,
+                blend: None,
+            },
             wgpu::PrimitiveTopology::LineList,
             "fs_highlight",
-            wgpu::CompareFunction::Always,
-            false,
         );
         // line list rather than PolygonMode::Line, which needs a device feature
-        let wire = build(None, wgpu::PrimitiveTopology::LineList, "fs_wire");
+        let wire = build_pipeline(
+            device,
+            &layout,
+            &shader,
+            render_state.target_format,
+            DrawState {
+                cull: None,
+                ..DrawState::opaque()
+            },
+            wgpu::PrimitiveTopology::LineList,
+            "fs_wire",
+        );
 
         render_state
             .renderer
             .write()
             .callback_resources
             .insert(Preview {
-                solid,
-                solid_two_sided,
                 wire,
                 highlight,
                 camera_bind_group,
@@ -238,8 +249,22 @@ impl Gfx {
             model_layout,
             texture_layout,
             sampler,
+            shader,
+            pipeline_layout: layout,
             camera_buffer,
         }
+    }
+
+    fn pipeline(&self, state: DrawState) -> wgpu::RenderPipeline {
+        build_pipeline(
+            &self.render_state.device,
+            &self.pipeline_layout,
+            &self.shader,
+            self.render_state.target_format,
+            state,
+            wgpu::PrimitiveTopology::TriangleList,
+            "fs_main",
+        )
     }
 
     fn upload_texture(&self, width: u32, height: u32, rgba: &[u8]) -> wgpu::BindGroup {
@@ -327,6 +352,7 @@ impl Gfx {
         let device = &self.render_state.device;
         let white = self.upload_texture(1, 1, &[255, 255, 255, 255]);
         let mut cache: HashMap<usize, wgpu::BindGroup> = HashMap::new();
+        let mut pipelines: HashMap<DrawState, wgpu::RenderPipeline> = HashMap::new();
         let mut meshes = Vec::new();
         let mut min = Vec3::splat(f32::MAX);
         let mut max = Vec3::splat(f32::MIN);
@@ -425,6 +451,61 @@ impl Gfx {
                 None => 0.0,
             };
 
+            let stencil = geometry
+                .property_refs
+                .iter()
+                .find_map(|r| match r.get(&nif.blocks) {
+                    Some(Block::NiStencilProperty(p)) => Some(p),
+                    _ => None,
+                });
+            let zbuffer = geometry
+                .property_refs
+                .iter()
+                .find_map(|r| match r.get(&nif.blocks) {
+                    Some(Block::NiZBufferProperty(p)) => Some(p),
+                    _ => None,
+                });
+            let alpha = geometry
+                .property_refs
+                .iter()
+                .find_map(|r| match r.get(&nif.blocks) {
+                    Some(Block::NiAlphaProperty(p)) => Some(p),
+                    _ => None,
+                });
+
+            let blend = alpha.filter(|a| a.alpha_blend()).map(|a| {
+                (
+                    blend_factor(&a.source_blend_mode(), false),
+                    blend_factor(&a.destination_blend_mode(), true),
+                )
+            });
+            // TestGreater is 22,323 of the corpus's 22,442 alpha tests, so the shader only
+            // implements "discard at or below the threshold". TestAlways never discards.
+            let (alpha_test, alpha_threshold) = match alpha {
+                Some(a) if a.alpha_test() && a.test_func() != TestFunction::TestAlways => {
+                    (1.0, f32::from(a.threshold) / 255.0)
+                }
+                _ => (0.0, 0.0),
+            };
+            let state = DrawState {
+                cull: cull_of(stencil.map(|p| &p.draw_mode)),
+                depth_write: zbuffer.is_none_or(|z| z.depth_write()),
+                depth_test: zbuffer.is_none_or(|z| z.depth_test()),
+                blend,
+            };
+            let pipeline = pipelines
+                .entry(state)
+                .or_insert_with(|| self.pipeline(state))
+                .clone();
+            let unculled = DrawState {
+                cull: None,
+                ..state
+            };
+            let pipeline_unculled = pipelines
+                .entry(unculled)
+                .or_insert_with(|| self.pipeline(unculled))
+                .clone();
+
             // one upload per source texture, not per shape that uses it
             let texture_key = texturing_key(nif, &geometry.property_refs);
             let texture = match texture_key {
@@ -438,7 +519,7 @@ impl Gfx {
                 None => white.clone(),
             };
 
-            let mut model_uniform = [0f32; 28];
+            let mut model_uniform = [0f32; 32];
             model_uniform[..16].copy_from_slice(&model.to_cols_array());
             model_uniform[16..20].copy_from_slice(&diffuse);
             model_uniform[20..24].copy_from_slice(&emissive);
@@ -448,6 +529,7 @@ impl Gfx {
                 lighting,
                 replace * f32::from(texture_key.is_some()),
             ]);
+            model_uniform[28..32].copy_from_slice(&[alpha_threshold, alpha_test, 0.0, 0.0]);
 
             let mut indices: Vec<u16> = Vec::with_capacity(triangles.len() * 3);
             let mut edges: Vec<u16> = Vec::with_capacity(triangles.len() * 6);
@@ -465,6 +547,9 @@ impl Gfx {
 
             meshes.push(Mesh {
                 shape_block: visit.index,
+                blended: blend.is_some(),
+                pipeline,
+                pipeline_unculled,
                 center: (shape_min + shape_max) * 0.5,
                 radius: ((shape_max - shape_min).length() * 0.5).max(0.001),
                 data_block: geometry.data_ref.index().unwrap_or(usize::MAX),
@@ -553,6 +638,73 @@ fn texturing_key(nif: &Nif, properties: &[nif::common::BlockRef]) -> Option<usiz
         .index()
 }
 
+fn build_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    target_format: wgpu::TextureFormat,
+    state: DrawState,
+    topology: wgpu::PrimitiveTopology,
+    fragment_entry: &str,
+) -> wgpu::RenderPipeline {
+    // the framebuffer alpha is not read back, so only the colour factors follow the file
+    let blend = state.blend.map(|(src, dst)| wgpu::BlendState {
+        color: wgpu::BlendComponent {
+            src_factor: src,
+            dst_factor: dst,
+            operation: wgpu::BlendOperation::Add,
+        },
+        alpha: wgpu::BlendComponent::OVER,
+    });
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("nifty"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs_main"),
+            buffers: &[wgpu::VertexBufferLayout {
+                array_stride: 36,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x4, 2 => Float32x2],
+            }],
+            compilation_options: Default::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some(fragment_entry),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: target_format,
+                blend,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: Default::default(),
+        }),
+        // Measured, not assumed: 67 of 74 closed fixture shapes have positive signed
+        // volume, i.e. triangles run counter-clockwise seen from outside. slipvillage
+        // agrees: it reverses to (c, b, a) because Godot treats clockwise as front.
+        primitive: wgpu::PrimitiveState {
+            topology,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: state.cull,
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: Some(state.depth_write),
+            depth_compare: Some(if state.depth_test {
+                wgpu::CompareFunction::Less
+            } else {
+                wgpu::CompareFunction::Always
+            }),
+            stencil: Default::default(),
+            bias: Default::default(),
+        }),
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
 fn uniform_entry() -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding: 0,
@@ -577,6 +729,21 @@ pub struct PreviewCall {
     pub wireframe: bool,
     pub cull: bool,
     pub selected: Option<usize>,
+    /// Blended shapes sort against this.
+    pub eye: Vec3,
+}
+
+fn draw_mesh(
+    render_pass: &mut wgpu::RenderPass<'static>,
+    mesh: &Mesh,
+    pipeline: &wgpu::RenderPipeline,
+) {
+    render_pass.set_pipeline(pipeline);
+    render_pass.set_bind_group(1, &mesh.bind_group, &[]);
+    render_pass.set_bind_group(2, &mesh.texture, &[]);
+    render_pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+    render_pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint16);
+    render_pass.draw_indexed(0..mesh.count, 0, 0..1);
 }
 
 impl egui_wgpu::CallbackTrait for PreviewCall {
@@ -590,24 +757,44 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
             return;
         };
 
-        let pipeline = match (self.wireframe, self.cull) {
-            (true, _) => &preview.wire,
-            (false, true) => &preview.solid,
-            (false, false) => &preview.solid_two_sided,
-        };
-
-        render_pass.set_pipeline(pipeline);
         render_pass.set_bind_group(0, &preview.camera_bind_group, &[]);
-        for mesh in &self.scene.meshes {
-            render_pass.set_bind_group(1, &mesh.bind_group, &[]);
-            render_pass.set_bind_group(2, &mesh.texture, &[]);
-            render_pass.set_vertex_buffer(0, mesh.vertices.slice(..));
-            if self.wireframe {
+
+        if self.wireframe {
+            render_pass.set_pipeline(&preview.wire);
+            for mesh in &self.scene.meshes {
+                render_pass.set_bind_group(1, &mesh.bind_group, &[]);
+                render_pass.set_bind_group(2, &mesh.texture, &[]);
+                render_pass.set_vertex_buffer(0, mesh.vertices.slice(..));
                 render_pass.set_index_buffer(mesh.edges.slice(..), wgpu::IndexFormat::Uint16);
                 render_pass.draw_indexed(0..mesh.edge_count, 0, 0..1);
-            } else {
-                render_pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint16);
-                render_pass.draw_indexed(0..mesh.count, 0, 0..1);
+            }
+        } else {
+            // opaque first, then blended back to front, which is what the engine's sorter does
+            let mut blended: Vec<&Mesh> = Vec::new();
+            for mesh in &self.scene.meshes {
+                if mesh.blended {
+                    blended.push(mesh);
+                    continue;
+                }
+                let pipeline = if self.cull {
+                    &mesh.pipeline
+                } else {
+                    &mesh.pipeline_unculled
+                };
+                draw_mesh(render_pass, mesh, pipeline);
+            }
+            blended.sort_by(|a, b| {
+                b.center
+                    .distance_squared(self.eye)
+                    .total_cmp(&a.center.distance_squared(self.eye))
+            });
+            for mesh in blended {
+                let pipeline = if self.cull {
+                    &mesh.pipeline
+                } else {
+                    &mesh.pipeline_unculled
+                };
+                draw_mesh(render_pass, mesh, pipeline);
             }
         }
 
@@ -641,6 +828,8 @@ struct Model {
     emissive: vec4<f32>,
     // emissive from vertex colour, diffuse from vertex colour, lighting enabled, apply replace
     sources: vec4<f32>,
+    // alpha test threshold, alpha test enabled
+    alpha: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: Camera;
@@ -714,6 +903,13 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let texel = textureSample(base_texture, base_sampler, in.uv);
     let replace = model.sources.w * camera.flags.x;
     let shaded = mix(lit * texel.rgb, texel.rgb, replace);
-    return vec4<f32>(mix(lit, shaded, camera.flags.y), 1.0);
+
+    // alpha follows the same source as diffuse, and the texture modulates it like the colour
+    let alpha_src = mix(model.diffuse.a, in.color.a, model.sources.y);
+    let alpha = mix(alpha_src, alpha_src * texel.a, camera.flags.y);
+    if (model.alpha.y > 0.5 && alpha <= model.alpha.x) {
+        discard;
+    }
+    return vec4<f32>(mix(lit, shaded, camera.flags.y), alpha);
 }
 "#;
