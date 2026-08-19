@@ -33,6 +33,8 @@ struct State {
     last_pick: Option<egui::Pos2>,
     /// Set when the selection changed outside the tree, so the tree can catch up.
     sync_tree: bool,
+    /// Offset the hierarchy adopts next frame, once the row it needs has been counted.
+    scroll_to: Option<f32>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -118,6 +120,7 @@ impl Default for State {
             textures: true,
             last_pick: None,
             sync_tree: false,
+            scroll_to: None,
         }
     }
 }
@@ -388,7 +391,21 @@ impl TabViewer for Viewer<'_> {
                         .unwrap_or_default();
                     (target, ancestors)
                 });
-                egui::ScrollArea::both().auto_shrink(false).show(ui, |ui| {
+                // The tree does not draw rows outside the clip rect, so an off screen row never
+                // runs its own draw closure and cannot ask to be scrolled to. Counting the rows
+                // it lays out gives an offset that brings the row into view; once it is drawn,
+                // its closure centres it exactly, which costs one frame and needs no assumption
+                // about how the tree sizes a row.
+                let mut rows = Rows {
+                    target: sync.as_ref().and_then(|(target, _)| *target),
+                    drawn: 0,
+                    found: None,
+                };
+                let mut area = egui::ScrollArea::both().auto_shrink(false);
+                if let Some(offset) = self.state.scroll_to.take() {
+                    area = area.vertical_scroll_offset(offset);
+                }
+                let output = area.show(ui, |ui| {
                     let tree_id = ui.make_persistent_id("hierarchy");
                     if let Some((target, ancestors)) = sync {
                         let mut state =
@@ -402,7 +419,15 @@ impl TabViewer for Viewer<'_> {
                     let (_, actions) = TreeView::new(tree_id).show(ui, |builder| {
                         let mut path = HashSet::new();
                         for &index in &roots {
-                            add_node(builder, blocks, &Link::plain(index), &mut path, &palette);
+                            add_node(
+                                builder,
+                                blocks,
+                                &Link::plain(index),
+                                &mut path,
+                                &palette,
+                                true,
+                                &mut rows,
+                            );
                         }
                     });
                     for action in actions {
@@ -411,6 +436,14 @@ impl TabViewer for Viewer<'_> {
                         }
                     }
                 });
+                if let Some(row) = rows.found {
+                    // measured from what was actually laid out, rather than assuming the tree's
+                    // own row height formula
+                    let height = output.content_size.y / rows.drawn.max(1) as f32;
+                    let centred = (row as f32 + 0.5) * height - output.inner_rect.height() * 0.5;
+                    self.state.scroll_to = Some(centred.max(0.0));
+                    ui.ctx().request_repaint();
+                }
                 self.state.sync_tree = false;
                 if clicked.is_some() {
                     self.state.selected = clicked;
@@ -670,14 +703,31 @@ fn ancestors_of(blocks: &[Block], roots: &[usize], target: usize) -> Vec<usize> 
     path
 }
 
+/// Where the target lands in the tree's laid-out order. Rows inside a collapsed directory are
+/// never laid out, so they must not be counted either.
+struct Rows {
+    target: Option<usize>,
+    drawn: usize,
+    found: Option<usize>,
+}
+
 fn add_node(
     builder: &mut egui_ltreeview::TreeViewBuilder<'_, usize>,
     blocks: &[Block],
     link: &Link,
     path: &mut HashSet<usize>,
     palette: &Palette,
+    visible: bool,
+    rows: &mut Rows,
 ) {
     let index = link.index;
+    if visible {
+        if rows.target == Some(index) && rows.found.is_none() {
+            rows.found = Some(rows.drawn);
+        }
+        rows.drawn += 1;
+    }
+
     let label = label_for(blocks, index, link.slot.as_deref(), palette);
     let glyph = blocks.get(index).map(icon_for).unwrap_or(icon::CIRCLE);
     let children = blocks.get(index).map(linked).unwrap_or_default();
@@ -689,11 +739,11 @@ fn add_node(
         return;
     }
 
-    builder.node(NodeBuilder::dir(index).label(label).icon(move |ui| {
+    let open = builder.node(NodeBuilder::dir(index).label(label).icon(move |ui| {
         ui.label(glyph);
     }));
     for child in &children {
-        add_node(builder, blocks, child, path, palette);
+        add_node(builder, blocks, child, path, palette, visible && open, rows);
     }
     builder.close_dir();
     path.remove(&index);
