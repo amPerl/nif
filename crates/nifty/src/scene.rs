@@ -5,7 +5,7 @@ use eframe::egui;
 use eframe::egui_wgpu::{self, wgpu};
 use nif::glam::{Mat4, Vec3};
 use nif::{
-    blocks::{Block, NiGeometry, NiGeometryData},
+    blocks::{ApplyMode, Block, LightMode, NiGeometry, NiGeometryData, VertMode},
     common::{NiTransform, Triangle},
     Nif,
 };
@@ -368,8 +368,9 @@ impl Gfx {
                 attributes.extend_from_slice(&uv);
             }
 
-            // every shape in the fixtures carries a NiMaterialProperty; diffuse is nearly
-            // always white, so ambient and emissive are what actually vary
+            // NiMaterialProperty is a D3DMATERIAL9 verbatim. There is no ambient term here:
+            // the engine multiplies material ambient by the global ambient, which is black
+            // unless the scene carries an NiAmbientLight, and 31 of 31,434 corpus files do.
             let material = geometry
                 .property_refs
                 .iter()
@@ -377,7 +378,7 @@ impl Gfx {
                     Some(Block::NiMaterialProperty(m)) => Some(m),
                     _ => None,
                 });
-            let (diffuse, ambient, emissive) = match material {
+            let (diffuse, emissive) = match material {
                 Some(m) => (
                     [
                         m.color_diffuse.r,
@@ -385,7 +386,6 @@ impl Gfx {
                         m.color_diffuse.b,
                         m.alpha,
                     ],
-                    [m.color_ambient.r, m.color_ambient.g, m.color_ambient.b, 0.0],
                     [
                         m.color_emissive.r,
                         m.color_emissive.g,
@@ -393,7 +393,36 @@ impl Gfx {
                         0.0,
                     ],
                 ),
-                None => ([1.0; 4], [0.0; 4], [0.0; 4]),
+                None => ([1.0; 4], [0.0; 4]),
+            };
+
+            // NiVertexColorProperty does not tint: it re-routes which source feeds each D3D
+            // material channel. LightMode::Emissive uploads no lights at all, and paired with
+            // SourceEmissive it disables lighting outright so the vertex colour passes through.
+            let vertex_color =
+                geometry
+                    .property_refs
+                    .iter()
+                    .find_map(|r| match r.get(&nif.blocks) {
+                        Some(Block::NiVertexColorProperty(p)) => Some(p),
+                        _ => None,
+                    });
+            let (emissive_from_vertex, diffuse_from_vertex, lighting) = match vertex_color {
+                Some(p) => match (&p.lighting_mode, &p.vertex_mode) {
+                    (LightMode::Emissive, VertMode::SourceEmissive) => (1.0, 0.0, 0.0),
+                    (LightMode::Emissive, _) => (0.0, 0.0, 0.0),
+                    (_, VertMode::SourceEmissive) => (1.0, 0.0, 1.0),
+                    (_, VertMode::SourceAmbientDiffuse) => (0.0, 1.0, 1.0),
+                    _ => (0.0, 0.0, 1.0),
+                },
+                None => (0.0, 0.0, 1.0),
+            };
+
+            // a base texture under APPLY_REPLACE disables lighting entirely and the stage
+            // selects the texel alone
+            let replace = match texturing_of(nif, &geometry.property_refs) {
+                Some(p) => f32::from(p.apply_mode == ApplyMode::Replace),
+                None => 0.0,
             };
 
             // one upload per source texture, not per shape that uses it
@@ -412,8 +441,13 @@ impl Gfx {
             let mut model_uniform = [0f32; 28];
             model_uniform[..16].copy_from_slice(&model.to_cols_array());
             model_uniform[16..20].copy_from_slice(&diffuse);
-            model_uniform[20..24].copy_from_slice(&ambient);
-            model_uniform[24..28].copy_from_slice(&emissive);
+            model_uniform[20..24].copy_from_slice(&emissive);
+            model_uniform[24..28].copy_from_slice(&[
+                emissive_from_vertex,
+                diffuse_from_vertex,
+                lighting,
+                replace * f32::from(texture_key.is_some()),
+            ]);
 
             let mut indices: Vec<u16> = Vec::with_capacity(triangles.len() * 3);
             let mut edges: Vec<u16> = Vec::with_capacity(triangles.len() * 6);
@@ -501,12 +535,22 @@ fn geometry_of<'a>(
     }
 }
 
-fn texturing_key(nif: &Nif, properties: &[nif::common::BlockRef]) -> Option<usize> {
-    let texturing = properties.iter().find_map(|r| match r.get(&nif.blocks) {
+fn texturing_of<'a>(
+    nif: &'a Nif,
+    properties: &[nif::common::BlockRef],
+) -> Option<&'a nif::blocks::NiTexturingProperty> {
+    properties.iter().find_map(|r| match r.get(&nif.blocks) {
         Some(Block::NiTexturingProperty(p)) => Some(p),
         _ => None,
-    })?;
-    texturing.base_texture.as_ref()?.source_ref.index()
+    })
+}
+
+fn texturing_key(nif: &Nif, properties: &[nif::common::BlockRef]) -> Option<usize> {
+    texturing_of(nif, properties)?
+        .base_texture
+        .as_ref()?
+        .source_ref
+        .index()
 }
 
 fn uniform_entry() -> wgpu::BindGroupLayoutEntry {
@@ -594,8 +638,9 @@ struct Camera {
 struct Model {
     model: mat4x4<f32>,
     diffuse: vec4<f32>,
-    ambient: vec4<f32>,
     emissive: vec4<f32>,
+    // emissive from vertex colour, diffuse from vertex colour, lighting enabled, apply replace
+    sources: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: Camera;
@@ -650,15 +695,25 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let lambert = clamp(dot(normal, key), 0.0, 1.0);
     let fill = 0.3 * clamp(dot(normal, to_eye), 0.0, 1.0);
 
-    let plain = vec3<f32>(0.78, 0.80, 0.84);
-    let tinted = model.diffuse.rgb * in.color.rgb;
-    let colored = mix(plain, tinted, camera.flags.x);
-    let texel = textureSample(base_texture, base_sampler, in.uv);
-    let base = mix(colored, colored * texel.rgb, camera.flags.y);
-    let ambient = model.ambient.rgb * 0.25 * camera.flags.x;
-    let emissive = model.emissive.rgb * camera.flags.x;
-
     let shade = 0.2 + 0.65 * lambert + fill;
-    return vec4<f32>(emissive + ambient + base * shade, 1.0);
+
+    // the texture modulates the lit colour, so emissive is inside the multiply, not over it:
+    // emissive 1,1,1 is a full-brightness texture, not white. shade stands in for the lights.
+    let vertex = in.color.rgb;
+    let emissive_src = mix(model.emissive.rgb, vertex, model.sources.x);
+    let diffuse_src = mix(model.diffuse.rgb, vertex, model.sources.y);
+    let material_lit = clamp(
+        emissive_src + diffuse_src * shade * model.sources.z,
+        vec3<f32>(0.0),
+        vec3<f32>(1.0)
+    );
+
+    let plain = vec3<f32>(0.78, 0.80, 0.84) * shade;
+    let lit = mix(plain, material_lit, camera.flags.x);
+
+    let texel = textureSample(base_texture, base_sampler, in.uv);
+    let replace = model.sources.w * camera.flags.x;
+    let shaded = mix(lit * texel.rgb, texel.rgb, replace);
+    return vec4<f32>(mix(lit, shaded, camera.flags.y), 1.0);
 }
 "#;
