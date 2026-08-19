@@ -3,12 +3,13 @@ use std::{collections::HashSet, io::Cursor, path::PathBuf, sync::Arc};
 use eframe::egui::{self, text::LayoutJob, Color32, FontId, TextFormat, WidgetText};
 use eframe::egui_wgpu;
 use egui_dock::{DockArea, DockState, Style, TabViewer};
-use egui_ltreeview::{Action, NodeBuilder, TreeView};
+use egui_ltreeview::{Action, NodeBuilder, TreeView, TreeViewState};
 use egui_phosphor::regular as icon;
 use nif::glam::camera::rh::{proj::directx::perspective, view::look_at_mat4};
 use nif::glam::Vec3;
 use nif::{blocks::Block, Nif};
 
+use crate::pick;
 use crate::scene::{Camera, Gfx, PreviewCall, Scene};
 
 struct Loaded {
@@ -28,6 +29,10 @@ struct State {
     cull: bool,
     colors: bool,
     textures: bool,
+    /// Where the last pick happened, so clicking the same spot cycles through what is behind.
+    last_pick: Option<egui::Pos2>,
+    /// Set when the selection changed outside the tree, so the tree can catch up.
+    sync_tree: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -111,6 +116,8 @@ impl Default for State {
             cull: true,
             colors: true,
             textures: true,
+            last_pick: None,
+            sync_tree: false,
         }
     }
 }
@@ -372,20 +379,39 @@ impl TabViewer for Viewer<'_> {
             Tab::Hierarchy => {
                 let mut clicked = None;
                 let palette = Palette::of(ui);
+                let roots: Vec<usize> = loaded.nif.roots().map(|(index, _)| index).collect();
+                // a pick in the preview has to open the tree down to the block it landed on
+                let sync = self.state.sync_tree.then(|| {
+                    let target = self.state.selected;
+                    let ancestors = target
+                        .map(|target| ancestors_of(blocks, &roots, target))
+                        .unwrap_or_default();
+                    (target, ancestors)
+                });
                 egui::ScrollArea::both().auto_shrink(false).show(ui, |ui| {
-                    let (_, actions) =
-                        TreeView::new(ui.make_persistent_id("hierarchy")).show(ui, |builder| {
-                            let mut path = HashSet::new();
-                            for (index, _) in loaded.nif.roots() {
-                                add_node(builder, blocks, &Link::plain(index), &mut path, &palette);
-                            }
-                        });
+                    let tree_id = ui.make_persistent_id("hierarchy");
+                    if let Some((target, ancestors)) = sync {
+                        let mut state =
+                            TreeViewState::<usize>::load(ui, tree_id).unwrap_or_default();
+                        state.set_selected(target.into_iter().collect());
+                        for ancestor in ancestors {
+                            state.set_openness(ancestor, true);
+                        }
+                        state.store(ui, tree_id);
+                    }
+                    let (_, actions) = TreeView::new(tree_id).show(ui, |builder| {
+                        let mut path = HashSet::new();
+                        for &index in &roots {
+                            add_node(builder, blocks, &Link::plain(index), &mut path, &palette);
+                        }
+                    });
                     for action in actions {
                         if let Action::SetSelected(selected) = action {
                             clicked = selected.first().copied();
                         }
                     }
                 });
+                self.state.sync_tree = false;
                 if clicked.is_some() {
                     self.state.selected = clicked;
                 }
@@ -495,7 +521,8 @@ impl Viewer<'_> {
             ));
         });
 
-        let (rect, response) = ui.allocate_exact_size(ui.available_size(), egui::Sense::drag());
+        let (rect, response) =
+            ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
 
         // egui clips the callback rect to the panel but sets the GPU viewport from it, so
         // the projection has to use the clipped rect or the image squishes when the panel
@@ -557,6 +584,32 @@ impl Viewer<'_> {
         let eye = target + direction * distance;
         let view_proj = projection * view;
 
+        // clicking the same spot again steps to whatever is behind the current selection, which
+        // is how you reach a shape hidden by the one in front of it
+        if response.clicked() {
+            if let (Some(pointer), Some(loaded)) =
+                (response.interact_pointer_pos(), &self.state.loaded)
+            {
+                let hits = pick::ray_through(view_proj, rect, pointer)
+                    .map(|ray| pick::hits(&loaded.nif, &ray))
+                    .unwrap_or_default();
+                let repeat = self
+                    .state
+                    .last_pick
+                    .is_some_and(|last| last.distance(pointer) < 4.0);
+                let next = match (repeat, self.state.selected) {
+                    (true, Some(current)) => hits
+                        .iter()
+                        .position(|hit| hit.block == current)
+                        .map(|at| hits[(at + 1) % hits.len()].block),
+                    _ => None,
+                };
+                self.state.selected = next.or_else(|| hits.first().map(|hit| hit.block));
+                self.state.last_pick = Some(pointer);
+                self.state.sync_tree = true;
+            }
+        }
+
         let mut uniform = [0f32; 24];
         uniform[..16].copy_from_slice(&view_proj.to_cols_array());
         uniform[16..19].copy_from_slice(&eye.to_array());
@@ -577,6 +630,44 @@ impl Viewer<'_> {
             },
         ));
     }
+}
+
+/// The chain of nodes from a root down to `target`, following the same links the tree draws.
+fn ancestors_of(blocks: &[Block], roots: &[usize], target: usize) -> Vec<usize> {
+    fn descend(
+        blocks: &[Block],
+        index: usize,
+        target: usize,
+        path: &mut Vec<usize>,
+        seen: &mut HashSet<usize>,
+    ) -> bool {
+        if index == target {
+            return true;
+        }
+        if !seen.insert(index) {
+            return false;
+        }
+        path.push(index);
+        for child in blocks.get(index).map(linked).unwrap_or_default() {
+            if descend(blocks, child.index, target, path, seen) {
+                return true;
+            }
+        }
+        path.pop();
+        seen.remove(&index);
+        false
+    }
+
+    let mut path = Vec::new();
+    let mut seen = HashSet::new();
+    for &root in roots {
+        if descend(blocks, root, target, &mut path, &mut seen) {
+            break;
+        }
+        path.clear();
+        seen.clear();
+    }
+    path
 }
 
 fn add_node(

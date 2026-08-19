@@ -83,7 +83,7 @@ impl DrawState {
 
 /// NiStencilProperty::draw_mode maps straight to D3DRS_CULLMODE: Ccw and CcwOrBoth cull
 /// clockwise faces, Cw culls counter-clockwise ones, Both culls nothing.
-fn cull_of(draw_mode: Option<&StencilDrawMode>) -> Option<wgpu::Face> {
+pub(crate) fn cull_of(draw_mode: Option<&StencilDrawMode>) -> Option<wgpu::Face> {
     match draw_mode {
         Some(StencilDrawMode::Both) => None,
         Some(StencilDrawMode::Cw) => Some(wgpu::Face::Front),
@@ -599,7 +599,7 @@ impl Gfx {
 
 /// A drawable shape's geometry, its vertex data and its triangles, whether the file stores
 /// those as a triangle list or as strips.
-fn geometry_of<'a>(
+pub(crate) fn geometry_of<'a>(
     nif: &'a Nif,
     block: &'a Block,
 ) -> Option<(&'a NiGeometry, &'a NiGeometryData, Vec<Triangle>)> {
@@ -718,7 +718,7 @@ fn uniform_entry() -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-fn model_matrix(transform: &NiTransform) -> Mat4 {
+pub(crate) fn model_matrix(transform: &NiTransform) -> Mat4 {
     Mat4::from_translation(transform.translation.into())
         * Mat4::from_mat3(transform.rotation.into())
         * Mat4::from_scale(Vec3::splat(transform.scale))

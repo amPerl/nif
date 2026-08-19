@@ -6,6 +6,7 @@
 //! Drop a .nif onto the window to open it.
 
 mod app;
+mod pick;
 mod scene;
 mod texture;
 
