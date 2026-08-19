@@ -4,7 +4,11 @@ use std::sync::Arc;
 use eframe::egui;
 use eframe::egui_wgpu::{self, wgpu};
 use nif::glam::{Mat4, Vec3};
-use nif::{blocks::Block, common::NiTransform, Nif};
+use nif::{
+    blocks::{Block, NiGeometry, NiGeometryData},
+    common::{NiTransform, Triangle},
+    Nif,
+};
 use wgpu::util::DeviceExt as _;
 
 use crate::texture::decode_texture;
@@ -328,14 +332,10 @@ impl Gfx {
         let mut max = Vec3::splat(f32::MIN);
 
         for visit in nif.walk() {
-            let Block::NiTriShape(shape) = visit.block else {
+            let Some((geometry, data, triangles)) = geometry_of(nif, visit.block) else {
                 continue;
             };
-            let Some(Block::NiTriShapeData(data)) = shape.data_ref.get(&nif.blocks) else {
-                continue;
-            };
-            let (Some(vertices), Some(triangles)) = (&data.base.base.vertices, &data.triangles)
-            else {
+            let Some(vertices) = &data.vertices else {
                 continue;
             };
             if vertices.is_empty() || triangles.is_empty() {
@@ -343,8 +343,8 @@ impl Gfx {
             }
 
             let model = model_matrix(&visit.transform);
-            let colors = data.base.base.vertex_colors.as_ref();
-            let uvs = data.base.base.uv_sets.first().map(|set| &set.uvs);
+            let colors = data.vertex_colors.as_ref();
+            let uvs = data.uv_sets.first().map(|set| &set.uvs);
             let mut attributes: Vec<f32> = Vec::with_capacity(vertices.len() * 9);
             let mut shape_min = Vec3::splat(f32::MAX);
             let mut shape_max = Vec3::splat(f32::MIN);
@@ -370,7 +370,7 @@ impl Gfx {
 
             // every shape in the fixtures carries a NiMaterialProperty; diffuse is nearly
             // always white, so ambient and emissive are what actually vary
-            let material = shape
+            let material = geometry
                 .property_refs
                 .iter()
                 .find_map(|r| match r.get(&nif.blocks) {
@@ -397,12 +397,12 @@ impl Gfx {
             };
 
             // one upload per source texture, not per shape that uses it
-            let texture_key = texturing_key(nif, &shape.property_refs);
+            let texture_key = texturing_key(nif, &geometry.property_refs);
             let texture = match texture_key {
                 Some(key) => cache
                     .entry(key)
                     .or_insert_with(|| {
-                        self.shape_texture(nif, &shape.property_refs)
+                        self.shape_texture(nif, &geometry.property_refs)
                             .unwrap_or_else(|| self.upload_texture(1, 1, &[255, 255, 255, 255]))
                     })
                     .clone(),
@@ -417,7 +417,7 @@ impl Gfx {
 
             let mut indices: Vec<u16> = Vec::with_capacity(triangles.len() * 3);
             let mut edges: Vec<u16> = Vec::with_capacity(triangles.len() * 6);
-            for triangle in triangles {
+            for triangle in &triangles {
                 let (a, b, c) = (triangle.a, triangle.b, triangle.c);
                 indices.extend_from_slice(&[a, b, c]);
                 edges.extend_from_slice(&[a, b, b, c, c, a]);
@@ -433,7 +433,7 @@ impl Gfx {
                 shape_block: visit.index,
                 center: (shape_min + shape_max) * 0.5,
                 radius: ((shape_max - shape_min).length() * 0.5).max(0.001),
-                data_block: shape.data_ref.index().unwrap_or(usize::MAX),
+                data_block: geometry.data_ref.index().unwrap_or(usize::MAX),
                 texture,
                 vertices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("nifty vertices"),
@@ -475,6 +475,29 @@ impl Gfx {
             center,
             radius: radius.max(0.001),
         }
+    }
+}
+
+/// A drawable shape's geometry, its vertex data and its triangles, whether the file stores
+/// those as a triangle list or as strips.
+fn geometry_of<'a>(
+    nif: &'a Nif,
+    block: &'a Block,
+) -> Option<(&'a NiGeometry, &'a NiGeometryData, Vec<Triangle>)> {
+    let (geometry, data) = match block {
+        Block::NiTriShape(shape) => (&shape.base, shape.data_ref.get(&nif.blocks)?),
+        Block::NiTriStrips(strips) => (&strips.base, strips.data_ref.get(&nif.blocks)?),
+        _ => return None,
+    };
+    match data {
+        Block::NiTriShapeData(data) => Some((geometry, &data.base.base, data.triangles.clone()?)),
+        Block::NiTriShapeDynamicData(data) => {
+            Some((geometry, &data.base.base.base, data.base.triangles.clone()?))
+        }
+        Block::NiTriStripsData(data) => {
+            Some((geometry, &data.base.base, data.triangles().collect()))
+        }
+        _ => None,
     }
 }
 
