@@ -199,7 +199,7 @@ impl Palette {
     }
 }
 
-fn label_for(blocks: &[Block], index: usize, palette: &Palette) -> LayoutJob {
+fn label_for(blocks: &[Block], index: usize, slot: Option<&str>, palette: &Palette) -> LayoutJob {
     let mut job = LayoutJob::default();
     let mut push = |text: &str, color: Color32| {
         job.append(
@@ -219,12 +219,21 @@ fn label_for(blocks: &[Block], index: usize, palette: &Palette) -> LayoutJob {
     };
 
     push(&format!("{index}  "), palette.dim);
+    if let Some(slot) = slot {
+        push(&format!("{slot}  "), palette.dim);
+    }
     push(block.name(), palette.plain);
 
-    let name = block
+    let mut name = block
         .object_net()
         .map(|o| o.name.to_string_lossy().into_owned())
         .unwrap_or_default();
+    // source textures are almost always unnamed, and the path is what identifies them
+    if name.is_empty() {
+        if let Block::NiSourceTexture(texture) = block {
+            name = texture.file_name.to_string_lossy().into_owned();
+        }
+    }
     if !name.is_empty() {
         push("  ", palette.dim);
         push(&name, palette.accent);
@@ -254,7 +263,18 @@ fn icon_for(block: &Block) -> &'static str {
     }
 }
 
-fn linked(block: &Block) -> Vec<usize> {
+struct Link {
+    index: usize,
+    slot: Option<String>,
+}
+
+impl Link {
+    fn plain(index: usize) -> Self {
+        Self { index, slot: None }
+    }
+}
+
+fn linked(block: &Block) -> Vec<Link> {
     let mut out = Vec::new();
     for refs in [
         block.child_refs(),
@@ -264,7 +284,27 @@ fn linked(block: &Block) -> Vec<usize> {
     .into_iter()
     .flatten()
     {
-        out.extend(refs.iter().filter_map(|r| r.index()));
+        out.extend(refs.iter().filter_map(|r| r.index()).map(Link::plain));
+    }
+
+    // the texture chain hangs off typed fields rather than the generic ref lists, so none of
+    // it reaches the tree without these
+    match block {
+        Block::NiTexturingProperty(property) => {
+            out.extend(property.textures().filter_map(|(slot, desc)| {
+                Some(Link {
+                    index: desc.source_ref.index()?,
+                    slot: Some(slot.to_string()),
+                })
+            }));
+        }
+        Block::NiSourceTexture(texture) => {
+            out.extend(texture.pixel_data_ref.index().map(Link::plain));
+        }
+        Block::NiPixelData(pixels) => {
+            out.extend(pixels.palette_ref.index().map(Link::plain));
+        }
+        _ => {}
     }
     out
 }
@@ -337,7 +377,7 @@ impl TabViewer for Viewer<'_> {
                         TreeView::new(ui.make_persistent_id("hierarchy")).show(ui, |builder| {
                             let mut path = HashSet::new();
                             for (index, _) in loaded.nif.roots() {
-                                add_node(builder, blocks, index, &mut path, &palette);
+                                add_node(builder, blocks, &Link::plain(index), &mut path, &palette);
                             }
                         });
                     for action in actions {
@@ -361,7 +401,10 @@ impl TabViewer for Viewer<'_> {
                             ui.horizontal(|ui| {
                                 ui.label(icon_for(block));
                                 if ui
-                                    .selectable_label(selected, label_for(blocks, index, &palette))
+                                    .selectable_label(
+                                        selected,
+                                        label_for(blocks, index, None, &palette),
+                                    )
                                     .clicked()
                                 {
                                     clicked = Some(index);
@@ -538,11 +581,12 @@ impl Viewer<'_> {
 fn add_node(
     builder: &mut egui_ltreeview::TreeViewBuilder<'_, usize>,
     blocks: &[Block],
-    index: usize,
+    link: &Link,
     path: &mut HashSet<usize>,
     palette: &Palette,
 ) {
-    let label = label_for(blocks, index, palette);
+    let index = link.index;
+    let label = label_for(blocks, index, link.slot.as_deref(), palette);
     let glyph = blocks.get(index).map(icon_for).unwrap_or(icon::CIRCLE);
     let children = blocks.get(index).map(linked).unwrap_or_default();
 
@@ -556,7 +600,7 @@ fn add_node(
     builder.node(NodeBuilder::dir(index).label(label).icon(move |ui| {
         ui.label(glyph);
     }));
-    for child in children {
+    for child in &children {
         add_node(builder, blocks, child, path, palette);
     }
     builder.close_dir();

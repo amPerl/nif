@@ -73,6 +73,63 @@ pub struct NiTexturingProperty {
     #[br(count=num_shader_textures)]
     pub shader_textures: Vec<ShaderTexDesc>,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextureSlot {
+    Base,
+    Dark,
+    Detail,
+    Gloss,
+    Glow,
+    BumpMap,
+    Decal(u8),
+    Shader(u32),
+}
+
+impl std::fmt::Display for TextureSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TextureSlot::Base => f.write_str("base"),
+            TextureSlot::Dark => f.write_str("dark"),
+            TextureSlot::Detail => f.write_str("detail"),
+            TextureSlot::Gloss => f.write_str("gloss"),
+            TextureSlot::Glow => f.write_str("glow"),
+            TextureSlot::BumpMap => f.write_str("bump map"),
+            TextureSlot::Decal(i) => write!(f, "decal {i}"),
+            TextureSlot::Shader(id) => write!(f, "shader {id}"),
+        }
+    }
+}
+
+impl NiTexturingProperty {
+    /// The occupied texture slots in the engine's read order, named.
+    pub fn textures(&self) -> impl Iterator<Item = (TextureSlot, &TexDesc)> + '_ {
+        [
+            (TextureSlot::Base, self.base_texture.as_deref()),
+            (TextureSlot::Dark, self.dark_texture.as_deref()),
+            (TextureSlot::Detail, self.detail_texture.as_deref()),
+            (TextureSlot::Gloss, self.gloss_texture.as_deref()),
+            (TextureSlot::Glow, self.glow_texture.as_deref()),
+            (
+                TextureSlot::BumpMap,
+                self.bump_map
+                    .as_ref()
+                    .and_then(BumpMap::get)
+                    .map(|d| d.texture.as_ref()),
+            ),
+            (TextureSlot::Decal(0), self.decal0_texture.as_deref()),
+            (TextureSlot::Decal(1), self.decal1_texture.as_deref()),
+            (TextureSlot::Decal(2), self.decal2_texture.as_deref()),
+            (TextureSlot::Decal(3), self.decal3_texture.as_deref()),
+        ]
+        .into_iter()
+        .filter_map(|(slot, desc)| Some((slot, desc?)))
+        .chain(self.shader_textures.iter().filter_map(|entry| {
+            let map = entry.get()?;
+            Some((TextureSlot::Shader(map.map_id), &map.map))
+        }))
+    }
+}
+
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub struct BumpMapData {
     pub texture: Box<TexDesc>,
