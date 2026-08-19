@@ -1,0 +1,58 @@
+name: Release nifty
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/nifty/**'
+      - 'crates/nif/**'
+      - 'Cargo.toml'
+      - '.github/workflows/release-nifty.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build and release
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        run: cargo build --release -p nifty
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: nifty
+          path: target/release/nifty.exe
+
+      - name: Read nifty version
+        id: version
+        shell: bash
+        run: echo "version=$(grep -m1 '^version' crates/nifty/Cargo.toml | cut -d '"' -f2)" >> "$GITHUB_OUTPUT"
+
+      # only cut a release when the version has actually moved
+      - name: Look for an existing release
+        id: released
+        shell: bash
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/nifty-v${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create release
+        if: steps.released.outputs.exists == 'false'
+        uses: ncipollo/release-action@v1
+        with:
+          name: nifty ${{ steps.version.outputs.version }}
+          tag: nifty-v${{ steps.version.outputs.version }}
+          artifacts: 'target\release\nifty.exe'
+          token: ${{ secrets.GITHUB_TOKEN }}
+          generateReleaseNotes: true
