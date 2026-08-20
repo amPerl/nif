@@ -462,6 +462,7 @@ impl TabViewer for Viewer<'_> {
                                 &Link::plain(index),
                                 &mut path,
                                 true,
+                                0,
                                 &mut rows,
                             );
                         }
@@ -843,6 +844,7 @@ fn add_node(
     link: &Link,
     path: &mut HashSet<usize>,
     visible: bool,
+    depth: usize,
     rows: &mut Rows,
 ) {
     let index = link.index;
@@ -867,7 +869,8 @@ fn add_node(
     let mut menu = None;
     let open = builder.node(
         NodeBuilder::dir(index)
-            .default_open(false)
+            // the root opens so a new file is not a single closed row
+            .default_open(depth == 0)
             .label(label)
             .icon(move |ui| {
                 ui.label(glyph);
@@ -887,7 +890,7 @@ fn add_node(
         rows.requested.push((index, open));
     }
     for child in children {
-        add_node(builder, tree, child, path, visible && open, rows);
+        add_node(builder, tree, child, path, visible && open, depth + 1, rows);
     }
     builder.close_dir();
     path.remove(&index);
