@@ -1,104 +1,83 @@
 //! Field by field view of the selected block.
 //!
-//! Every row is a field of the block, in declaration order. A row's value is plain text unless
-//! there is something better to show for it, in which case only that value cell changes. Types
-//! with no row list yet fall back to debug formatting.
+//! The rows come from reflection, so every field of every block appears without anyone listing
+//! them. A row's value is rendered from its type. Anything nifty worked out rather than read is
+//! attached to the row it came from and dimmed.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use eframe::egui;
-use nif::blocks::{
-    Block, BumpMap, LightMode, MaterialData, NiAvObject, NiGeometry, NiGeometryData, NiPalette,
-    NiPixelData, StencilDrawMode, TexDesc, TexTransform, VertMode,
-};
-use nif::common::{ByteColor4, Color3};
+use egui_phosphor::regular as icon;
+use facet_reflect::Peek;
+use nif::blocks::{Block, LightMode, StencilDrawMode, VertMode};
+use nif::common::{BlockRef, ByteColor4, Color3, Color4};
 use nif::Nif;
 
 use crate::library::TextureLibrary;
 use crate::texture::decode_texture;
 
-/// What to draw in a row's value column. Every variant is the field's own data.
+/// Structs small enough to read on one line rather than expand into their own section.
+const INLINE: [&str; 6] = [
+    "Vector3",
+    "Matrix33",
+    "Matrix22",
+    "TexCoord",
+    "Quaternion",
+    "Tbc",
+];
+
 enum Value {
     Text(String),
-    /// Another block, shown as its index and type.
+    /// A list with nothing in it, which has nothing to expand.
+    Empty,
     Link(Option<usize>),
-    Swatches(Vec<ByteColor4>),
-    /// A swatch beside the numbers it was drawn from.
     Colour([f32; 4]),
-    /// A blob that must never be printed in full.
+    Swatches(Vec<ByteColor4>),
     Bytes(usize),
-    /// An array too long to list, shown as its length and what it holds.
-    Items(usize, &'static str),
 }
 
-/// Anything nifty worked out rather than read. It shares a row with the field it came from, so
-/// there are no rows that do not correspond to a field, and it is dimmed to stay distinguishable.
+/// Worked out rather than read. Shares a row with the field it came from.
 enum Derived {
     Note(String),
-    /// Pixels decoded from the named block.
-    Image {
-        block: usize,
-        missing: String,
-    },
+    Image { block: usize, missing: String },
 }
 
 struct Row {
-    name: &'static str,
+    name: String,
     value: Value,
     derived: Vec<Derived>,
+    depth: usize,
 }
 
-/// A divider announcing where a base struct or a nested field's own fields begin. Type names are
-/// CamelCase and field names are snake_case, which is enough to tell the two apart.
 enum Entry {
-    Section(&'static str),
+    Section {
+        name: String,
+        depth: usize,
+    },
+    /// A list header. Its elements follow only while it is expanded.
+    Collection {
+        name: String,
+        depth: usize,
+        len: usize,
+        key: String,
+    },
     Field(Row),
 }
 
-fn text(name: &'static str, value: impl ToString) -> Entry {
-    field(name, Value::Text(value.to_string()))
-}
+/// How far each nesting level shifts the name column.
+const INDENT: f32 = 14.0;
 
-fn field(name: &'static str, value: Value) -> Entry {
-    Entry::Field(Row {
-        name,
-        value,
-        derived: Vec::new(),
-    })
-}
-
-fn with(entry: Entry, derived: Vec<Derived>) -> Entry {
-    match entry {
-        Entry::Field(row) => Entry::Field(Row { derived, ..row }),
-        other => other,
-    }
-}
-
-/// The name, extra data and controller every NiObjectNET carries.
-fn object_net(base: &nif::blocks::NiObjectNET) -> Vec<Entry> {
-    let mut rows = vec![
-        Entry::Section("NiObjectNET"),
-        text("name", base.name.to_string_lossy()),
-    ];
-    for reference in &base.extra_data_refs {
-        rows.push(field("extra_data_ref", Value::Link(reference.index())));
-    }
-    rows.push(field(
-        "controller_ref",
-        Value::Link(base.controller_ref.index()),
-    ));
-    rows
-}
-
-/// Decoded images keyed by the block they came from, so a texture is uploaded once.
 #[derive(Default)]
-pub struct Previews {
+pub struct Details {
     images: HashMap<usize, Option<egui::TextureHandle>>,
+    /// Keys of the collections the user has opened. Everything starts collapsed.
+    expanded: HashSet<String>,
 }
 
-impl Previews {
+impl Details {
     pub fn clear(&mut self) {
         self.images.clear();
+        self.expanded.clear();
     }
 
     fn get(
@@ -126,7 +105,7 @@ impl Previews {
 /// Returns a block index when a link in the value column was followed.
 pub fn show(
     ui: &mut egui::Ui,
-    previews: &mut Previews,
+    state: &mut Details,
     nif: &Nif,
     library: &TextureLibrary,
     index: usize,
@@ -136,14 +115,9 @@ pub fn show(
         return None;
     };
 
-    let Some(rows) = rows(block, nif, library, index) else {
-        egui::ScrollArea::both()
-            .auto_shrink(false)
-            .show(ui, |ui| ui.monospace(fallback(block)));
-        return None;
-    };
-
+    let rows = rows(block, nif, library, index, &state.expanded);
     let mut follow = None;
+    let mut toggle = None;
     egui::ScrollArea::both().auto_shrink(false).show(ui, |ui| {
         egui::Grid::new("fields")
             .num_columns(2)
@@ -151,18 +125,44 @@ pub fn show(
             .show(ui, |ui| {
                 for entry in &rows {
                     match entry {
-                        Entry::Section(name) => {
-                            ui.label(egui::RichText::new(*name).weak());
+                        Entry::Section { name, depth } => {
+                            ui.horizontal(|ui| {
+                                ui.add_space(*depth as f32 * INDENT);
+                                ui.label(egui::RichText::new(name).weak());
+                            });
                             ui.separator();
                         }
+                        Entry::Collection {
+                            name,
+                            depth,
+                            len,
+                            key,
+                        } => {
+                            let open = state.expanded.contains(key);
+                            ui.horizontal(|ui| {
+                                ui.add_space(*depth as f32 * INDENT);
+                                let arrow = if open {
+                                    icon::CARET_DOWN
+                                } else {
+                                    icon::CARET_RIGHT
+                                };
+                                if ui.button(format!("{arrow} {name}")).clicked() {
+                                    toggle = Some(key.clone());
+                                }
+                            });
+                            ui.weak(format!("[{len} items]"));
+                        }
                         Entry::Field(row) => {
-                            ui.label(row.name);
+                            ui.horizontal(|ui| {
+                                ui.add_space(row.depth as f32 * INDENT);
+                                ui.label(&row.name);
+                            });
                             ui.vertical(|ui| {
                                 if let Some(target) = value(ui, nif, &row.value) {
                                     follow = Some(target);
                                 }
                                 for item in &row.derived {
-                                    derived(ui, previews, nif, library, item);
+                                    derived(ui, state, nif, library, item);
                                 }
                             });
                         }
@@ -171,22 +171,26 @@ pub fn show(
                 }
             });
     });
+    if let Some(key) = toggle {
+        if !state.expanded.remove(&key) {
+            state.expanded.insert(key);
+        }
+    }
     follow
 }
 
-/// Draws one value cell. Returns a block index when the user asked to follow a link.
 fn value(ui: &mut egui::Ui, nif: &Nif, value: &Value) -> Option<usize> {
     match value {
         Value::Text(text) => {
             ui.monospace(text);
             None
         }
-        Value::Bytes(len) => {
-            ui.weak(format!("[{len} bytes]"));
+        Value::Empty => {
+            ui.weak("[empty]");
             None
         }
-        Value::Items(len, unit) => {
-            ui.weak(format!("[{len} {unit}]"));
+        Value::Bytes(len) => {
+            ui.weak(format!("[{len} bytes]"));
             None
         }
         Value::Link(None) => {
@@ -223,7 +227,7 @@ fn value(ui: &mut egui::Ui, nif: &Nif, value: &Value) -> Option<usize> {
 
 fn derived(
     ui: &mut egui::Ui,
-    previews: &mut Previews,
+    state: &mut Details,
     nif: &Nif,
     library: &TextureLibrary,
     item: &Derived,
@@ -232,7 +236,7 @@ fn derived(
         Derived::Note(note) => {
             ui.weak(note);
         }
-        Derived::Image { block, missing } => match image(ui, previews, nif, library, *block) {
+        Derived::Image { block, missing } => match image(ui, state, nif, library, *block) {
             Some(handle) => {
                 ui.add(
                     egui::Image::new(&handle)
@@ -249,23 +253,22 @@ fn derived(
 
 fn image(
     ui: &mut egui::Ui,
-    previews: &mut Previews,
+    state: &mut Details,
     nif: &Nif,
     library: &TextureLibrary,
     index: usize,
 ) -> Option<egui::TextureHandle> {
-    let block = nif.blocks.get(index)?;
-    let handle = match block {
+    let handle = match nif.blocks.get(index)? {
         Block::NiPixelData(pixels) => {
             let palette = match pixels.palette_ref.get(&nif.blocks) {
                 Some(Block::NiPalette(palette)) => Some(palette),
                 _ => None,
             };
-            previews.get(ui, index, || decode_texture(pixels, palette))
+            state.get(ui, index, || decode_texture(pixels, palette))
         }
         Block::NiSourceTexture(source) => {
             let requested = source.file_name.to_string_lossy().into_owned();
-            previews.get(ui, index, || library.load(&requested))
+            state.get(ui, index, || library.load(&requested))
         }
         _ => None,
     };
@@ -285,593 +288,323 @@ fn swatches(ui: &mut egui::Ui, entries: &[ByteColor4]) {
     });
 }
 
-fn rows(block: &Block, nif: &Nif, library: &TextureLibrary, index: usize) -> Option<Vec<Entry>> {
-    match block {
-        Block::NiPixelData(pixels) => Some(pixel_data(pixels, index)),
-        Block::NiPalette(palette) => Some(self::palette(palette)),
-        Block::NiSourceTexture(_) => Some(source_texture(nif, library, index)),
-        Block::NiMaterialProperty(material) => Some(material_property(material)),
-        Block::NiTexturingProperty(texturing) => Some(texturing_property(texturing)),
-        Block::NiTriShape(shape) => Some(geometry("NiTriShape", &shape.base)),
-        Block::NiTriStrips(strips) => Some(geometry("NiTriStrips", &strips.base)),
-        Block::NiTriShapeData(data) => {
-            let mut rows = geometry_data(&data.base.base);
-            rows.push(Entry::Section("NiTriBasedGeomData"));
-            rows.push(text("num_triangles", data.base.num_triangles));
-            rows.push(Entry::Section("NiTriShapeData"));
-            rows.push(match &data.triangles {
-                Some(triangles) => field("triangles", Value::Items(triangles.len(), "triangles")),
-                None => text("triangles", "None"),
-            });
-            rows.push(field(
-                "match_groups",
-                Value::Items(data.match_groups.len(), "groups"),
-            ));
-            Some(rows)
-        }
-        Block::NiTriStripsData(data) => {
-            let mut rows = geometry_data(&data.base.base);
-            rows.push(Entry::Section("NiTriBasedGeomData"));
-            rows.push(text("num_triangles", data.base.num_triangles));
-            rows.push(Entry::Section("NiTriStripsData"));
-            for length in &data.strip_lengths {
-                rows.push(text("strip_length", length));
-            }
-            rows.push(match &data.points {
-                Some(points) => with(
-                    field("points", Value::Items(points.len(), "points")),
-                    vec![Derived::Note(format!(
-                        "{} triangles after dropping degenerates",
-                        data.triangles().count()
-                    ))],
-                ),
-                None => text("points", "None"),
-            });
-            Some(rows)
-        }
-        Block::NiAlphaProperty(alpha) => Some(alpha_property(alpha)),
-        Block::NiZBufferProperty(z) => Some(z_buffer_property(z)),
-        Block::NiStencilProperty(stencil) => Some(stencil_property(stencil)),
-        Block::NiVertexColorProperty(colour) => Some(vertex_color_property(colour)),
-        Block::NiSpecularProperty(specular) => Some(flag_property(
-            "NiSpecularProperty",
-            &specular.base,
-            specular.flags,
-            vec![enabled(specular.is_enabled())],
-        )),
-        Block::NiWireframeProperty(wireframe) => Some(flag_property(
-            "NiWireframeProperty",
-            &wireframe.base,
-            wireframe.flags,
-            vec![enabled(wireframe.is_enabled())],
-        )),
-        Block::NiDitherProperty(dither) => Some(enum_property(
-            "NiDitherProperty",
-            &dither.base,
-            format!("{:?}", dither.flags),
-        )),
-        Block::NiShadeProperty(shade) => Some(enum_property(
-            "NiShadeProperty",
-            &shade.base,
-            format!("{:?}", shade.flags),
-        )),
-        Block::NiStringExtraData(data) => Some(extra_data(
-            "NiStringExtraData",
-            &data.name,
-            vec![text("value", data.value.to_string_lossy())],
-        )),
-        Block::NiIntegerExtraData(data) => Some(extra_data(
-            "NiIntegerExtraData",
-            &data.name,
-            vec![text("value", data.value)],
-        )),
-        Block::NiBooleanExtraData(data) => Some(extra_data(
-            "NiBooleanExtraData",
-            &data.name,
-            vec![text("value", data.value)],
-        )),
-        Block::NiFloatExtraData(data) => Some(extra_data(
-            "NiFloatExtraData",
-            &data.name,
-            vec![text("value", data.value)],
-        )),
-        Block::NiColorExtraData(data) => Some(extra_data(
-            "NiColorExtraData",
-            &data.name,
-            vec![field(
-                "data",
-                Value::Colour([data.data.r, data.data.g, data.data.b, data.data.a]),
-            )],
-        )),
-        Block::NiFloatsExtraData(data) => Some(extra_data(
-            "NiFloatsExtraData",
-            &data.name,
-            data.data.iter().map(|v| text("data", v)).collect(),
-        )),
-        Block::NiIntegersExtraData(data) => Some(extra_data(
-            "NiIntegersExtraData",
-            &data.name,
-            data.data.iter().map(|v| text("data", v)).collect(),
-        )),
-        _ => None,
-    }
+struct Walk<'a> {
+    block: &'a Block,
+    nif: &'a Nif,
+    library: &'a TextureLibrary,
+    index: usize,
+    expanded: &'a HashSet<String>,
+    out: Vec<Entry>,
 }
 
-/// Everything a NiAVObject carries, including the flag word whose low bit hides the subtree.
-fn av_object(base: &NiAvObject) -> Vec<Entry> {
-    let mut rows = object_net(&base.base);
-    rows.push(Entry::Section("NiAVObject"));
-    rows.push(with(
-        text("flags", format!("{:#06x}", base.flags)),
-        vec![Derived::Note(if base.is_hidden() {
-            "hidden, this node and its children are skipped".into()
-        } else {
-            "visible".into()
-        })],
-    ));
-    rows.push(text(
-        "translation",
-        format!(
-            "{} {} {}",
-            base.translation.x, base.translation.y, base.translation.z
-        ),
-    ));
-    let m = &base.rotation.column_major;
-    rows.push(text(
-        "rotation",
-        format!(
-            "{} {} {} / {} {} {} / {} {} {}",
-            m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8]
-        ),
-    ));
-    rows.push(text("scale", base.scale));
-    for reference in &base.property_refs {
-        rows.push(field("property_ref", Value::Link(reference.index())));
-    }
-    rows.push(field(
-        "collision_ref",
-        Value::Link(base.collision_ref.index()),
-    ));
-    rows
-}
-
-fn geometry(kind: &'static str, base: &NiGeometry) -> Vec<Entry> {
-    let mut rows = av_object(&base.base);
-    rows.push(Entry::Section("NiGeometry"));
-    rows.push(field("data_ref", Value::Link(base.data_ref.index())));
-    rows.push(field(
-        "skin_instance_ref",
-        Value::Link(base.skin_instance_ref.index()),
-    ));
-    match &base.material_data {
-        MaterialData::None => rows.push(text("material_data", "None")),
-        MaterialData::Shader(shader) | MaterialData::Invalid { shader, .. } => {
-            rows.push(match &base.material_data {
-                MaterialData::Invalid { flag, .. } => {
-                    text("material_data", format!("Invalid flag {flag}"))
-                }
-                _ => text("material_data", "Shader"),
-            });
-            rows.push(text("shader_name", shader.name.to_string_lossy()));
-            rows.push(field(
-                "shader_extra_data_ref",
-                Value::Link(shader.extra_data_ref.index()),
-            ));
-        }
-    }
-    rows.push(Entry::Section(kind));
-    rows
-}
-
-/// The vertex arrays are parallel and long, so they are summarised rather than listed.
-fn geometry_data(data: &NiGeometryData) -> Vec<Entry> {
-    let mut rows = vec![
-        Entry::Section("NiGeometryData"),
-        text("group_id", data.group_id),
-        text("keep_flags", data.keep_flags),
-        text("compress_flags", data.compress_flags),
-    ];
-    rows.push(match &data.vertices {
-        Some(vertices) => field("vertices", Value::Items(vertices.len(), "vertices")),
-        None => text("vertices", "None"),
-    });
-    rows.push(with(
-        text("data_flags", format!("{:#06x}", data.data_flags)),
-        vec![Derived::Note(format!(
-            "{} uv sets, havok material {}, nbt method {}",
-            data.uv_set_count(),
-            data.havok_material(),
-            data.nbt_method()
-        ))],
-    ));
-    for (name, array) in [
-        ("normals", &data.normals),
-        ("tangents", &data.tangents),
-        ("binormals", &data.binormals),
-    ] {
-        rows.push(match array {
-            Some(values) => field(name, Value::Items(values.len(), "vectors")),
-            None => text(name, "None"),
-        });
-    }
-    rows.push(text(
-        "center",
-        format!("{} {} {}", data.center.x, data.center.y, data.center.z),
-    ));
-    rows.push(text("radius", data.radius));
-    rows.push(match &data.vertex_colors {
-        Some(colours) => field("vertex_colors", Value::Items(colours.len(), "colours")),
-        None => text("vertex_colors", "None"),
-    });
-    for set in &data.uv_sets {
-        rows.push(field("uv_set", Value::Items(set.uvs.len(), "coords")));
-    }
-    rows.push(text(
-        "consistency_flags",
-        format!("{:#06x}", data.consistency_flags),
-    ));
-    rows.push(field(
-        "additional_data_ref",
-        Value::Link(data.additional_data_ref.index()),
-    ));
-    rows
-}
-
-fn enabled(on: bool) -> Derived {
-    Derived::Note(if on { "enabled" } else { "disabled" }.into())
-}
-
-/// A `flags` word shown as it is, with what the crate's accessors make of it alongside.
-fn flag_property(
-    kind: &'static str,
-    base: &nif::blocks::NiObjectNET,
-    flags: u16,
-    decoded: Vec<Derived>,
+fn rows(
+    block: &Block,
+    nif: &Nif,
+    library: &TextureLibrary,
+    index: usize,
+    expanded: &HashSet<String>,
 ) -> Vec<Entry> {
-    let mut rows = object_net(base);
-    rows.push(Entry::Section(kind));
-    rows.push(with(text("flags", format!("{flags:#06x}")), decoded));
-    rows
-}
-
-/// Some properties spend their flags word on a plain enum rather than on bits.
-fn enum_property(kind: &'static str, base: &nif::blocks::NiObjectNET, flags: String) -> Vec<Entry> {
-    let mut rows = object_net(base);
-    rows.push(Entry::Section(kind));
-    rows.push(text("flags", flags));
-    rows
-}
-
-fn alpha_property(alpha: &nif::blocks::NiAlphaProperty) -> Vec<Entry> {
-    let mut decoded = vec![Derived::Note(format!(
-        "blending {}, {:?} to {:?}",
-        if alpha.alpha_blend() { "on" } else { "off" },
-        alpha.source_blend_mode(),
-        alpha.destination_blend_mode()
-    ))];
-    decoded.push(Derived::Note(if alpha.alpha_test() {
-        format!("test {:?} against threshold", alpha.test_func())
-    } else {
-        "test off".into()
-    }));
-    if alpha.no_sorter() {
-        decoded.push(Derived::Note("no sorter".into()));
-    }
-    if alpha.clone_unique() {
-        decoded.push(Derived::Note("clone unique".into()));
-    }
-    if alpha.editor_alpha_threshold() {
-        decoded.push(Derived::Note("editor alpha threshold".into()));
-    }
-
-    let mut rows = flag_property("NiAlphaProperty", &alpha.base, alpha.flags, decoded);
-    rows.push(text("threshold", alpha.threshold));
-    rows
-}
-
-fn z_buffer_property(z: &nif::blocks::NiZBufferProperty) -> Vec<Entry> {
-    let decoded = vec![Derived::Note(format!(
-        "test {}, write {}",
-        z.depth_test(),
-        z.depth_write()
-    ))];
-    let mut rows = flag_property("NiZBufferProperty", &z.base, z.flags, decoded);
-    rows.push(text("function", format!("{:?}", z.function)));
-    rows
-}
-
-fn vertex_color_property(colour: &nif::blocks::NiVertexColorProperty) -> Vec<Entry> {
-    let mut rows = object_net(&colour.base);
-    rows.push(Entry::Section("NiVertexColorProperty"));
-    rows.push(text("flags", format!("{:#06x}", colour.flags)));
-    // these select which D3D material channel the vertex colour feeds, so they are worth spelling out
-    rows.push(with(
-        text("vertex_mode", format!("{:?}", colour.vertex_mode)),
-        vec![Derived::Note(
-            match colour.vertex_mode {
-                VertMode::SourceIgnore => {
-                    "ambient, diffuse and emissive all come from the material"
-                }
-                VertMode::SourceEmissive => "emissive comes from the vertex colour",
-                VertMode::SourceAmbientDiffuse => "ambient and diffuse come from the vertex colour",
-                VertMode::Unknown(_) => "unrecognised",
-            }
-            .into(),
-        )],
-    ));
-    rows.push(with(
-        text("lighting_mode", format!("{:?}", colour.lighting_mode)),
-        vec![Derived::Note(
-            match colour.lighting_mode {
-                LightMode::Emissive => "no lights are applied",
-                LightMode::EmissiveAmbientDiffuse => "lights are applied",
-                LightMode::Unknown(_) => "unrecognised",
-            }
-            .into(),
-        )],
-    ));
-    rows
-}
-
-fn stencil_property(stencil: &nif::blocks::NiStencilProperty) -> Vec<Entry> {
-    let mut rows = object_net(&stencil.base);
-    rows.push(Entry::Section("NiStencilProperty"));
-    rows.push(text("stencil_enabled", stencil.stencil_enabled));
-    rows.push(text(
-        "stencil_function",
-        format!("{:?}", stencil.stencil_function),
-    ));
-    rows.push(text("stencil_ref", stencil.stencil_ref));
-    rows.push(text(
-        "stencil_mask",
-        format!("{:#010x}", stencil.stencil_mask),
-    ));
-    rows.push(text("fail_action", format!("{:?}", stencil.fail_action)));
-    rows.push(text("zfail_action", format!("{:?}", stencil.zfail_action)));
-    rows.push(text("pass_action", format!("{:?}", stencil.pass_action)));
-    // this is what decides face culling, not the alpha property
-    rows.push(with(
-        text("draw_mode", format!("{:?}", stencil.draw_mode)),
-        vec![Derived::Note(
-            match stencil.draw_mode {
-                StencilDrawMode::CcwOrBoth | StencilDrawMode::Ccw => "back faces culled",
-                StencilDrawMode::Cw => "front faces culled",
-                StencilDrawMode::Both => "nothing culled, drawn two sided",
-            }
-            .into(),
-        )],
-    ));
-    rows
-}
-
-/// The extra data types are flat: a name, then whatever they carry. They share no base struct in
-/// this crate, so the section is the type itself.
-fn extra_data(kind: &'static str, name: &nif::blocks::NiString, values: Vec<Entry>) -> Vec<Entry> {
-    let mut rows = vec![Entry::Section(kind), text("name", name.to_string_lossy())];
-    rows.extend(values);
-    rows
-}
-
-fn colour(name: &'static str, value: &Color3) -> Entry {
-    field(name, Value::Colour([value.r, value.g, value.b, 1.0]))
-}
-
-fn material_property(material: &nif::blocks::NiMaterialProperty) -> Vec<Entry> {
-    let mut rows = object_net(&material.base);
-    rows.push(Entry::Section("NiMaterialProperty"));
-    rows.push(colour("color_ambient", &material.color_ambient));
-    rows.push(colour("color_diffuse", &material.color_diffuse));
-    rows.push(colour("color_specular", &material.color_specular));
-    rows.push(colour("color_emissive", &material.color_emissive));
-    rows.push(text("glossiness", material.glossiness));
-    rows.push(text("alpha", material.alpha));
-    rows
-}
-
-/// One texture slot. The transform is an enum, so its own fields only exist when it is present.
-fn tex_desc(name: &'static str, desc: &TexDesc, rows: &mut Vec<Entry>) {
-    rows.push(Entry::Section(name));
-    rows.push(field("source_ref", Value::Link(desc.source_ref.index())));
-    rows.push(text("clamp_mode", format!("{:?}", desc.clamp_mode)));
-    rows.push(text("filter_mode", format!("{:?}", desc.filter_mode)));
-    rows.push(text("uv_set", desc.uv_set));
-    match &desc.transform {
-        TexTransform::None => rows.push(text("transform", "None")),
-        TexTransform::Present(transform) | TexTransform::Invalid { transform, .. } => {
-            if let TexTransform::Invalid { flag, .. } = &desc.transform {
-                rows.push(text("transform", format!("Invalid flag {flag}")));
-            } else {
-                rows.push(text("transform", "Present"));
-            }
-            rows.push(text(
-                "translation",
-                format!("{} {}", transform.translation.u, transform.translation.v),
-            ));
-            rows.push(text(
-                "tiling",
-                format!("{} {}", transform.tiling.u, transform.tiling.v),
-            ));
-            rows.push(text("w_rotation", transform.w_rotation));
-            rows.push(text("transform_type", transform.transform_type));
-            rows.push(text(
-                "center_offset",
-                format!(
-                    "{} {}",
-                    transform.center_offset.u, transform.center_offset.v
-                ),
-            ));
-        }
-    }
-}
-
-fn texturing_property(texturing: &nif::blocks::NiTexturingProperty) -> Vec<Entry> {
-    let mut rows = object_net(&texturing.base);
-    rows.push(Entry::Section("NiTexturingProperty"));
-    rows.push(text("apply_mode", format!("{:?}", texturing.apply_mode)));
-    rows.push(text("texture_count", texturing.texture_count));
-
-    let slots: [(&'static str, Option<&TexDesc>); 9] = [
-        ("base_texture", texturing.base_texture.as_deref()),
-        ("dark_texture", texturing.dark_texture.as_deref()),
-        ("detail_texture", texturing.detail_texture.as_deref()),
-        ("gloss_texture", texturing.gloss_texture.as_deref()),
-        ("glow_texture", texturing.glow_texture.as_deref()),
-        ("decal0_texture", texturing.decal0_texture.as_deref()),
-        ("decal1_texture", texturing.decal1_texture.as_deref()),
-        ("decal2_texture", texturing.decal2_texture.as_deref()),
-        ("decal3_texture", texturing.decal3_texture.as_deref()),
-    ];
-    for (name, desc) in slots {
-        match desc {
-            Some(desc) => tex_desc(name, desc, &mut rows),
-            None => rows.push(text(name, "None")),
-        }
-    }
-
-    match &texturing.bump_map {
-        None => rows.push(text("bump_map", "absent")),
-        Some(BumpMap::None) => rows.push(text("bump_map", "None")),
-        Some(bump) => {
-            if let Some(data) = bump.get() {
-                rows.push(text("bump_map", "Present"));
-                tex_desc("bump_map.texture", &data.texture, &mut rows);
-                rows.push(Entry::Section("bump_map"));
-                rows.push(text("luma_scale", data.luma_scale));
-                rows.push(text("luma_offset", data.luma_offset));
-                rows.push(text(
-                    "matrix",
-                    format!(
-                        "m11 {} m21 {} m12 {} m22 {}",
-                        data.matrix.m11, data.matrix.m21, data.matrix.m12, data.matrix.m22
-                    ),
-                ));
-            }
-        }
-    }
-
-    for entry in &texturing.shader_textures {
-        match entry.get() {
-            None => rows.push(text("shader_texture", "None")),
-            Some(map) => {
-                tex_desc("shader_texture", &map.map, &mut rows);
-                rows.push(text("map_id", map.map_id));
-            }
-        }
-    }
-    rows
-}
-
-fn pixel_data(pixels: &NiPixelData, index: usize) -> Vec<Entry> {
-    let format = &pixels.base;
-    let mut rows = vec![
-        Entry::Section("NiPixelFormat"),
-        text("pixel_format", format!("{:?}", format.pixel_format)),
-        text("bits_per_pixel", format.bits_per_pixel),
-        text("renderer_hint", format.renderer_hint),
-        text("extra_data", format.extra_data),
-        text("flags", format.flags),
-        text("tiling", format.tiling),
-    ];
-    for (i, channel) in format.channels.iter().enumerate() {
-        rows.push(text(
-            "channel",
-            format!(
-                "{i}: kind {} convention {} bits {} signed {}",
-                channel.kind, channel.convention, channel.bits_per_channel, channel.is_signed
-            ),
-        ));
-    }
-    rows.push(Entry::Section("NiPixelData"));
-    rows.push(field(
-        "palette_ref",
-        Value::Link(pixels.palette_ref.index()),
-    ));
-    rows.push(text("bytes_per_pixel", pixels.bytes_per_pixel));
-    for mip in &pixels.mipmaps {
-        rows.push(text(
-            "mipmap",
-            format!("{} x {} at offset {}", mip.width, mip.height, mip.offset),
-        ));
-    }
-    for (i, face) in pixels.pixel_data.iter().enumerate() {
-        let row = field(
-            if i == 0 { "pixel_data" } else { "face" },
-            Value::Bytes(face.data.len()),
-        );
-        rows.push(if i == 0 {
-            with(
-                row,
-                vec![Derived::Image {
-                    block: index,
-                    missing: "cannot decode this format".into(),
-                }],
-            )
-        } else {
-            row
-        });
-    }
-    rows
-}
-
-fn palette(palette: &NiPalette) -> Vec<Entry> {
-    vec![
-        Entry::Section("NiPalette"),
-        text("has_alpha", palette.has_alpha),
-        field("palette", Value::Swatches(palette.palette.clone())),
-    ]
-}
-
-fn source_texture(nif: &Nif, library: &TextureLibrary, index: usize) -> Vec<Entry> {
-    let Some(Block::NiSourceTexture(source)) = nif.blocks.get(index) else {
-        return Vec::new();
+    let mut walk = Walk {
+        block,
+        nif,
+        library,
+        index,
+        expanded,
+        out: Vec::new(),
     };
-    let requested = source.file_name.to_string_lossy().into_owned();
-    let mut rows = object_net(&source.base);
-    rows.push(Entry::Section("NiSourceTexture"));
-    rows.push(text("use_external", source.use_external));
+    // Block is an enum wrapping the concrete type
+    if let Ok(variant) = Peek::new(block).into_enum() {
+        if let Ok(Some(inner)) = variant.field(0) {
+            walk.structure(inner, 0, "");
+        }
+    }
+    walk.out
+}
 
-    let mut name_derived = Vec::new();
-    if source.use_external {
-        name_derived.push(Derived::Note(match library.resolve(&requested) {
-            Some(path) => format!("resolves to {}", path.display()),
-            None => "not found in any texture directory".into(),
-        }));
-        name_derived.push(Derived::Image {
-            block: index,
-            missing: "add a texture directory containing this file".into(),
+impl Walk<'_> {
+    fn structure(&mut self, peek: Peek<'_, '_>, depth: usize, path: &str) {
+        let peek = unwrap_pointer(peek);
+        let Ok(structure) = peek.into_struct() else {
+            return;
+        };
+        let owner = peek.shape().type_identifier;
+        let mut headed = false;
+        for (position, field) in structure.ty().fields.iter().enumerate() {
+            let Ok(value) = structure.field(position) else {
+                continue;
+            };
+            // a base contributes its own fields under its own heading, ahead of this type's,
+            // and at the same depth because the whole chain is one block's fields
+            if field.name == "base" && is_struct(value) {
+                self.structure(value, depth, path);
+                continue;
+            }
+            if !headed {
+                self.section(owner, depth);
+                headed = true;
+            }
+            self.field(owner, field.name, value, depth, path);
+        }
+        if !headed {
+            self.section(owner, depth);
+        }
+    }
+
+    fn section(&mut self, name: &str, depth: usize) {
+        self.out.push(Entry::Section {
+            name: name.to_string(),
+            depth,
         });
     }
-    rows.push(with(text("file_name", &requested), name_derived));
-    if source.use_external {
-        if let Some(link) = source.unknown_link_ref {
-            rows.push(text("unknown_link_ref", link));
+
+    fn field(&mut self, owner: &str, name: &str, peek: Peek<'_, '_>, depth: usize, path: &str) {
+        let peek = unwrap_pointer(peek);
+        let here = format!("{path}/{name}");
+
+        if let Ok(option) = peek.into_option() {
+            match option.value() {
+                Some(inner) => self.field(owner, name, inner, depth, path),
+                None => self.push(owner, name, Value::Text("None".into()), depth),
+            }
+            return;
         }
-    } else {
-        let mut pixels = field("pixel_data_ref", Value::Link(source.pixel_data_ref.index()));
-        if let Some(block) = source.pixel_data_ref.index() {
-            pixels = with(
-                pixels,
-                vec![Derived::Image {
-                    block,
-                    missing: "cannot decode this format".into(),
-                }],
+        if let Some(value) = scalar(peek) {
+            self.push(owner, name, value, depth);
+            return;
+        }
+        if peek.into_list_like().is_ok() {
+            self.list(owner, name, peek, depth, &here);
+            return;
+        }
+        if is_struct(peek) && !INLINE.contains(&peek.shape().type_identifier) {
+            self.section(name, depth);
+            let inner_owner = peek.shape().type_identifier;
+            if let Ok(structure) = peek.into_struct() {
+                for (position, inner) in structure.ty().fields.iter().enumerate() {
+                    if let Ok(value) = structure.field(position) {
+                        self.field(inner_owner, inner.name, value, depth + 1, &here);
+                    }
+                }
+            }
+            return;
+        }
+        self.push(owner, name, Value::Text(format!("{peek:?}")), depth);
+    }
+
+    fn list(&mut self, owner: &str, name: &str, peek: Peek<'_, '_>, depth: usize, path: &str) {
+        // these read better as one value than as a list of numbers
+        if let Ok(bytes) = peek.get::<Vec<u8>>() {
+            self.push(owner, name, Value::Bytes(bytes.len()), depth);
+            return;
+        }
+        if let Ok(palette) = peek.get::<Vec<ByteColor4>>() {
+            self.push(owner, name, Value::Swatches(palette.clone()), depth);
+            return;
+        }
+        let Ok(list) = peek.into_list_like() else {
+            return;
+        };
+        let len = list.len();
+        if len == 0 {
+            self.push(owner, name, Value::Empty, depth);
+            return;
+        }
+        let key = format!("{}{path}", self.index);
+        self.out.push(Entry::Collection {
+            name: name.to_string(),
+            depth,
+            len,
+            key: key.clone(),
+        });
+        if !self.expanded.contains(&key) {
+            return;
+        }
+        // elements carry their index, so repeated sections are told apart
+        for (position, item) in list.iter().enumerate() {
+            let name = format!("{name}[{position}]");
+            self.field(
+                owner,
+                &name,
+                item,
+                depth + 1,
+                &format!("{path}[{position}]"),
             );
         }
-        rows.push(pixels);
     }
-    rows.push(text("pixel_layout", format!("{:?}", source.pixel_layout)));
-    rows.push(text("mipmap_format", format!("{:?}", source.mipmap_format)));
-    rows.push(text("alpha_format", format!("{:?}", source.alpha_format)));
-    rows.push(text("is_static", source.is_static));
-    rows.push(text("direct_render", source.direct_render));
 
-    rows
+    fn push(&mut self, owner: &str, name: &str, value: Value, depth: usize) {
+        self.out.push(Entry::Field(Row {
+            name: name.to_string(),
+            value,
+            derived: self.derived(owner, name),
+            depth,
+        }));
+    }
+
+    /// What the crate's accessors make of a field, keyed by the struct that declares it.
+    fn derived(&self, owner: &str, name: &str) -> Vec<Derived> {
+        let block = self.block;
+        match (owner, name) {
+            ("NiAvObject", "flags") => {
+                let hidden = block.av_object().is_some_and(|o| o.is_hidden());
+                note(if hidden {
+                    "hidden, this node and its children are skipped"
+                } else {
+                    "visible"
+                })
+            }
+            ("NiAlphaProperty", "flags") => match block {
+                Block::NiAlphaProperty(alpha) => vec![
+                    Derived::Note(format!(
+                        "blending {}, {:?} to {:?}",
+                        if alpha.alpha_blend() { "on" } else { "off" },
+                        alpha.source_blend_mode(),
+                        alpha.destination_blend_mode()
+                    )),
+                    Derived::Note(if alpha.alpha_test() {
+                        format!("test {:?} against threshold", alpha.test_func())
+                    } else {
+                        "test off".into()
+                    }),
+                ],
+                _ => Vec::new(),
+            },
+            ("NiZBufferProperty", "flags") => match block {
+                Block::NiZBufferProperty(z) => vec![Derived::Note(format!(
+                    "test {}, write {}",
+                    z.depth_test(),
+                    z.depth_write()
+                ))],
+                _ => Vec::new(),
+            },
+            ("NiSpecularProperty", "flags") => match block {
+                Block::NiSpecularProperty(p) => note(enabled(p.is_enabled())),
+                _ => Vec::new(),
+            },
+            ("NiWireframeProperty", "flags") => match block {
+                Block::NiWireframeProperty(p) => note(enabled(p.is_enabled())),
+                _ => Vec::new(),
+            },
+            ("NiVertexColorProperty", "vertex_mode") => match block {
+                Block::NiVertexColorProperty(p) => note(match p.vertex_mode {
+                    VertMode::SourceIgnore => {
+                        "ambient, diffuse and emissive come from the material"
+                    }
+                    VertMode::SourceEmissive => "emissive comes from the vertex colour",
+                    VertMode::SourceAmbientDiffuse => {
+                        "ambient and diffuse come from the vertex colour"
+                    }
+                    VertMode::Unknown(_) => "unrecognised",
+                }),
+                _ => Vec::new(),
+            },
+            ("NiVertexColorProperty", "lighting_mode") => match block {
+                Block::NiVertexColorProperty(p) => note(match p.lighting_mode {
+                    LightMode::Emissive => "no lights are applied",
+                    LightMode::EmissiveAmbientDiffuse => "lights are applied",
+                    LightMode::Unknown(_) => "unrecognised",
+                }),
+                _ => Vec::new(),
+            },
+            ("NiStencilProperty", "draw_mode") => match block {
+                Block::NiStencilProperty(p) => note(match p.draw_mode {
+                    StencilDrawMode::CcwOrBoth | StencilDrawMode::Ccw => "back faces culled",
+                    StencilDrawMode::Cw => "front faces culled",
+                    StencilDrawMode::Both => "nothing culled, drawn two sided",
+                }),
+                _ => Vec::new(),
+            },
+            ("NiTriStripsData", "points") => match block {
+                Block::NiTriStripsData(data) => vec![Derived::Note(format!(
+                    "{} triangles after dropping degenerates",
+                    data.triangles().count()
+                ))],
+                _ => Vec::new(),
+            },
+            ("NiPixelData", "pixel_data") => vec![Derived::Image {
+                block: self.index,
+                missing: "cannot decode this format".into(),
+            }],
+            ("NiSourceTexture", "file_name") => match block {
+                Block::NiSourceTexture(source) if source.use_external => {
+                    let requested = source.file_name.to_string_lossy().into_owned();
+                    vec![
+                        Derived::Note(match self.library.resolve(&requested) {
+                            Some(path) => format!("resolves to {}", path.display()),
+                            None => "not found in any texture directory".into(),
+                        }),
+                        Derived::Image {
+                            block: self.index,
+                            missing: "add a texture directory containing this file".into(),
+                        },
+                    ]
+                }
+                _ => Vec::new(),
+            },
+            ("NiSourceTexture", "pixel_data_ref") => match block {
+                Block::NiSourceTexture(source) => source
+                    .pixel_data_ref
+                    .index()
+                    .filter(|target| self.nif.blocks.get(*target).is_some())
+                    .map(|block| {
+                        vec![Derived::Image {
+                            block,
+                            missing: "cannot decode this format".into(),
+                        }]
+                    })
+                    .unwrap_or_default(),
+                _ => Vec::new(),
+            },
+            _ => Vec::new(),
+        }
+    }
 }
 
-fn fallback(block: &Block) -> String {
-    let text = format!("{block:#?}");
-    match text.char_indices().nth(200_000) {
-        Some((cut, _)) => format!("{}\n...truncated", &text[..cut]),
-        None => text,
+fn note(text: &str) -> Vec<Derived> {
+    vec![Derived::Note(text.to_string())]
+}
+
+fn enabled(on: bool) -> &'static str {
+    if on {
+        "enabled"
+    } else {
+        "disabled"
+    }
+}
+
+/// Types with a better rendering than debug formatting.
+fn scalar(peek: Peek<'_, '_>) -> Option<Value> {
+    if let Ok(reference) = peek.get::<BlockRef>() {
+        return Some(Value::Link(reference.index()));
+    }
+    if let Ok(colour) = peek.get::<Color3>() {
+        return Some(Value::Colour([colour.r, colour.g, colour.b, 1.0]));
+    }
+    if let Ok(colour) = peek.get::<Color4>() {
+        return Some(Value::Colour([colour.r, colour.g, colour.b, colour.a]));
+    }
+    if let Ok(colour) = peek.get::<ByteColor4>() {
+        let byte = |v: u8| f32::from(v) / 255.0;
+        return Some(Value::Colour([
+            byte(colour.r),
+            byte(colour.g),
+            byte(colour.b),
+            byte(colour.a),
+        ]));
+    }
+    if let Ok(string) = peek.get::<nif::blocks::NiString>() {
+        return Some(Value::Text(string.to_string_lossy().into_owned()));
+    }
+    None
+}
+
+fn is_struct(peek: Peek<'_, '_>) -> bool {
+    unwrap_pointer(peek).into_struct().is_ok()
+}
+
+fn unwrap_pointer<'m, 'f>(peek: Peek<'m, 'f>) -> Peek<'m, 'f> {
+    match peek.into_pointer() {
+        Ok(pointer) => pointer.borrow_inner().unwrap_or(peek),
+        Err(_) => peek,
     }
 }

@@ -9,7 +9,7 @@ use nif::glam::camera::rh::{proj::directx::perspective, view::look_at_mat4};
 use nif::glam::Vec3;
 use nif::{blocks::Block, Nif};
 
-use crate::details::{self, Previews};
+use crate::details::{self, Details};
 use crate::library::TextureLibrary;
 use crate::pick;
 use crate::scene::{Camera, Gfx, PreviewCall, Scene};
@@ -17,6 +17,7 @@ use crate::scene::{Camera, Gfx, PreviewCall, Scene};
 struct Loaded {
     path: PathBuf,
     nif: Nif,
+    links: Vec<Vec<Link>>,
     consumed: usize,
     size: usize,
 }
@@ -37,8 +38,10 @@ struct State {
     sync_tree: bool,
     /// Offset the hierarchy adopts next frame, once the row it needs has been counted.
     scroll_to: Option<f32>,
+    /// Nodes to open or close before the tree is next drawn.
+    openness: Vec<(usize, bool)>,
     /// Decoded images for the details pane, keyed by block.
-    previews: Previews,
+    previews: Details,
 }
 
 #[derive(Debug, PartialEq)]
@@ -129,7 +132,8 @@ impl Default for State {
             last_pick: None,
             sync_tree: false,
             scroll_to: None,
-            previews: Previews::default(),
+            openness: Vec::new(),
+            previews: Details::default(),
         }
     }
 }
@@ -201,6 +205,7 @@ impl Nifty {
         });
         state.loaded = Some(Loaded {
             path,
+            links: link_table(&nif.blocks),
             nif,
             consumed: reader.position() as usize,
             size: bytes.len(),
@@ -317,46 +322,32 @@ impl Link {
     }
 }
 
+/// The generic ref lists read better without a label; every other field names itself.
+const UNLABELLED: [&str; 3] = ["child_refs", "property_refs", "extra_data_refs"];
+
+/// Every block a block points at, found by reflection rather than by naming each field. Walking
+/// 103 types by hand is what kept losing refs: the texture chain, data_ref and controller_ref
+/// were each invisible in the tree until someone noticed and added an arm.
 fn linked(block: &Block) -> Vec<Link> {
-    let mut out = Vec::new();
-    for refs in [
-        block.child_refs(),
-        block.property_refs(),
-        block.extra_data_refs(),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        out.extend(refs.iter().filter_map(|r| r.index()).map(Link::plain));
-    }
+    nif::reflect::refs(block)
+        .into_iter()
+        .filter_map(|found| {
+            let slot = found
+                .path
+                .last()
+                .filter(|name| !UNLABELLED.contains(&name.as_str()))
+                .cloned();
+            Some(Link {
+                index: found.reference.index()?,
+                slot,
+            })
+        })
+        .collect()
+}
 
-    // these are reached through typed fields rather than the generic ref lists
-    if let Some(object) = block.object_net() {
-        out.extend(object.controller_ref.index().map(Link::plain));
-    }
-    if let Some(geometry) = block.geometry() {
-        out.extend(geometry.data_ref.index().map(Link::plain));
-        out.extend(geometry.skin_instance_ref.index().map(Link::plain));
-    }
-
-    match block {
-        Block::NiTexturingProperty(property) => {
-            out.extend(property.textures().filter_map(|(slot, desc)| {
-                Some(Link {
-                    index: desc.source_ref.index()?,
-                    slot: Some(slot.to_string()),
-                })
-            }));
-        }
-        Block::NiSourceTexture(texture) => {
-            out.extend(texture.pixel_data_ref.index().map(Link::plain));
-        }
-        Block::NiPixelData(pixels) => {
-            out.extend(pixels.palette_ref.index().map(Link::plain));
-        }
-        _ => {}
-    }
-    out
+/// Precomputed per file, since the tree asks for a block's links on every frame.
+fn link_table(blocks: &[Block]) -> Vec<Vec<Link>> {
+    blocks.iter().map(linked).collect()
 }
 
 struct Viewer<'a> {
@@ -400,7 +391,7 @@ impl TabViewer for Viewer<'_> {
                 let sync = self.state.sync_tree.then(|| {
                     let target = self.state.selected;
                     let ancestors = target
-                        .map(|target| ancestors_of(blocks, &roots, target))
+                        .map(|target| ancestors_of(&loaded.links, &roots, target))
                         .unwrap_or_default();
                     (target, ancestors)
                 });
@@ -411,19 +402,44 @@ impl TabViewer for Viewer<'_> {
                     target: sync.as_ref().and_then(|(target, _)| *target),
                     drawn: 0,
                     found: None,
+                    requested: Vec::new(),
                 };
+                let tree = Tree {
+                    blocks,
+                    links: &loaded.links,
+                    palette: &palette,
+                };
+
+                let mut all = None;
+                ui.horizontal(|ui| {
+                    if ui.button("expand all").clicked() {
+                        all = Some(true);
+                    }
+                    if ui.button("collapse all").clicked() {
+                        all = Some(false);
+                    }
+                });
+                if let Some(open) = all {
+                    self.state.openness = (0..blocks.len()).map(|index| (index, open)).collect();
+                }
+                let openness = std::mem::take(&mut self.state.openness);
                 let mut area = egui::ScrollArea::both().auto_shrink(false);
                 if let Some(offset) = self.state.scroll_to.take() {
                     area = area.vertical_scroll_offset(offset);
                 }
                 let output = area.show(ui, |ui| {
                     let tree_id = ui.make_persistent_id("hierarchy");
-                    if let Some((target, ancestors)) = sync {
+                    if sync.is_some() || !openness.is_empty() {
                         let mut state =
                             TreeViewState::<usize>::load(ui, tree_id).unwrap_or_default();
-                        state.set_selected(target.into_iter().collect());
-                        for ancestor in ancestors {
-                            state.set_openness(ancestor, true);
+                        if let Some((target, ancestors)) = sync {
+                            state.set_selected(target.into_iter().collect());
+                            for ancestor in ancestors {
+                                state.set_openness(ancestor, true);
+                            }
+                        }
+                        for (index, open) in &openness {
+                            state.set_openness(*index, *open);
                         }
                         state.store(ui, tree_id);
                     }
@@ -432,10 +448,9 @@ impl TabViewer for Viewer<'_> {
                         for &index in &roots {
                             add_node(
                                 builder,
-                                blocks,
+                                &tree,
                                 &Link::plain(index),
                                 &mut path,
-                                &palette,
                                 true,
                                 &mut rows,
                             );
@@ -447,6 +462,15 @@ impl TabViewer for Viewer<'_> {
                         }
                     }
                 });
+                if !rows.requested.is_empty() {
+                    // a context menu names one node; the request covers its whole subtree
+                    for (index, open) in rows.requested {
+                        for node in subtree_of(&loaded.links, index) {
+                            self.state.openness.push((node, open));
+                        }
+                    }
+                    ui.ctx().request_repaint();
+                }
                 if let Some(row) = rows.found {
                     // row height from the laid out content, not the tree's own formula
                     let height = output.content_size.y / rows.drawn.max(1) as f32;
@@ -683,9 +707,9 @@ impl Viewer<'_> {
 }
 
 /// The chain of nodes from a root down to `target`, following the same links the tree draws.
-fn ancestors_of(blocks: &[Block], roots: &[usize], target: usize) -> Vec<usize> {
+fn ancestors_of(links: &[Vec<Link>], roots: &[usize], target: usize) -> Vec<usize> {
     fn descend(
-        blocks: &[Block],
+        links: &[Vec<Link>],
         index: usize,
         target: usize,
         path: &mut Vec<usize>,
@@ -698,8 +722,8 @@ fn ancestors_of(blocks: &[Block], roots: &[usize], target: usize) -> Vec<usize> 
             return false;
         }
         path.push(index);
-        for child in blocks.get(index).map(linked).unwrap_or_default() {
-            if descend(blocks, child.index, target, path, seen) {
+        for child in links.get(index).into_iter().flatten() {
+            if descend(links, child.index, target, path, seen) {
                 return true;
             }
         }
@@ -711,7 +735,7 @@ fn ancestors_of(blocks: &[Block], roots: &[usize], target: usize) -> Vec<usize> 
     let mut path = Vec::new();
     let mut seen = HashSet::new();
     for &root in roots {
-        if descend(blocks, root, target, &mut path, &mut seen) {
+        if descend(links, root, target, &mut path, &mut seen) {
             break;
         }
         path.clear();
@@ -726,14 +750,39 @@ struct Rows {
     target: Option<usize>,
     drawn: usize,
     found: Option<usize>,
+    /// Openness asked for from a node's context menu, applied on the next frame.
+    requested: Vec<(usize, bool)>,
+}
+
+/// What every node in the tree needs to draw itself.
+struct Tree<'a> {
+    blocks: &'a [Block],
+    links: &'a [Vec<Link>],
+    palette: &'a Palette,
+}
+
+/// Every node reachable from `index`, including itself.
+fn subtree_of(links: &[Vec<Link>], index: usize) -> Vec<usize> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    let mut stack = vec![index];
+    while let Some(node) = stack.pop() {
+        if !seen.insert(node) {
+            continue;
+        }
+        out.push(node);
+        for child in links.get(node).into_iter().flatten() {
+            stack.push(child.index);
+        }
+    }
+    out
 }
 
 fn add_node(
     builder: &mut egui_ltreeview::TreeViewBuilder<'_, usize>,
-    blocks: &[Block],
+    tree: &Tree<'_>,
     link: &Link,
     path: &mut HashSet<usize>,
-    palette: &Palette,
     visible: bool,
     rows: &mut Rows,
 ) {
@@ -745,9 +794,9 @@ fn add_node(
         rows.drawn += 1;
     }
 
-    let label = label_for(blocks, index, link.slot.as_deref(), palette);
-    let glyph = blocks.get(index).map(icon_for).unwrap_or(icon::CIRCLE);
-    let children = blocks.get(index).map(linked).unwrap_or_default();
+    let label = label_for(tree.blocks, index, link.slot.as_deref(), tree.palette);
+    let glyph = tree.blocks.get(index).map(icon_for).unwrap_or(icon::CIRCLE);
+    let children = tree.links.get(index).map(Vec::as_slice).unwrap_or_default();
 
     if children.is_empty() || !path.insert(index) {
         builder.node(NodeBuilder::leaf(index).label(label).icon(move |ui| {
@@ -756,11 +805,30 @@ fn add_node(
         return;
     }
 
-    let open = builder.node(NodeBuilder::dir(index).label(label).icon(move |ui| {
-        ui.label(glyph);
-    }));
-    for child in &children {
-        add_node(builder, blocks, child, path, palette, visible && open, rows);
+    let mut menu = None;
+    let open = builder.node(
+        NodeBuilder::dir(index)
+            .default_open(false)
+            .label(label)
+            .icon(move |ui| {
+                ui.label(glyph);
+            })
+            .context_menu(|ui| {
+                if ui.button("expand all children").clicked() {
+                    menu = Some(true);
+                    ui.close();
+                }
+                if ui.button("collapse all children").clicked() {
+                    menu = Some(false);
+                    ui.close();
+                }
+            }),
+    );
+    if let Some(open) = menu {
+        rows.requested.push((index, open));
+    }
+    for child in children {
+        add_node(builder, tree, child, path, visible && open, rows);
     }
     builder.close_dir();
     path.remove(&index);
