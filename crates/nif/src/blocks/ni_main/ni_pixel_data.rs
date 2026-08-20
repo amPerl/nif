@@ -6,6 +6,7 @@ use super::NiPixelFormat;
 
 #[binrw::binrw]
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiPixelData {
     pub base: NiPixelFormat,
     pub palette_ref: BlockRef,
@@ -27,12 +28,14 @@ pub struct NiPixelData {
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
 #[br(import(num_pixels: u32))]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct PixelData {
     #[br(count = num_pixels)]
     pub data: Vec<u8>,
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct MipMap {
     pub width: u32,
     pub height: u32,

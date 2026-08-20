@@ -4,6 +4,7 @@ use crate::common::{BlockRef, Matrix33, Vector3};
 
 #[binrw::binrw]
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiAvObject {
     pub base: NiObjectNET,
     pub flags: u16,

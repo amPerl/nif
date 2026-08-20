@@ -4,6 +4,7 @@ use crate::{blocks::NiString, common::Vector3};
 
 #[binrw::binrw]
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiMorphData {
     #[br(temp)]
     #[bw(calc = morphs.len() as u32)]
@@ -17,6 +18,7 @@ pub struct NiMorphData {
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
 #[br(import(num_vertices: u32))]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct Morph {
     pub frame_name: NiString,
     pub legacy_weight: f32,

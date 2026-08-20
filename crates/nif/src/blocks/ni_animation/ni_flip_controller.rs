@@ -4,6 +4,7 @@ use super::ni_float_interp_controller::NiFloatInterpController;
 
 #[binrw::binrw]
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiFlipController {
     pub base: NiFloatInterpController,
     pub texture_slot: u32, // TexType

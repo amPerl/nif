@@ -4,6 +4,7 @@ use crate::common::Triangle;
 
 #[binrw::binrw]
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiSkinPartition {
     #[br(temp)]
     #[bw(calc = partitions.len() as u32)]
@@ -14,6 +15,7 @@ pub struct NiSkinPartition {
 
 #[binrw::binrw]
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct SkinPartition {
     #[bw(map = |x: &u16| vertex_map.as_ref().map(|v| v.len() as u16)
         .or_else(|| vertex_weights.as_ref().map(|v| v.len() as u16)).unwrap_or(*x))]
@@ -63,6 +65,7 @@ pub struct SkinPartition {
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
 #[br(import(num_weights_per_vertex: u16))]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct VertexWeights {
     #[br(count = num_weights_per_vertex)]
     pub weights: Vec<f32>,

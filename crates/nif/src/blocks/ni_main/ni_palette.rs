@@ -2,6 +2,7 @@ use crate::common::ByteColor4;
 
 #[binrw::binrw]
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiPalette {
     #[br(map = |x: u8| x > 0)]
     #[bw(map = |x: &bool| u8::from(*x))]

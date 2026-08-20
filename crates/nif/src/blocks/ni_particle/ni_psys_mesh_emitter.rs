@@ -5,6 +5,7 @@ use crate::common::{BlockRef, Vector3};
 
 #[binrw::binrw]
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiPSysMeshEmitter {
     pub base: NiPSysEmitter,
     #[br(temp)]
@@ -18,6 +19,8 @@ pub struct NiPSysMeshEmitter {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
+#[cfg_attr(feature = "facet", repr(u8))]
 pub enum VelocityType {
     #[brw(magic = 0u32)]
     UseNormals,
@@ -29,6 +32,8 @@ pub enum VelocityType {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
+#[cfg_attr(feature = "facet", repr(u8))]
 pub enum EmitFrom {
     #[brw(magic = 0u32)]
     Vertices,

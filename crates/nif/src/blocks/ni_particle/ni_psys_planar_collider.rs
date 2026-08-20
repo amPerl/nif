@@ -4,6 +4,7 @@ use super::NiPSysCollider;
 use crate::common::Vector3;
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiPSysPlanarCollider {
     pub base: NiPSysCollider,
     pub width: f32,

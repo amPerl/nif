@@ -4,6 +4,7 @@ use crate::common::{Quaternion, Vector3};
 
 #[binrw::binrw]
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiParticlesData {
     pub base: NiGeometryData,
 

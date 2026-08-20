@@ -5,6 +5,7 @@ use crate::common::BlockRef;
 use super::NiPSysModifier;
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiPSysAgeDeathModifier {
     pub base: NiPSysModifier,
     #[br(map = |x: u8| x > 0)]

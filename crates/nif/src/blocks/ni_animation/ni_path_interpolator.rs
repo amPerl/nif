@@ -5,6 +5,7 @@ use crate::common::BlockRef;
 use super::NiKeyBasedInterpolator;
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiPathInterpolator {
     pub base: NiKeyBasedInterpolator,
     pub flags: u16,

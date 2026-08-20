@@ -3,6 +3,7 @@ use binrw::{BinRead, BinWrite};
 use crate::common::BlockRef;
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiTimeController {
     pub next_controller_ref: BlockRef,
     pub flags: u16, // TimeControllerFlags, bitfield

@@ -5,6 +5,7 @@ use binrw::{BinRead, BinWrite};
 
 #[binrw::binrw]
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiTexturingProperty {
     pub base: NiObjectNET,
     pub apply_mode: ApplyMode,
@@ -74,6 +75,8 @@ pub struct NiTexturingProperty {
     pub shader_textures: Vec<ShaderTexDesc>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
+#[cfg_attr(feature = "facet", repr(u8))]
 pub enum TextureSlot {
     Base,
     Dark,
@@ -131,6 +134,7 @@ impl NiTexturingProperty {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct BumpMapData {
     pub texture: Box<TexDesc>,
     pub luma_scale: f32,
@@ -139,6 +143,8 @@ pub struct BumpMapData {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
+#[cfg_attr(feature = "facet", repr(u8))]
 pub enum BumpMap {
     #[brw(magic = 0u8)]
     None,
@@ -162,6 +168,7 @@ impl BumpMap {
 
 #[binrw::binrw]
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct TexDesc {
     pub source_ref: BlockRef,
     pub clamp_mode: TexClampMode,
@@ -171,6 +178,7 @@ pub struct TexDesc {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct TextureTransform {
     pub translation: TexCoord,
     pub tiling: TexCoord,
@@ -180,6 +188,8 @@ pub struct TextureTransform {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
+#[cfg_attr(feature = "facet", repr(u8))]
 pub enum TexTransform {
     #[brw(magic = 0u8)]
     None,
@@ -203,12 +213,15 @@ impl TexTransform {
 
 #[binrw::binrw]
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct ShaderMap {
     pub map: TexDesc,
     pub map_id: u32,
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
+#[cfg_attr(feature = "facet", repr(u8))]
 pub enum ShaderTexDesc {
     #[brw(magic = 0u8)]
     None,
@@ -231,6 +244,8 @@ impl ShaderTexDesc {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
+#[cfg_attr(feature = "facet", repr(u8))]
 pub enum ApplyMode {
     #[brw(magic = 0u32)]
     Replace,
@@ -246,6 +261,8 @@ pub enum ApplyMode {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
+#[cfg_attr(feature = "facet", repr(u8))]
 pub enum TexClampMode {
     #[brw(magic = 0u32)]
     ClampSClampT,
@@ -259,6 +276,8 @@ pub enum TexClampMode {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
+#[cfg_attr(feature = "facet", repr(u8))]
 pub enum TexFilterMode {
     #[brw(magic = 0u32)]
     Nearest,

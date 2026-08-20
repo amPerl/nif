@@ -4,6 +4,7 @@ use super::NiPSysModifier;
 use crate::common::{BlockRef, Vector3};
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiPSysGravityModifier {
     pub base: NiPSysModifier,
     pub gravity_object_ref: BlockRef,
@@ -16,6 +17,8 @@ pub struct NiPSysGravityModifier {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
+#[cfg_attr(feature = "facet", repr(u8))]
 pub enum ForceType {
     #[brw(magic = 0u32)]
     Planar,

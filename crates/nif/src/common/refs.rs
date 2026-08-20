@@ -5,6 +5,8 @@ use crate::blocks::Block;
 /// A link to another block. `-1` is the null every file in the corpus uses; any other
 /// value is an index, and is written back exactly as it was read.
 #[derive(Debug, PartialEq, Eq, BinRead, BinWrite, Clone, Copy, Hash, Default)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
+#[cfg_attr(feature = "facet", repr(u8))]
 pub enum BlockRef {
     #[brw(magic = -1i32)]
     #[default]

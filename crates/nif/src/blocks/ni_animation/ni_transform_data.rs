@@ -4,6 +4,7 @@ use crate::common::{KeyGroup, KeyType, QuatKey, Vector3};
 use crate::parse_utils;
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiTransformData {
     pub num_rotation_keys: u32,
     #[br(if(num_rotation_keys > 0))]

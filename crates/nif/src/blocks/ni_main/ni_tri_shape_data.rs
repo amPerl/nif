@@ -4,6 +4,7 @@ use crate::common::Triangle;
 
 #[binrw::binrw]
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiTriShapeData {
     #[bw(args(triangles.as_ref().map_or(base.num_triangles, |t| t.len() as u16)))]
     pub base: NiTriBasedGeomData,
@@ -26,6 +27,7 @@ pub struct NiTriShapeData {
 }
 #[binrw::binrw]
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct MatchGroup {
     #[br(temp)]
     #[bw(calc = vertex_indices.len() as u16)]

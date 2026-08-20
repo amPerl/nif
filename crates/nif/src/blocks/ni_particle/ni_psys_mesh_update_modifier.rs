@@ -3,6 +3,7 @@ use crate::common::BlockRef;
 
 #[binrw::binrw]
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiPSysMeshUpdateModifier {
     pub base: NiPSysModifier,
     #[br(temp)]

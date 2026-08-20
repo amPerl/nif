@@ -2,6 +2,7 @@ use super::Vector3;
 use binrw::{BinRead, BinWrite};
 
 #[derive(Debug, PartialEq, BinRead, BinWrite, Clone)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct Quaternion {
     pub w: f32,
     pub x: f32,
@@ -10,6 +11,7 @@ pub struct Quaternion {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite, Clone)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiQuatTransform {
     pub translation: Vector3,
     pub rotation: Quaternion,

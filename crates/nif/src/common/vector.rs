@@ -1,6 +1,7 @@
 use binrw::{BinRead, BinWrite};
 
 #[derive(Debug, PartialEq, BinRead, BinWrite, Clone)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct Vector2 {
     pub x: f32,
     pub y: f32,
@@ -21,6 +22,7 @@ impl From<Vector2> for glam::Vec2 {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite, Clone, Copy, Default)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct Vector3 {
     pub x: f32,
     pub y: f32,
@@ -42,6 +44,7 @@ impl From<Vector3> for glam::Vec3 {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite, Clone)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct TexCoord {
     pub u: f32,
     pub v: f32,
@@ -62,6 +65,7 @@ impl From<TexCoord> for glam::Vec2 {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite, Clone)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct Triangle {
     pub a: u16,
     pub b: u16,

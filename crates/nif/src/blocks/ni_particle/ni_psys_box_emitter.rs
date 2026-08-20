@@ -3,6 +3,7 @@ use binrw::{BinRead, BinWrite};
 use super::NiPSysVolumeEmitter;
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiPSysBoxEmitter {
     pub base: NiPSysVolumeEmitter,
     pub width: f32,

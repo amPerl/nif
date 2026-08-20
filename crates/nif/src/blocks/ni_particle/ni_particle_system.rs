@@ -3,6 +3,7 @@ use crate::{blocks::NiParticles, common::BlockRef};
 
 #[binrw::binrw]
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiParticleSystem {
     pub base: NiParticles,
     #[br(map = |x: u8| x > 0)]

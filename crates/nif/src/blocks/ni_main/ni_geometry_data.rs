@@ -4,6 +4,7 @@ use crate::common::{BlockRef, Color4, TexCoord, Vector3};
 
 #[binrw::binrw]
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiGeometryData {
     pub group_id: i32,
     #[br(temp)]
@@ -53,6 +54,7 @@ pub struct NiGeometryData {
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
 #[br(import(num_vertices: u16))]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct UvSet {
     #[br(count = num_vertices)]
     pub uvs: Vec<TexCoord>,

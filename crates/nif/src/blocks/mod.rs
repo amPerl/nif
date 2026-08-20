@@ -11,6 +11,8 @@ use binrw::BinWrite;
 
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, PartialEq, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
+#[cfg_attr(feature = "facet", repr(u8))]
 pub enum Block {
     NiObjectNET(NiObjectNET),
     NiAvObject(NiAvObject),

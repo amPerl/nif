@@ -2,6 +2,7 @@ use super::ni_node::NiNode;
 use binrw::{BinRead, BinWrite};
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiSwitchNode {
     pub base: NiNode,
     pub switch_node_flags: NiSwitchFlags,
@@ -9,6 +10,8 @@ pub struct NiSwitchNode {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
+#[cfg_attr(feature = "facet", repr(u8))]
 pub enum NiSwitchFlags {
     #[brw(magic = 0u16)]
     UpdateOnlyActiveChild,

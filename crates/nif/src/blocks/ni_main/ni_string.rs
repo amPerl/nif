@@ -4,6 +4,7 @@ use std::borrow::Cow;
 use std::fmt;
 
 #[derive(Debug, PartialEq, Clone, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiString {
     #[br(parse_with = parse_utils::parse_int_prefixed_bytes)]
     #[bw(write_with = parse_utils::write_int_prefixed_bytes)]

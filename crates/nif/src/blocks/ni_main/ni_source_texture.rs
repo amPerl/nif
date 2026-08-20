@@ -5,6 +5,7 @@ use super::ni_string::NiString;
 use binrw::{BinRead, BinWrite};
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiSourceTexture {
     pub base: NiObjectNET,
     #[br(map = |x: u8| x > 0)]
@@ -26,6 +27,8 @@ pub struct NiSourceTexture {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
+#[cfg_attr(feature = "facet", repr(u8))]
 pub enum PixelLayout {
     #[brw(magic = 0u32)]
     Palettised,
@@ -45,6 +48,8 @@ pub enum PixelLayout {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
+#[cfg_attr(feature = "facet", repr(u8))]
 pub enum MipMapFormat {
     #[brw(magic = 0u32)]
     No,
@@ -56,6 +61,8 @@ pub enum MipMapFormat {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
+#[cfg_attr(feature = "facet", repr(u8))]
 pub enum AlphaFormat {
     #[brw(magic = 0u32)]
     None,

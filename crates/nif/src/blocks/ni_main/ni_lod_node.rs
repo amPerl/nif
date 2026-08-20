@@ -4,6 +4,7 @@ use super::ni_switch_node::NiSwitchNode;
 use binrw::{BinRead, BinWrite};
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiLODNode {
     pub base: NiSwitchNode,
     pub lod_level_data_ref: BlockRef,

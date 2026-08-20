@@ -4,6 +4,7 @@ use binrw::{BinRead, BinWrite};
 
 #[binrw::binrw]
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NodeSet {
     #[br(temp)]
     #[bw(calc = node_refs.len() as u32)]
@@ -13,6 +14,7 @@ pub struct NodeSet {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct SkinInfo {
     pub shape_ref: BlockRef,
     pub skin_instance_ref: BlockRef,
@@ -20,6 +22,7 @@ pub struct SkinInfo {
 
 #[binrw::binrw]
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct SkinInfoSet {
     #[br(temp)]
     #[bw(calc = skin_info.len() as u32)]
@@ -30,6 +33,7 @@ pub struct SkinInfoSet {
 
 #[binrw::binrw]
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiBoneLODController {
     pub base: NiTimeController,
     pub lod: u32,

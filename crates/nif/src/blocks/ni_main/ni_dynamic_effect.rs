@@ -5,6 +5,7 @@ use super::NiAvObject;
 
 #[binrw::binrw]
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiDynamicEffect {
     pub base: NiAvObject,
     #[br(map = |x: u8| x > 0)]

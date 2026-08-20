@@ -14,11 +14,14 @@ exclude = ["tests/*"]
 [features]
 default = []
 glam = ["dep:glam"]
+facet = ["dep:facet", "dep:facet-reflect"]
 
 [dependencies]
 thiserror = "2.0.20"
 binrw = "0.15.2"
 glam = { version = "0.33.3", optional = true }
+facet = { version = "0.50.0-rc.5", optional = true, features = ["reflect"] }
+facet-reflect = { version = "0.50.0-rc.5", optional = true }
 
 [dev-dependencies]
 anyhow = "1.0.104"

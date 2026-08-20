@@ -2,6 +2,7 @@ use super::ni_object_net::NiObjectNET;
 use binrw::{BinRead, BinWrite};
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiSpecularProperty {
     pub base: NiObjectNET,
     pub flags: u16,

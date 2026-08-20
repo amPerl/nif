@@ -10,6 +10,9 @@ pub mod error;
 pub mod header;
 pub mod walk;
 
+#[cfg(feature = "facet")]
+pub mod reflect;
+
 #[cfg(feature = "glam")]
 pub use glam;
 

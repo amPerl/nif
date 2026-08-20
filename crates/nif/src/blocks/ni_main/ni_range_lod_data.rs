@@ -3,6 +3,7 @@ use binrw::{BinRead, BinWrite};
 
 #[binrw::binrw]
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiRangeLODData {
     pub center: Vector3,
     #[br(temp)]
@@ -13,6 +14,7 @@ pub struct NiRangeLODData {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct LODRange {
     pub near: f32,
     pub far: f32,

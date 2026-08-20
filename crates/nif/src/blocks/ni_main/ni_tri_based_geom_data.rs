@@ -4,6 +4,7 @@ use super::NiGeometryData;
 #[binrw::binrw]
 #[bw(import(triangle_count: u16))]
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiTriBasedGeomData {
     pub base: NiGeometryData,
     #[bw(map = |_: &u16| triangle_count)]

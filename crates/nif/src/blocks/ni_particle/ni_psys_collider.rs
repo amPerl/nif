@@ -3,6 +3,7 @@ use binrw::{BinRead, BinWrite};
 use crate::common::BlockRef;
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiPSysCollider {
     pub bounce: f32,
     #[br(map = |x: u8| x > 0)]

@@ -5,6 +5,7 @@ use crate::common::BlockRef;
 use super::{NiAvObject, NiString};
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiGeometry {
     pub base: NiAvObject,
     pub data_ref: BlockRef,
@@ -13,12 +14,15 @@ pub struct NiGeometry {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct ShaderInfo {
     pub name: NiString,
     pub extra_data_ref: BlockRef,
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
+#[cfg_attr(feature = "facet", repr(u8))]
 pub enum MaterialData {
     #[brw(magic = 0u8)]
     None,

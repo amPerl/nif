@@ -3,6 +3,7 @@ use crate::common::{BlockRef, Vector3};
 use binrw::{BinRead, BinWrite};
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiPSysDragModifier {
     pub base: NiPSysModifier,
     pub drag_object_ref: BlockRef,

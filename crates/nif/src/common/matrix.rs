@@ -2,6 +2,7 @@ use super::Vector3;
 use binrw::{BinRead, BinWrite};
 
 #[derive(Debug, PartialEq, BinRead, BinWrite, Clone, Copy)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct Matrix22 {
     pub m11: f32,
     pub m21: f32,
@@ -10,6 +11,7 @@ pub struct Matrix22 {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite, Clone, Copy)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct Matrix33 {
     pub column_major: [f32; 9],
 }
@@ -73,6 +75,7 @@ impl From<Matrix33> for glam::Mat3 {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite, Clone, Copy)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiTransform {
     pub rotation: Matrix33,
     pub translation: Vector3,

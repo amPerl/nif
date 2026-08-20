@@ -4,6 +4,7 @@ use crate::{blocks::NiParticlesData, common::Vector3};
 
 #[binrw::binrw]
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiPSysData {
     pub base: NiParticlesData,
 
@@ -21,6 +22,7 @@ pub struct NiPSysData {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiParticleInfo {
     pub velocity: Vector3,
     pub age: f32,

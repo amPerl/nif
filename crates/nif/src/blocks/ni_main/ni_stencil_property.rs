@@ -2,6 +2,7 @@ use super::ni_object_net::NiObjectNET;
 use binrw::{BinRead, BinWrite};
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiStencilProperty {
     pub base: NiObjectNET,
     pub stencil_enabled: u8,
@@ -15,6 +16,8 @@ pub struct NiStencilProperty {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
+#[cfg_attr(feature = "facet", repr(u8))]
 pub enum StencilAction {
     #[brw(magic = 0u32)]
     Keep,
@@ -31,6 +34,8 @@ pub enum StencilAction {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
+#[cfg_attr(feature = "facet", repr(u8))]
 pub enum StencilDrawMode {
     #[brw(magic = 0u32)]
     CcwOrBoth,
@@ -43,6 +48,8 @@ pub enum StencilDrawMode {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
+#[cfg_attr(feature = "facet", repr(u8))]
 pub enum StencilTestFunc {
     #[brw(magic = 0u32)]
     Never,

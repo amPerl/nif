@@ -3,6 +3,7 @@ use binrw::{BinRead, BinWrite};
 use super::NiObjectNET;
 use crate::common::Color3;
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiMaterialProperty {
     pub base: NiObjectNET,
     pub color_ambient: Color3,

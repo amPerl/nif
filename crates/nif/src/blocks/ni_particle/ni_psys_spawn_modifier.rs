@@ -3,6 +3,7 @@ use binrw::{BinRead, BinWrite};
 use super::NiPSysModifier;
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiPSysSpawnModifier {
     pub base: NiPSysModifier,
     pub num_spawn_generations: u16,

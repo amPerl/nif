@@ -4,6 +4,7 @@ use super::ni_av_object::NiAvObject;
 
 #[binrw::binrw]
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiNode {
     pub base: NiAvObject,
     #[br(temp)]

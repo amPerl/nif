@@ -2,6 +2,7 @@ use super::ni_object_net::NiObjectNET;
 use binrw::{BinRead, BinWrite};
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiZBufferProperty {
     pub base: NiObjectNET,
     pub flags: u16,
@@ -9,6 +10,8 @@ pub struct NiZBufferProperty {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
+#[cfg_attr(feature = "facet", repr(u8))]
 pub enum ZCompareMode {
     #[brw(magic = 0u32)]
     ZCompAlways,

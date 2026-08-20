@@ -4,6 +4,7 @@ use crate::common::{NiPlane, Vector3};
 use binrw::{BinRead, BinWrite};
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiCollisionData {
     pub base: NiCollisionObject,
     pub propagation_mode: PropagationMode,
@@ -14,11 +15,14 @@ pub struct NiCollisionData {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct BoundingVolume {
     pub bounding_volume_data: BoundingVolumeData,
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
+#[cfg_attr(feature = "facet", repr(u8))]
 pub enum BoundingVolumeData {
     #[brw(magic = 0u32)]
     Sphere(NiBound),
@@ -36,12 +40,14 @@ pub enum BoundingVolumeData {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiBound {
     pub center: Vector3,
     pub radius: f32,
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct BoxBV {
     pub center: Vector3,
     #[br(count = 3)]
@@ -50,6 +56,7 @@ pub struct BoxBV {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct CapsuleBV {
     pub center: Vector3,
     pub origin: Vector3,
@@ -58,6 +65,7 @@ pub struct CapsuleBV {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct HalfSpaceBV {
     pub plane: NiPlane,
     pub center: Vector3,
@@ -65,6 +73,7 @@ pub struct HalfSpaceBV {
 
 #[binrw::binrw]
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct UnionBV {
     #[br(temp)]
     #[bw(calc = bounding_volumes.len() as u32)]
@@ -74,6 +83,8 @@ pub struct UnionBV {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
+#[cfg_attr(feature = "facet", repr(u8))]
 pub enum PropagationMode {
     #[brw(magic = 0u32)]
     OnSuccess,
@@ -86,6 +97,8 @@ pub enum PropagationMode {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
+#[cfg_attr(feature = "facet", repr(u8))]
 pub enum CollisionMode {
     #[brw(magic = 0u32)]
     UseOBB,

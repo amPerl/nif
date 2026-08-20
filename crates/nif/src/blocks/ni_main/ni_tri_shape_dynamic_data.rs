@@ -2,6 +2,7 @@ use super::NiTriShapeData;
 use binrw::{BinRead, BinWrite};
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiTriShapeDynamicData {
     pub base: NiTriShapeData,
     pub active_vertices: u16,

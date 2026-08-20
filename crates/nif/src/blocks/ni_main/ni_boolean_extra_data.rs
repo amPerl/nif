@@ -2,6 +2,7 @@ use super::ni_string::NiString;
 use binrw::{BinRead, BinWrite};
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiBooleanExtraData {
     pub name: NiString,
     #[br(map = |x: u8| x > 0)]

@@ -4,6 +4,7 @@ use super::NiPSysModifier;
 use crate::common::Color4;
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiPSysEmitter {
     pub base: NiPSysModifier,
     pub speed: f32,

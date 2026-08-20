@@ -2,12 +2,15 @@ use super::ni_node::NiNode;
 use binrw::{BinRead, BinWrite};
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiBillboardNode {
     pub base: NiNode,
     pub billboard_mode: BillboardMode,
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
+#[cfg_attr(feature = "facet", repr(u8))]
 pub enum BillboardMode {
     #[brw(magic = 0u16)]
     AlwaysFaceCamera,

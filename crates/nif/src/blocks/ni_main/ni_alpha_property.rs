@@ -2,6 +2,7 @@ use super::ni_object_net::NiObjectNET;
 use binrw::{BinRead, BinWrite};
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiAlphaProperty {
     pub base: NiObjectNET,
     pub flags: u16,
@@ -77,6 +78,8 @@ impl std::ops::Deref for NiAlphaProperty {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
+#[cfg_attr(feature = "facet", repr(u8))]
 pub enum TestFunction {
     #[brw(magic = 0u32)]
     TestAlways, // Always true. Buffer is ignored.
@@ -97,6 +100,8 @@ pub enum TestFunction {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
+#[cfg_attr(feature = "facet", repr(u8))]
 pub enum AlphaFunction {
     #[brw(magic = 0u32)]
     One,

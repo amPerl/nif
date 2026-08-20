@@ -4,6 +4,7 @@ use crate::common::Triangle;
 
 #[binrw::binrw]
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiTriStripsData {
     #[bw(args(base.num_triangles))]
     pub base: NiTriBasedGeomData,

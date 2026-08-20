@@ -3,6 +3,7 @@ use binrw::{BinRead, BinWrite};
 use super::NiPSysModifier;
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiPSysGrowFadeModifier {
     pub base: NiPSysModifier,
     pub grow_time: f32,

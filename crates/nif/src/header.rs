@@ -12,6 +12,7 @@ use binrw::{
 #[brw(magic = b"Gamebryo File Format, Version ")]
 #[br(assert(version == 0x14000004, NifError::NotImplemented("Version not implemented")))]
 #[br(assert(version_from_str == version, NifError::InvalidValueError))]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct Header {
     #[br(parse_with = parse_utils::parse_version)]
     #[bw(map = |_: &u32| parse_utils::version_bytes(*version))]
@@ -55,6 +56,8 @@ impl Header {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
+#[cfg_attr(feature = "facet", repr(u8))]
 pub enum EndianType {
     #[brw(magic = 1u8)]
     LittleEndian,

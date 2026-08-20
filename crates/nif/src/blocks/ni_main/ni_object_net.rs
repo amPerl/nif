@@ -4,6 +4,7 @@ use super::ni_string::NiString;
 
 #[binrw::binrw]
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiObjectNET {
     pub name: NiString,
     #[br(temp)]

@@ -1,6 +1,7 @@
 use binrw::{BinRead, BinWrite};
 
 #[derive(Debug, PartialEq, BinRead, BinWrite, Clone, Copy)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct Color3 {
     pub r: f32,
     pub g: f32,
@@ -18,6 +19,7 @@ impl Default for Color3 {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite, Clone, Copy)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct Color4 {
     pub r: f32,
     pub g: f32,
@@ -37,6 +39,7 @@ impl Default for Color4 {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite, Clone, Copy, Default)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct ByteColor4 {
     pub r: u8,
     pub g: u8,

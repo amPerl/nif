@@ -4,6 +4,7 @@ use super::NiDynamicEffect;
 use crate::common::Color3;
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiLight {
     pub base: NiDynamicEffect,
     pub dimmer: f32,

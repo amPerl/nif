@@ -4,6 +4,7 @@ use binrw::{BinRead, BinWrite};
 
 #[binrw::binrw]
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct KeyGroup<T: BinRead + BinWrite + 'static>
 where
     T: for<'a> BinRead<Args<'a> = ()>,
@@ -21,6 +22,7 @@ where
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
 #[br(import(key_type: KeyType))]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct Key<T: BinRead + BinWrite + 'static>
 where
     T: for<'a> BinRead<Args<'a> = ()>,
@@ -38,6 +40,7 @@ where
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
 #[br(import(key_type: KeyType))]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct QuatKey {
     #[br(if(key_type != KeyType::XyzRotation))]
     pub time: Option<f32>,
@@ -48,6 +51,7 @@ pub struct QuatKey {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct Tbc {
     pub tension: f32,
     pub bias: f32,
@@ -55,6 +59,8 @@ pub struct Tbc {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite, Clone, Copy)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
+#[cfg_attr(feature = "facet", repr(u8))]
 pub enum KeyType {
     #[brw(magic = 1u32)]
     Linear,

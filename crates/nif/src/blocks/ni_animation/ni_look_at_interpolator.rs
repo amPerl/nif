@@ -8,6 +8,7 @@ use crate::{
 use super::NiInterpolator;
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiLookAtInterpolator {
     pub base: NiInterpolator,
     pub flags: u16,

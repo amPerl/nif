@@ -4,6 +4,7 @@ use super::NiPSysModifier;
 use crate::common::Vector3;
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiPSysRotationModifier {
     pub base: NiPSysModifier,
     pub initial_rotation_speed: f32,

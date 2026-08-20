@@ -1,6 +1,7 @@
 use binrw::{BinRead, BinWrite};
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiPixelFormat {
     pub pixel_format: PixelFormat,
     pub bits_per_pixel: u8,
@@ -13,6 +14,7 @@ pub struct NiPixelFormat {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct PixelFormatComponent {
     pub kind: u32,       // PixelComponent
     pub convention: u32, // PixelRepresentation
@@ -24,6 +26,8 @@ pub struct PixelFormatComponent {
 
 /// Describes the pixel format used by the NiPixelData object to store a texture.
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
+#[cfg_attr(feature = "facet", repr(u8))]
 pub enum PixelFormat {
     #[brw(magic = 0u32)]
     FmtRgb, // 24-bit RGB. 8 bits per red, blue, and green component.

@@ -5,6 +5,7 @@ use crate::common::NiTransform;
 
 #[binrw::binrw]
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiSkinData {
     pub skin_transform: NiTransform,
     #[br(temp)]
@@ -18,6 +19,7 @@ pub struct NiSkinData {
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
 #[br(import(has_vertex_weights: u8))]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct BoneData {
     pub skin_transform: NiTransform,
     pub bounding_sphere: NiBound,
@@ -28,6 +30,7 @@ pub struct BoneData {
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct BoneVertData {
     pub index: u16,
     pub weight: f32,

@@ -5,6 +5,7 @@ use crate::common::BlockRef;
 use super::NiPSysModifier;
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiPSysColorModifier {
     pub base: NiPSysModifier,
     pub data_ref: BlockRef,

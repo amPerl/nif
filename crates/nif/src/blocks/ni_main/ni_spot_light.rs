@@ -3,6 +3,7 @@ use binrw::{BinRead, BinWrite};
 use super::NiPointLight;
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct NiSpotLight {
     pub base: NiPointLight,
     pub outer_spot_angle: f32,
