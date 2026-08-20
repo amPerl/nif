@@ -116,6 +116,15 @@ impl Lod {
             .position(|(near, far)| distance >= *near && distance < *far)
             .unwrap_or(0)
     }
+
+    /// The distance past which the least detailed level is already chosen, so nothing changes
+    /// beyond it. The outermost range's far is effectively unbounded, so this is its near.
+    pub fn last_switch(&self) -> f32 {
+        self.ranges
+            .iter()
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .map_or(0.0, |(near, _)| *near)
+    }
 }
 
 /// The render state a shape's properties ask for. Pipelines are cached on this, so only the

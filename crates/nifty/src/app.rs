@@ -39,8 +39,6 @@ struct State {
     last_pick: Option<egui::Pos2>,
     /// Set when the selection changed outside the tree, so the tree can catch up.
     sync_tree: bool,
-    /// Offset the hierarchy adopts next frame, once the row it needs has been counted.
-    scroll_to: Option<f32>,
     /// Nodes to open or close before the tree is next drawn.
     openness: Vec<(usize, bool)>,
     /// Decoded images for the details pane, keyed by block.
@@ -136,7 +134,6 @@ impl Default for State {
             lod_distance: 0.0,
             last_pick: None,
             sync_tree: false,
-            scroll_to: None,
             openness: Vec::new(),
             previews: Details::default(),
         }
@@ -397,23 +394,6 @@ impl TabViewer for Viewer<'_> {
                 let mut clicked = None;
                 let palette = Palette::of(ui);
                 let roots: Vec<usize> = loaded.nif.roots().map(|(index, _)| index).collect();
-                // a pick in the preview has to open the tree down to the block it landed on
-                let sync = self.state.sync_tree.then(|| {
-                    let target = self.state.selected;
-                    let ancestors = target
-                        .map(|target| ancestors_of(&loaded.links, &roots, target))
-                        .unwrap_or_default();
-                    (target, ancestors)
-                });
-                // The tree does not draw rows outside the clip rect, so an off screen row
-                // cannot request a scroll itself. Counting the rows it lays out gives an offset,
-                // applied on the next frame.
-                let mut rows = Rows {
-                    target: sync.as_ref().and_then(|(target, _)| *target),
-                    drawn: 0,
-                    found: None,
-                    requested: Vec::new(),
-                };
                 let tree = Tree {
                     blocks,
                     links: &loaded.links,
@@ -432,27 +412,40 @@ impl TabViewer for Viewer<'_> {
                 if let Some(open) = all {
                     self.state.openness = (0..blocks.len()).map(|index| (index, open)).collect();
                 }
+
+                // Openness and scroll are both settled before the tree draws. The offset is a
+                // ScrollArea argument, so one measured from the laid out rows would always be a
+                // pass behind the openness that changed them.
+                let tree_id = ui.make_persistent_id("hierarchy");
                 let openness = std::mem::take(&mut self.state.openness);
-                let mut area = egui::ScrollArea::both().auto_shrink(false);
-                if let Some(offset) = self.state.scroll_to.take() {
-                    area = area.vertical_scroll_offset(offset);
-                }
-                let output = area.show(ui, |ui| {
-                    let tree_id = ui.make_persistent_id("hierarchy");
-                    if sync.is_some() || !openness.is_empty() {
-                        let mut state =
-                            TreeViewState::<usize>::load(ui, tree_id).unwrap_or_default();
-                        if let Some((target, ancestors)) = sync {
-                            state.set_selected(target.into_iter().collect());
-                            for ancestor in ancestors {
+                let mut offset = None;
+                if self.state.sync_tree || !openness.is_empty() {
+                    let mut state = TreeViewState::<usize>::load(ui, tree_id).unwrap_or_default();
+                    for (index, open) in &openness {
+                        state.set_openness(*index, *open);
+                    }
+                    // a pick in the preview has to open the tree down to the block it landed on
+                    if self.state.sync_tree {
+                        state.set_selected(self.state.selected.into_iter().collect());
+                        if let Some(target) = self.state.selected {
+                            for ancestor in ancestors_of(&loaded.links, &roots, target) {
                                 state.set_openness(ancestor, true);
                             }
+                            let height = row_height(ui);
+                            let viewport = ui.available_height();
+                            offset = row_of(&loaded.links, &roots, &state, target)
+                                .map(|row| ((row as f32 + 0.5) * height - viewport * 0.5).max(0.0));
                         }
-                        for (index, open) in &openness {
-                            state.set_openness(*index, *open);
-                        }
-                        state.store(ui, tree_id);
                     }
+                    state.store(ui, tree_id);
+                }
+
+                let mut requested = Vec::new();
+                let mut area = egui::ScrollArea::both().auto_shrink(false);
+                if let Some(offset) = offset {
+                    area = area.vertical_scroll_offset(offset);
+                }
+                area.show(ui, |ui| {
                     let (_, actions) = TreeView::new(tree_id).show(ui, |builder| {
                         let mut path = HashSet::new();
                         for &index in &roots {
@@ -461,9 +454,8 @@ impl TabViewer for Viewer<'_> {
                                 &tree,
                                 &Link::plain(index),
                                 &mut path,
-                                true,
                                 0,
-                                &mut rows,
+                                &mut requested,
                             );
                         }
                     });
@@ -473,21 +465,14 @@ impl TabViewer for Viewer<'_> {
                         }
                     }
                 });
-                if !rows.requested.is_empty() {
+                if !requested.is_empty() {
                     // a context menu names one node; the request covers its whole subtree
-                    for (index, open) in rows.requested {
+                    for (index, open) in requested {
                         for node in subtree_of(&loaded.links, index) {
                             self.state.openness.push((node, open));
                         }
                     }
-                    ui.ctx().request_repaint();
-                }
-                if let Some(row) = rows.found {
-                    // row height from the laid out content, not the tree's own formula
-                    let height = output.content_size.y / rows.drawn.max(1) as f32;
-                    let centred = (row as f32 + 0.5) * height - output.inner_rect.height() * 0.5;
-                    self.state.scroll_to = Some(centred.max(0.0));
-                    ui.ctx().request_repaint();
+                    discard(ui.ctx(), "hierarchy openness");
                 }
                 self.state.sync_tree = false;
                 if clicked.is_some() {
@@ -616,13 +601,13 @@ impl Viewer<'_> {
 
                 match self.state.lod_mode {
                     LodMode::Manual => {
-                        // the ranges say how far the file expects to be viewed from
+                        // every node sits at its least detailed level past the last switch,
+                        // so a slider that went further would do nothing
                         let far = scene
                             .lods
                             .values()
-                            .flat_map(|lod| lod.ranges.iter())
-                            .map(|(_, far)| *far)
-                            .filter(|far| far.is_finite())
+                            .map(|lod| lod.last_switch())
+                            .filter(|distance| distance.is_finite())
                             .fold(scene.radius * 4.0, f32::max);
                         ui.add(
                             egui::Slider::new(&mut self.state.lod_distance, 0.0..=far)
@@ -739,6 +724,8 @@ impl Viewer<'_> {
                 self.state.selected = next.or_else(|| hits.first().map(|hit| hit.block));
                 self.state.last_pick = Some(pointer);
                 self.state.sync_tree = true;
+                // the hierarchy draws before the preview, so it has already missed this pick
+                discard(ui.ctx(), "pick");
             }
         }
 
@@ -804,14 +791,58 @@ fn ancestors_of(links: &[Vec<Link>], roots: &[usize], target: usize) -> Vec<usiz
     path
 }
 
-/// Where the target lands in the tree's laid-out order. Rows inside a collapsed directory are
-/// never laid out, so they must not be counted either.
-struct Rows {
-    target: Option<usize>,
-    drawn: usize,
-    found: Option<usize>,
-    /// Openness asked for from a node's context menu, applied on the next frame.
-    requested: Vec<(usize, bool)>,
+/// What the tree lays every row out at, from `interact_size` plus the spacing between rows.
+fn row_height(ui: &egui::Ui) -> f32 {
+    ui.spacing().interact_size.y + ui.spacing().item_spacing.y
+}
+
+/// Where `target` lands in the tree's row order, or None when a closed directory hides it.
+///
+/// This counts what `add_node` draws, so the two have to keep the same rules: a node with no
+/// children is a leaf, a node already on the path is drawn as one, and only an open directory
+/// contributes its children.
+fn row_of(
+    links: &[Vec<Link>],
+    roots: &[usize],
+    state: &TreeViewState<usize>,
+    target: usize,
+) -> Option<usize> {
+    fn walk(
+        links: &[Vec<Link>],
+        state: &TreeViewState<usize>,
+        index: usize,
+        depth: usize,
+        path: &mut HashSet<usize>,
+        row: &mut usize,
+        target: usize,
+    ) -> Option<usize> {
+        if index == target {
+            return Some(*row);
+        }
+        *row += 1;
+
+        let children = links.get(index).map(Vec::as_slice).unwrap_or_default();
+        if children.is_empty() || !path.insert(index) {
+            return None;
+        }
+        let mut found = None;
+        if state.is_open(&index).unwrap_or(depth == 0) {
+            for child in children {
+                found = walk(links, state, child.index, depth + 1, path, row, target);
+                if found.is_some() {
+                    break;
+                }
+            }
+        }
+        path.remove(&index);
+        found
+    }
+
+    let mut row = 0;
+    let mut path = HashSet::new();
+    roots
+        .iter()
+        .find_map(|&index| walk(links, state, index, 0, &mut path, &mut row, target))
 }
 
 /// What every node in the tree needs to draw itself.
@@ -838,23 +869,24 @@ fn subtree_of(links: &[Vec<Link>], index: usize) -> Vec<usize> {
     out
 }
 
+/// Throw away the pass just laid out and run another, so the corrected one is what reaches the
+/// screen. The repaint is not redundant: a discard can be declined, egui allows only one per
+/// frame by default, and a pass that has still not settled would otherwise sit on screen until
+/// the next input arrives.
+fn discard(ctx: &egui::Context, reason: &'static str) {
+    ctx.request_discard(reason);
+    ctx.request_repaint();
+}
+
 fn add_node(
     builder: &mut egui_ltreeview::TreeViewBuilder<'_, usize>,
     tree: &Tree<'_>,
     link: &Link,
     path: &mut HashSet<usize>,
-    visible: bool,
     depth: usize,
-    rows: &mut Rows,
+    requested: &mut Vec<(usize, bool)>,
 ) {
     let index = link.index;
-    if visible {
-        if rows.target == Some(index) && rows.found.is_none() {
-            rows.found = Some(rows.drawn);
-        }
-        rows.drawn += 1;
-    }
-
     let label = label_for(tree.blocks, index, link.slot.as_deref(), tree.palette);
     let glyph = tree.blocks.get(index).map(icon_for).unwrap_or(icon::CIRCLE);
     let children = tree.links.get(index).map(Vec::as_slice).unwrap_or_default();
@@ -867,7 +899,7 @@ fn add_node(
     }
 
     let mut menu = None;
-    let open = builder.node(
+    builder.node(
         NodeBuilder::dir(index)
             // the root opens so a new file is not a single closed row
             .default_open(depth == 0)
@@ -887,10 +919,10 @@ fn add_node(
             }),
     );
     if let Some(open) = menu {
-        rows.requested.push((index, open));
+        requested.push((index, open));
     }
     for child in children {
-        add_node(builder, tree, child, path, visible && open, depth + 1, rows);
+        add_node(builder, tree, child, path, depth + 1, requested);
     }
     builder.close_dir();
     path.remove(&index);
