@@ -151,6 +151,11 @@ impl Nifty {
         }
     }
 
+    /// Selects the first open document, so opening several lands on the one named first.
+    pub fn focus_first(&mut self) {
+        self.active = 0;
+    }
+
     /// Adds a directory to search for the textures NIFs name.
     pub fn add_texture_root(&mut self, root: PathBuf) {
         if self.library.add_root(root) {

@@ -1,8 +1,9 @@
 //! nifty, a NIF inspector.
 //!
 //! Usage:
-//!   cargo run -p nifty -- [file.nif] [texture-dir ...]
+//!   cargo run -p nifty -- [file.nif ...] [texture-dir ...]
 //!
+//! Arguments are sorted by what they are, so files and directories can be given in any order.
 //! Drop a .nif onto the window to open it, or a folder to add it as a texture directory.
 
 mod app;
@@ -20,9 +21,10 @@ use eframe::egui;
 use crate::app::Nifty;
 
 fn main() -> eframe::Result {
-    let mut args = std::env::args().skip(1).map(PathBuf::from);
-    let path = args.next();
-    let roots: Vec<PathBuf> = args.collect();
+    let (roots, files): (Vec<PathBuf>, Vec<PathBuf>) = std::env::args()
+        .skip(1)
+        .map(PathBuf::from)
+        .partition(|path| path.is_dir());
 
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
@@ -39,12 +41,14 @@ fn main() -> eframe::Result {
             cc.egui_ctx.set_fonts(fonts);
 
             let mut app = Nifty::new(cc);
+            // roots first, so the scenes resolve their textures as they are built
             for root in roots {
                 app.add_texture_root(root);
             }
-            if let Some(path) = path {
-                app.open(path);
+            for file in files {
+                app.open(file);
             }
+            app.focus_first();
             Ok(Box::new(app))
         }),
     )
