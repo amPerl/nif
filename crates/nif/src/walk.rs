@@ -3,9 +3,12 @@ use crate::common::NiTransform;
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum LodPolicy {
+    /// Every level, which draws them over each other.
     #[default]
     All,
+    /// The most detailed level, which is the one whose range starts nearest the viewer.
     Highest,
+    /// The level the engine would pick at this distance.
     Distance(f32),
 }
 
@@ -76,21 +79,27 @@ impl<'a> Walk<'a> {
         if child_count == 0 {
             return Selection::All;
         }
-        match self.lod {
-            LodPolicy::All => Selection::All,
-            LodPolicy::Highest => Selection::One(0),
-            LodPolicy::Distance(d) => {
-                let ranges = match node.lod_level_data_ref.get(self.blocks) {
-                    Some(Block::NiRangeLODData(data)) => &data.lod_levels,
-                    _ => return Selection::One(0),
-                };
-                let picked = ranges
-                    .iter()
-                    .position(|r| d >= r.near && d < r.far)
-                    .unwrap_or(0);
-                Selection::One(picked.min(child_count.saturating_sub(1)))
-            }
+        if self.lod == LodPolicy::All {
+            return Selection::All;
         }
+        let ranges = match node.lod_level_data_ref.get(self.blocks) {
+            Some(Block::NiRangeLODData(data)) => &data.lod_levels,
+            _ => return Selection::One(0),
+        };
+        // levels are not ordered by detail, so the ranges decide which one is which
+        let picked = match self.lod {
+            LodPolicy::All => 0,
+            LodPolicy::Highest => ranges
+                .iter()
+                .enumerate()
+                .min_by(|(_, a), (_, b)| a.near.total_cmp(&b.near))
+                .map_or(0, |(index, _)| index),
+            LodPolicy::Distance(d) => ranges
+                .iter()
+                .position(|r| d >= r.near && d < r.far)
+                .unwrap_or(0),
+        };
+        Selection::One(picked.min(child_count.saturating_sub(1)))
     }
 }
 
@@ -199,6 +208,44 @@ mod tests {
         let single = Walk::new(&nif.blocks, 0).count();
         let doubled = Walk::from_roots(&nif.blocks, [0, 0]).count();
         assert_eq!(doubled, single * 2);
+    }
+
+    #[test]
+    fn highest_picks_the_nearest_range_not_the_first_child() {
+        let nif = load(3);
+        let (index, node) = nif
+            .blocks
+            .iter()
+            .enumerate()
+            .find_map(|(index, block)| match block {
+                Block::NiLODNode(node) => Some((index, node)),
+                _ => None,
+            })
+            .expect("fixture 3 has a lod node");
+        let Some(Block::NiRangeLODData(data)) = node.lod_level_data_ref.get(&nif.blocks) else {
+            panic!("fixture 3 has range data");
+        };
+        assert!(data.lod_levels.len() > 1);
+
+        let nearest = data
+            .lod_levels
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| a.near.total_cmp(&b.near))
+            .map(|(level, _)| level)
+            .expect("a level");
+        assert_ne!(nearest, 0, "this file would not prove anything otherwise");
+
+        let walk = Walk::new(&nif.blocks, 0).with_lod(LodPolicy::Highest);
+        let reached: Vec<usize> = walk.map(|visit| visit.index).collect();
+        let children = nif.blocks[index].child_refs().expect("children");
+        let kept = children[nearest].index().expect("a child");
+        let dropped = children[0].index().expect("a child");
+        assert!(
+            reached.contains(&kept),
+            "the detailed level should be walked"
+        );
+        assert!(!reached.contains(&dropped), "the far level should not be");
     }
 
     #[test]
