@@ -2,7 +2,12 @@
 //!
 //! A NIF may reference `some/path/thing.bmp` when the file present is `Obj/THING.DDS`. Lookup
 //! uses the file stem alone, lowercased, so the directories and extension in the request are
-//! ignored.
+//! ignored. Most requests are a bare name with no directory, so there is nothing else to match
+//! on.
+//!
+//! One stem can exist under several roots with different contents. Earlier roots win, and
+//! extension order only breaks ties within a single root, so the list order is how a caller
+//! chooses between them.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -62,10 +67,20 @@ impl TextureLibrary {
         }
     }
 
+    /// Moves a root one place earlier, which is how a caller resolves a stem that exists in
+    /// more than one of them.
+    pub fn promote_root(&mut self, index: usize) {
+        if index > 0 && index < self.roots.len() {
+            self.roots.swap(index - 1, index);
+            self.rescan();
+        }
+    }
+
     pub fn rescan(&mut self) {
         self.by_stem.clear();
         self.collisions = 0;
         for root in &self.roots {
+            let mut from_this_root: HashMap<String, usize> = HashMap::new();
             for entry in walkdir::WalkDir::new(root)
                 .follow_links(false)
                 .into_iter()
@@ -80,18 +95,25 @@ impl TextureLibrary {
                     continue;
                 };
                 let stem = stem.to_ascii_lowercase();
-                match self.by_stem.get(&stem) {
-                    Some(existing) => {
+
+                match from_this_root.get(&stem) {
+                    // within one root the better extension wins
+                    Some(existing) if rank >= *existing => {
                         self.collisions += 1;
-                        // prefer the better extension, otherwise keep the first file scanned
-                        if rank < self::rank(existing).unwrap_or(usize::MAX) {
-                            self.by_stem.insert(stem, path);
-                        }
+                        continue;
                     }
-                    None => {
-                        self.by_stem.insert(stem, path);
+                    Some(_) => {
+                        self.collisions += 1;
                     }
+                    // an earlier root already claimed it, and roots outrank extensions
+                    None if self.by_stem.contains_key(&stem) => {
+                        self.collisions += 1;
+                        continue;
+                    }
+                    None => {}
                 }
+                from_this_root.insert(stem.clone(), rank);
+                self.by_stem.insert(stem, path);
             }
         }
     }
@@ -160,6 +182,43 @@ mod tests {
             key("ob_h_1st_00050a_01.tex.bmp").as_deref(),
             Some("ob_h_1st_00050a_01.tex")
         );
+    }
+
+    /// Two roots, each holding a file with the same stem but different contents.
+    fn two_roots(name: &str) -> (PathBuf, PathBuf) {
+        let base = std::env::temp_dir().join(format!("nifty-library-{name}"));
+        let _ = std::fs::remove_dir_all(&base);
+        let first = base.join("first");
+        let second = base.join("second/nested");
+        std::fs::create_dir_all(&first).expect("first root");
+        std::fs::create_dir_all(&second).expect("second root");
+        std::fs::write(first.join("Shared.bmp"), b"first").expect("first file");
+        std::fs::write(second.join("shared.dds"), b"second").expect("second file");
+        (base.join("first"), base.join("second"))
+    }
+
+    #[test]
+    fn an_earlier_root_wins_even_against_a_better_extension() {
+        let (first, second) = two_roots("order");
+        let mut library = TextureLibrary::default();
+        library.add_root(first);
+        library.add_root(second);
+
+        let hit = library.resolve("some/path/SHARED.tga").expect("resolves");
+        assert_eq!(hit.file_name().unwrap(), "Shared.bmp");
+        assert_eq!(library.collisions(), 1);
+    }
+
+    #[test]
+    fn promoting_a_root_changes_which_file_wins() {
+        let (first, second) = two_roots("promote");
+        let mut library = TextureLibrary::default();
+        library.add_root(first);
+        library.add_root(second);
+        library.promote_root(1);
+
+        let hit = library.resolve("shared.bmp").expect("resolves");
+        assert_eq!(hit.file_name().unwrap(), "shared.dds");
     }
 
     #[test]

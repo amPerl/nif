@@ -806,21 +806,34 @@ impl eframe::App for Nifty {
                 .default_width(560.0)
                 .show(ui.ctx(), |ui| {
                     ui.label(
-                        "Textures are matched by file name only, ignoring the path, the extension and case.",
+                        "Textures are matched by file name only, ignoring the path, the \
+                         extension and case. When the same name exists under several \
+                         directories, the one highest in this list is used.",
                     );
                     ui.separator();
 
                     let mut remove = None;
+                    let mut promote = None;
                     for (index, root) in library.roots().iter().enumerate() {
                         ui.horizontal(|ui| {
                             if ui.small_button(icon::X).clicked() {
                                 remove = Some(index);
+                            }
+                            if ui
+                                .add_enabled(index > 0, egui::Button::new(icon::ARROW_UP).small())
+                                .clicked()
+                            {
+                                promote = Some(index);
                             }
                             ui.monospace(root.display().to_string());
                         });
                     }
                     if let Some(index) = remove {
                         library.remove_root(index);
+                        changed = true;
+                    }
+                    if let Some(index) = promote {
+                        library.promote_root(index);
                         changed = true;
                     }
                     if library.roots().is_empty() {
