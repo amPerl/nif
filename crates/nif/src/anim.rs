@@ -1,5 +1,9 @@
-use crate::blocks::{Block, NiAvObject, NiTimeController, NiTransformData, NiTransformInterpolator};
-use crate::common::{Key, KeyGroup, KeyType, Matrix33, NiQuatTransform, NiTransform, Quaternion, Vector3};
+use glam::{EulerRot, Mat3, Quat};
+
+use crate::blocks::{
+    Block, NiAvObject, NiTimeController, NiTransformData, NiTransformInterpolator,
+};
+use crate::common::{Key, KeyGroup, KeyType, NiQuatTransform, NiTransform, Quaternion, Vector3};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CycleType {
@@ -35,7 +39,9 @@ impl Pose {
     /// which is why an absent one has to stay absent rather than become a default.
     pub fn apply(&self, base: &NiTransform) -> NiTransform {
         NiTransform {
-            rotation: self.rotation.map_or(base.rotation, |q| q.to_matrix()),
+            rotation: self
+                .rotation
+                .map_or(base.rotation, |q| Mat3::from_quat(q.into()).into()),
             translation: self.translation.unwrap_or(base.translation),
             scale: self.scale.unwrap_or(base.scale),
         }
@@ -97,7 +103,7 @@ pub fn transform_at(blocks: &[Block], object: &NiAvObject, time: f32) -> Option<
     None
 }
 
-/// A channel the engine marks as absent, so the target keeps its own value.
+/// The value a channel carries when it supplies nothing, so the target keeps its own.
 const INVALID: f32 = -f32::MAX;
 
 impl NiQuatTransform {
@@ -213,7 +219,7 @@ where
     T: for<'a> binrw::BinWrite<Args<'a> = ()>,
 {
     /// The value at `time`, or None when the group carries no keys at all. Outside the key
-    /// range the nearest key holds, which is what the engine does at the ends of a span.
+    /// range the nearest key holds.
     pub fn sample(&self, time: f32) -> Option<T> {
         sample_keys(&self.keys, self.interpolation, time)
     }
@@ -236,7 +242,9 @@ where
     }
 
     // the last key at or before `time`, which is the segment's start
-    let at = keys.partition_point(|key| key.time <= time).saturating_sub(1);
+    let at = keys
+        .partition_point(|key| key.time <= time)
+        .saturating_sub(1);
     let from = keys.get(at)?;
     let Some(to) = keys.get(at.saturating_add(1)) else {
         return Some(from.value);
@@ -264,88 +272,6 @@ where
     }
 }
 
-impl Quaternion {
-    pub const IDENTITY: Quaternion = Quaternion {
-        w: 1.0,
-        x: 0.0,
-        y: 0.0,
-        z: 0.0,
-    };
-
-    pub fn multiply(&self, other: &Quaternion) -> Quaternion {
-        Quaternion {
-            w: self.w * other.w - self.x * other.x - self.y * other.y - self.z * other.z,
-            x: self.w * other.x + self.x * other.w + self.y * other.z - self.z * other.y,
-            y: self.w * other.y - self.x * other.z + self.y * other.w + self.z * other.x,
-            z: self.w * other.z + self.x * other.y - self.y * other.x + self.z * other.w,
-        }
-    }
-
-    /// A rotation of `angle` radians about one axis, 0 for x, 1 for y, 2 for z.
-    fn about(axis: usize, angle: f32) -> Quaternion {
-        let (sin, cos) = (angle * 0.5).sin_cos();
-        let mut out = Quaternion {
-            w: cos,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        match axis {
-            0 => out.x = sin,
-            1 => out.y = sin,
-            _ => out.z = sin,
-        }
-        out
-    }
-
-    /// Gamebryo composes XYZ Euler angles as `Rx * (Ry * Rz)`, so z applies to a vector first.
-    pub fn from_euler_xyz(x: f32, y: f32, z: f32) -> Quaternion {
-        Quaternion::about(0, x).multiply(&Quaternion::about(1, y).multiply(&Quaternion::about(2, z)))
-    }
-
-    /// `Matrix33` stores its nine floats row by row, which is why the glam conversion
-    /// transposes a column load.
-    pub fn to_matrix(&self) -> Matrix33 {
-        let (w, x, y, z) = (self.w, self.x, self.y, self.z);
-        Matrix33 {
-            column_major: [
-                1.0 - 2.0 * (y * y + z * z),
-                2.0 * (x * y - w * z),
-                2.0 * (x * z + w * y),
-                2.0 * (x * y + w * z),
-                1.0 - 2.0 * (x * x + z * z),
-                2.0 * (y * z - w * x),
-                2.0 * (x * z - w * y),
-                2.0 * (y * z + w * x),
-                1.0 - 2.0 * (x * x + y * y),
-            ],
-        }
-    }
-
-    pub fn slerp(&self, other: &Quaternion, t: f32) -> Quaternion {
-        let mut dot = self.w * other.w + self.x * other.x + self.y * other.y + self.z * other.z;
-        // the shorter arc, since q and -q are the same rotation
-        let sign = if dot < 0.0 { -1.0 } else { 1.0 };
-        dot = dot.abs();
-
-        let (from_scale, to_scale) = if dot > 0.9995 {
-            (1.0 - t, t)
-        } else {
-            let theta = dot.clamp(-1.0, 1.0).acos();
-            let sin = theta.sin();
-            (((1.0 - t) * theta).sin() / sin, (t * theta).sin() / sin)
-        };
-        let to_scale = to_scale * sign;
-
-        Quaternion {
-            w: self.w * from_scale + other.w * to_scale,
-            x: self.x * from_scale + other.x * to_scale,
-            y: self.y * from_scale + other.y * to_scale,
-            z: self.z * from_scale + other.z * to_scale,
-        }
-    }
-}
-
 impl NiTransformData {
     /// The rotation at `time`, from whichever of the two representations the block uses.
     pub fn rotation_at(&self, time: f32) -> Option<Quaternion> {
@@ -358,7 +284,9 @@ impl NiTransformData {
                     any = true;
                 }
             }
-            return any.then(|| Quaternion::from_euler_xyz(angles[0], angles[1], angles[2]));
+            // the three angles compose as Rx * (Ry * Rz), which is glam's intrinsic XYZ
+            return any
+                .then(|| Quat::from_euler(EulerRot::XYZ, angles[0], angles[1], angles[2]).into());
         }
 
         let keys = &self.quaternion_keys;
@@ -374,7 +302,7 @@ impl NiTransformData {
                     return Some(*current.1);
                 }
                 let t = ((time - previous.0) / span).clamp(0.0, 1.0);
-                return Some(previous.1.slerp(current.1, t));
+                return Some(Quat::from(previous.1).slerp(current.1.into(), t).into());
             }
             previous = current;
         }
@@ -405,7 +333,7 @@ impl NiTransformInterpolator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::KeyType;
+    use crate::common::{KeyType, Matrix33};
 
     fn key(time: f32, value: f32, in_tangent: f32, out_tangent: f32) -> Key<f32> {
         Key {
@@ -424,8 +352,8 @@ mod tests {
         }
     }
 
-    /// The tangents in `samples/transform-a_i_0030.nif`: a full turn about z at a constant
-    /// rate. Read the two tangent fields the other way round and this eases instead.
+    /// Tangents that are the segment's own secant, which is how a constant rate turn is
+    /// written. Read the two tangent fields the other way round and this eases instead.
     #[test]
     fn a_quadratic_segment_with_secant_tangents_is_linear() {
         let turn = std::f32::consts::TAU;
@@ -521,45 +449,6 @@ mod tests {
     }
 
     #[test]
-    fn euler_xyz_about_z_matches_a_z_quaternion() {
-        let angle = 1.2f32;
-        let euler = Quaternion::from_euler_xyz(0.0, 0.0, angle);
-        let direct = Quaternion::about(2, angle);
-        for (a, b) in [
-            (euler.w, direct.w),
-            (euler.x, direct.x),
-            (euler.y, direct.y),
-            (euler.z, direct.z),
-        ] {
-            assert!((a - b).abs() < 1e-6, "{a} vs {b}");
-        }
-    }
-
-    #[test]
-    fn slerp_ends_land_on_their_keys() {
-        let from = Quaternion::about(2, 0.0);
-        let to = Quaternion::about(2, 1.0);
-        let start = from.slerp(&to, 0.0);
-        let end = from.slerp(&to, 1.0);
-        assert!((start.w - from.w).abs() < 1e-6);
-        assert!((end.z - to.z).abs() < 1e-6);
-    }
-
-    #[test]
-    fn an_identity_quaternion_is_an_identity_matrix() {
-        assert_eq!(Quaternion::IDENTITY.to_matrix(), Matrix33::IDENTITY);
-    }
-
-    #[test]
-    fn a_quarter_turn_about_z_sends_x_to_y() {
-        let matrix = Quaternion::about(2, std::f32::consts::FRAC_PI_2).to_matrix();
-        // row major, so column 0 is the image of the x axis
-        let (x, y) = (matrix.get(0, 0).unwrap(), matrix.get(1, 0).unwrap());
-        assert!(x.abs() < 1e-6, "{x}");
-        assert!((y - 1.0).abs() < 1e-6, "{y}");
-    }
-
-    #[test]
     fn an_absent_channel_keeps_the_objects_own_value() {
         let base = NiTransform {
             rotation: Matrix33::IDENTITY,
@@ -571,7 +460,7 @@ mod tests {
             scale: 4.0,
         };
         let pose = Pose {
-            rotation: Some(Quaternion::about(2, 0.5)),
+            rotation: Some(Quat::from_rotation_z(0.5).into()),
             translation: None,
             scale: None,
         };

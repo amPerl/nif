@@ -4,7 +4,12 @@ use binrw::{
 };
 pub use error::NifError;
 
+/// Evaluating animation and orienting billboards is `glam` work, so both live behind the
+/// feature rather than shipping a second implementation of the same maths.
+#[cfg(feature = "glam")]
 pub mod anim;
+#[cfg(feature = "glam")]
+pub mod billboard;
 pub mod blocks;
 pub mod common;
 pub mod error;

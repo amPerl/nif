@@ -37,6 +37,17 @@ impl From<&Vector3> for glam::Vec3 {
 }
 
 #[cfg(feature = "glam")]
+impl From<glam::Vec3> for Vector3 {
+    fn from(val: glam::Vec3) -> Self {
+        Vector3 {
+            x: val.x,
+            y: val.y,
+            z: val.z,
+        }
+    }
+}
+
+#[cfg(feature = "glam")]
 impl From<Vector3> for glam::Vec3 {
     fn from(val: Vector3) -> Self {
         (&val).into()

@@ -104,7 +104,7 @@ impl std::fmt::Display for TextureSlot {
 }
 
 impl NiTexturingProperty {
-    /// The occupied texture slots in the engine's read order, named.
+    /// The occupied texture slots in read order, named.
     pub fn textures(&self) -> impl Iterator<Item = (TextureSlot, &TexDesc)> + '_ {
         [
             (TextureSlot::Base, self.base_texture.as_deref()),

@@ -8,7 +8,7 @@ pub enum LodPolicy {
     All,
     /// The most detailed level, which is the one whose range starts nearest the viewer.
     Highest,
-    /// The level the engine would pick at this distance.
+    /// The level whose range covers this distance.
     Distance(f32),
 }
 
@@ -31,7 +31,10 @@ pub struct Walk<'a> {
     stack: Vec<Frame>,
     path: Vec<usize>,
     lod: LodPolicy,
+    #[cfg(feature = "glam")]
     time: Option<f32>,
+    #[cfg(feature = "glam")]
+    camera: Option<crate::billboard::Camera>,
 }
 
 enum Selection {
@@ -50,7 +53,10 @@ impl<'a> Walk<'a> {
             }],
             path: Vec::new(),
             lod: LodPolicy::All,
+            #[cfg(feature = "glam")]
             time: None,
+            #[cfg(feature = "glam")]
+            camera: None,
         }
     }
 
@@ -69,7 +75,10 @@ impl<'a> Walk<'a> {
             stack,
             path: Vec::new(),
             lod: LodPolicy::All,
+            #[cfg(feature = "glam")]
             time: None,
+            #[cfg(feature = "glam")]
+            camera: None,
         }
     }
 
@@ -80,8 +89,17 @@ impl<'a> Walk<'a> {
 
     /// Compose each object's transform as its controllers leave it at `time`, rather than as
     /// the file stores it.
+    #[cfg(feature = "glam")]
     pub fn at_time(mut self, time: f32) -> Self {
         self.time = Some(time);
+        self
+    }
+
+    /// Turn NiBillboardNode subtrees to face this camera, which is what makes them billboards.
+    /// Without it they keep the orientation the file stores.
+    #[cfg(feature = "glam")]
+    pub fn seen_from(mut self, camera: crate::billboard::Camera) -> Self {
+        self.camera = Some(camera);
         self
     }
 
@@ -130,11 +148,25 @@ impl<'a> Iterator for Walk<'a> {
 
             let transform = match block.av_object() {
                 Some(av) => {
+                    #[cfg(feature = "glam")]
                     let local = self
                         .time
                         .and_then(|time| crate::anim::transform_at(self.blocks, av, time))
                         .unwrap_or_else(|| NiTransform::from(av));
-                    frame.parent.compose(&local)
+                    #[cfg(not(feature = "glam"))]
+                    let local = NiTransform::from(av);
+
+                    #[allow(unused_mut)]
+                    let mut world = frame.parent.compose(&local);
+                    // the world transform is what gets oriented, so the whole subtree
+                    // inherits the turn
+                    #[cfg(feature = "glam")]
+                    if let (Block::NiBillboardNode(node), Some(camera)) = (block, self.camera) {
+                        if let Some(rotation) = node.billboard_mode.orient(&world, &camera) {
+                            world.rotation = rotation;
+                        }
+                    }
+                    world
                 }
                 None => frame.parent,
             };

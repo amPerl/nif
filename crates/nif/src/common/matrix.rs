@@ -68,6 +68,15 @@ impl From<&Matrix33> for glam::Mat3 {
 }
 
 #[cfg(feature = "glam")]
+impl From<glam::Mat3> for Matrix33 {
+    fn from(val: glam::Mat3) -> Self {
+        Matrix33 {
+            column_major: val.transpose().to_cols_array(),
+        }
+    }
+}
+
+#[cfg(feature = "glam")]
 impl From<Matrix33> for glam::Mat3 {
     fn from(val: Matrix33) -> Self {
         (&val).into()
@@ -128,6 +137,22 @@ impl NiTransform {
 impl Default for NiTransform {
     fn default() -> Self {
         NiTransform::IDENTITY
+    }
+}
+
+#[cfg(feature = "glam")]
+impl From<&NiTransform> for glam::Mat4 {
+    fn from(val: &NiTransform) -> Self {
+        glam::Mat4::from_translation(val.translation.into())
+            * glam::Mat4::from_mat3(val.rotation.into())
+            * glam::Mat4::from_scale(glam::Vec3::splat(val.scale))
+    }
+}
+
+#[cfg(feature = "glam")]
+impl From<NiTransform> for glam::Mat4 {
+    fn from(val: NiTransform) -> Self {
+        (&val).into()
     }
 }
 
