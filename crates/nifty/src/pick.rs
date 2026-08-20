@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use eframe::egui;
 use eframe::egui_wgpu::wgpu;
 use nif::blocks::Block;
@@ -39,14 +41,18 @@ pub fn ray_through(view_proj: Mat4, rect: egui::Rect, pointer: egui::Pos2) -> Op
     })
 }
 
-/// Every drawable shape the ray passes through, nearest first.
+/// Every drawable shape the ray passes through, nearest first. `visible` is the set of shape
+/// blocks currently drawn, so a hidden LOD level cannot be picked.
 ///
 /// Culling matches the renderer, so a back face that is not drawn is not pickable. Shapes that
 /// blend to nothing are skipped as well.
-pub fn hits(nif: &Nif, ray: &Ray) -> Vec<Hit> {
+pub fn hits(nif: &Nif, ray: &Ray, visible: &HashSet<usize>) -> Vec<Hit> {
     let mut out = Vec::new();
 
     for visit in nif.walk() {
+        if !visible.contains(&visit.index) {
+            continue;
+        }
         let Some((geometry, data, triangles)) = geometry_of(nif, visit.block) else {
             continue;
         };

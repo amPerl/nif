@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use eframe::egui;
@@ -42,6 +42,8 @@ pub struct Mesh {
     pub data_block: usize,
     pub center: Vec3,
     pub radius: f32,
+    /// The NiLODNode this shape sits under, and which of its levels, if any.
+    lod: Option<(usize, usize)>,
     /// Blended shapes draw after the opaque ones, back to front.
     blended: bool,
     pipeline: wgpu::RenderPipeline,
@@ -59,6 +61,61 @@ pub struct Scene {
     pub meshes: Vec<Mesh>,
     pub center: Vec3,
     pub radius: f32,
+    pub lods: HashMap<usize, Lod>,
+}
+
+/// A NiLODNode's switching distances, and the point they are measured from.
+pub struct Lod {
+    pub center: Vec3,
+    pub ranges: Vec<(f32, f32)>,
+}
+
+/// Which level of each LOD node to draw.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum LodMode {
+    /// Every level at once, which is how overlapping levels become visible.
+    All,
+    /// The level the game would pick for the current camera distance.
+    Auto,
+    /// The level the game would pick at a distance the user chooses.
+    Manual,
+}
+
+impl Scene {
+    /// Whether a mesh's LOD level is the one being shown.
+    pub fn shows(&self, mesh: &Mesh, mode: LodMode, distance: f32, eye: Vec3) -> bool {
+        let Some((node, level)) = mesh.lod else {
+            return true;
+        };
+        let Some(lod) = self.lods.get(&node) else {
+            return true;
+        };
+        match mode {
+            LodMode::All => true,
+            LodMode::Auto => level == lod.level_at(lod.center.distance(eye)),
+            LodMode::Manual => level == lod.level_at(distance),
+        }
+    }
+
+    /// The shape blocks currently drawn, which is what picking may select.
+    pub fn visible_shapes(&self, mode: LodMode, distance: f32, eye: Vec3) -> HashSet<usize> {
+        self.meshes
+            .iter()
+            .filter(|mesh| self.shows(mesh, mode, distance, eye))
+            .map(|mesh| mesh.shape_block)
+            .collect()
+    }
+}
+
+impl Lod {
+    /// The level whose range covers `distance`, falling back to the first, which is what
+    /// `nif::walk`'s distance policy does.
+    pub fn level_at(&self, distance: f32) -> usize {
+        self.ranges
+            .iter()
+            .position(|(near, far)| distance >= *near && distance < *far)
+            .unwrap_or(0)
+    }
 }
 
 /// The render state a shape's properties ask for. Pipelines are cached on this, so only the
@@ -357,6 +414,7 @@ impl Gfx {
 
     /// A draw per shape, each carrying its own transform, not one merged mesh.
     pub fn build_scene(&self, nif: &Nif, library: &TextureLibrary) -> Scene {
+        let lod_of = lod_ancestry(nif);
         let device = &self.render_state.device;
         let white = self.upload_texture(1, 1, &[255, 255, 255, 255]);
         // shapes whose texture could not be loaded get a checker rather than white
@@ -367,10 +425,30 @@ impl Gfx {
         let mut cache: HashMap<usize, wgpu::BindGroup> = HashMap::new();
         let mut pipelines: HashMap<DrawState, wgpu::RenderPipeline> = HashMap::new();
         let mut meshes = Vec::new();
+        let mut lods: HashMap<usize, Lod> = HashMap::new();
         let mut min = Vec3::splat(f32::MAX);
         let mut max = Vec3::splat(f32::MIN);
 
         for visit in nif.walk() {
+            // the walk is the only place the node's world transform is known
+            if let Block::NiLODNode(node) = visit.block {
+                if let Some(Block::NiRangeLODData(data)) = node.lod_level_data_ref.get(&nif.blocks)
+                {
+                    let local = Vec3::new(data.center.x, data.center.y, data.center.z);
+                    lods.insert(
+                        visit.index,
+                        Lod {
+                            center: model_matrix(&visit.transform).transform_point3(local),
+                            ranges: data
+                                .lod_levels
+                                .iter()
+                                .map(|range| (range.near, range.far))
+                                .collect(),
+                        },
+                    );
+                }
+            }
+
             let Some((geometry, data, triangles)) = geometry_of(nif, visit.block) else {
                 continue;
             };
@@ -559,6 +637,7 @@ impl Gfx {
 
             meshes.push(Mesh {
                 shape_block: visit.index,
+                lod: lod_of.get(&visit.index).copied(),
                 blended: blend.is_some(),
                 pipeline,
                 pipeline_unculled,
@@ -605,6 +684,7 @@ impl Gfx {
             meshes,
             center,
             radius: radius.max(0.001),
+            lods,
         }
     }
 }
@@ -648,6 +728,34 @@ fn texturing_key(nif: &Nif, properties: &[nif::common::BlockRef]) -> Option<usiz
         .as_ref()?
         .source_ref
         .index()
+}
+
+/// Maps every block under a NiLODNode to that node and the level it belongs to. A nested LOD
+/// wins over an outer one, since the walk assigns as it descends.
+fn lod_ancestry(nif: &Nif) -> HashMap<usize, (usize, usize)> {
+    let mut out = HashMap::new();
+    let mut seen = HashSet::new();
+    let mut stack: Vec<(usize, Option<(usize, usize)>)> =
+        nif.roots().map(|(index, _)| (index, None)).collect();
+
+    while let Some((index, owner)) = stack.pop() {
+        if !seen.insert(index) {
+            continue;
+        }
+        if let Some(owner) = owner {
+            out.insert(index, owner);
+        }
+        let Some(block) = nif.blocks.get(index) else {
+            continue;
+        };
+        let children = block.child_refs().unwrap_or_default();
+        let lod = matches!(block, Block::NiLODNode(_)).then_some(index);
+        for (level, child) in children.iter().enumerate() {
+            let Some(child) = child.index() else { continue };
+            stack.push((child, lod.map(|node| (node, level)).or(owner)));
+        }
+    }
+    out
 }
 
 fn build_pipeline(
@@ -743,6 +851,15 @@ pub struct PreviewCall {
     pub selected: Option<usize>,
     /// Blended shapes sort against this.
     pub eye: Vec3,
+    pub lod_mode: LodMode,
+    pub lod_distance: f32,
+}
+
+impl PreviewCall {
+    fn visible(&self, mesh: &Mesh) -> bool {
+        self.scene
+            .shows(mesh, self.lod_mode, self.lod_distance, self.eye)
+    }
 }
 
 fn draw_mesh(
@@ -773,7 +890,7 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
 
         if self.wireframe {
             render_pass.set_pipeline(&preview.wire);
-            for mesh in &self.scene.meshes {
+            for mesh in self.scene.meshes.iter().filter(|m| self.visible(m)) {
                 render_pass.set_bind_group(1, &mesh.bind_group, &[]);
                 render_pass.set_bind_group(2, &mesh.texture, &[]);
                 render_pass.set_vertex_buffer(0, mesh.vertices.slice(..));
@@ -783,7 +900,7 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
         } else {
             // opaque first, then blended back to front
             let mut blended: Vec<&Mesh> = Vec::new();
-            for mesh in &self.scene.meshes {
+            for mesh in self.scene.meshes.iter().filter(|m| self.visible(m)) {
                 if mesh.blended {
                     blended.push(mesh);
                     continue;

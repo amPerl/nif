@@ -12,7 +12,7 @@ use nif::{blocks::Block, Nif};
 use crate::details::{self, Details};
 use crate::library::TextureLibrary;
 use crate::pick;
-use crate::scene::{Camera, Gfx, PreviewCall, Scene};
+use crate::scene::{Camera, Gfx, LodMode, PreviewCall, Scene};
 
 struct Loaded {
     path: PathBuf,
@@ -32,6 +32,9 @@ struct State {
     cull: bool,
     colors: bool,
     textures: bool,
+    lod_mode: LodMode,
+    /// Used by LodMode::Manual, in the file's own units.
+    lod_distance: f32,
     /// Where the last pick happened, so clicking the same spot cycles through what is behind.
     last_pick: Option<egui::Pos2>,
     /// Set when the selection changed outside the tree, so the tree can catch up.
@@ -129,6 +132,8 @@ impl Default for State {
             cull: true,
             colors: true,
             textures: true,
+            lod_mode: LodMode::Auto,
+            lod_distance: 0.0,
             last_pick: None,
             sync_tree: false,
             scroll_to: None,
@@ -601,6 +606,50 @@ impl Viewer<'_> {
             ));
         });
 
+        if !scene.lods.is_empty() {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(format!("{} LOD nodes", scene.lods.len()));
+                ui.selectable_value(&mut self.state.lod_mode, LodMode::Auto, "by camera");
+                ui.selectable_value(&mut self.state.lod_mode, LodMode::Manual, "by distance");
+                ui.selectable_value(&mut self.state.lod_mode, LodMode::All, "all levels");
+
+                match self.state.lod_mode {
+                    LodMode::Manual => {
+                        // the ranges say how far the file expects to be viewed from
+                        let far = scene
+                            .lods
+                            .values()
+                            .flat_map(|lod| lod.ranges.iter())
+                            .map(|(_, far)| *far)
+                            .filter(|far| far.is_finite())
+                            .fold(scene.radius * 4.0, f32::max);
+                        ui.add(
+                            egui::Slider::new(&mut self.state.lod_distance, 0.0..=far)
+                                .text("distance"),
+                        );
+                        let levels: Vec<String> = scene
+                            .lods
+                            .values()
+                            .map(|lod| lod.level_at(self.state.lod_distance).to_string())
+                            .collect();
+                        ui.label(format!("level {}", levels.join(", ")));
+                    }
+                    LodMode::Auto => {
+                        ui.weak("level follows the camera");
+                    }
+                    LodMode::All => {
+                        let levels = scene
+                            .lods
+                            .values()
+                            .map(|lod| lod.ranges.len())
+                            .max()
+                            .unwrap_or(0);
+                        ui.weak(format!("up to {levels} levels drawn over each other"));
+                    }
+                }
+            });
+        }
+
         let (rect, response) =
             ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
 
@@ -669,8 +718,11 @@ impl Viewer<'_> {
             if let (Some(pointer), Some(loaded)) =
                 (response.interact_pointer_pos(), &self.state.loaded)
             {
+                // only what is drawn can be picked, so a hidden LOD level is not selectable
+                let visible =
+                    scene.visible_shapes(self.state.lod_mode, self.state.lod_distance, eye);
                 let hits = pick::ray_through(view_proj, rect, pointer)
-                    .map(|ray| pick::hits(&loaded.nif, &ray))
+                    .map(|ray| pick::hits(&loaded.nif, &ray, &visible))
                     .unwrap_or_default();
                 let repeat = self
                     .state
@@ -701,6 +753,8 @@ impl Viewer<'_> {
         ui.painter().add(egui_wgpu::Callback::new_paint_callback(
             rect,
             PreviewCall {
+                lod_mode: self.state.lod_mode,
+                lod_distance: self.state.lod_distance,
                 scene,
                 wireframe: self.state.wireframe,
                 cull: self.state.cull,
