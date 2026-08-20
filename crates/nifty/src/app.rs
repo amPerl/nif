@@ -699,6 +699,8 @@ impl Viewer<'_> {
         }
 
         let poses = self.timeline(ui);
+        // picking follows the drawn pose, so what you can click cannot drift from what you see
+        let animated = (!poses.is_empty()).then_some(self.state.time);
 
         let (rect, response) =
             ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
@@ -772,7 +774,7 @@ impl Viewer<'_> {
                 let visible =
                     scene.visible_shapes(self.state.lod_mode, self.state.lod_distance, eye);
                 let hits = pick::ray_through(view_proj, rect, pointer)
-                    .map(|ray| pick::hits(&loaded.nif, &ray, &visible))
+                    .map(|ray| pick::hits(&loaded.nif, &ray, &visible, animated))
                     .unwrap_or_default();
                 let repeat = self
                     .state

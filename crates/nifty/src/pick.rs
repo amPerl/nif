@@ -42,14 +42,20 @@ pub fn ray_through(view_proj: Mat4, rect: egui::Rect, pointer: egui::Pos2) -> Op
 }
 
 /// Every drawable shape the ray passes through, nearest first. `visible` is the set of shape
-/// blocks currently drawn, so a hidden LOD level cannot be picked.
+/// blocks currently drawn, so a hidden LOD level cannot be picked, and `time` is where the
+/// preview's timeline sits, so an animated shape is picked where it is drawn rather than where
+/// the file stores it.
 ///
 /// Culling matches the renderer, so a back face that is not drawn is not pickable. Shapes that
 /// blend to nothing are skipped as well.
-pub fn hits(nif: &Nif, ray: &Ray, visible: &HashSet<usize>) -> Vec<Hit> {
+pub fn hits(nif: &Nif, ray: &Ray, visible: &HashSet<usize>, time: Option<f32>) -> Vec<Hit> {
     let mut out = Vec::new();
 
-    for visit in nif.walk() {
+    let walk = match time {
+        Some(time) => nif.walk().at_time(time),
+        None => nif.walk(),
+    };
+    for visit in walk {
         if !visible.contains(&visit.index) {
             continue;
         }
