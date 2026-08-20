@@ -56,6 +56,8 @@ pub struct Mesh {
     edges: wgpu::Buffer,
     edge_count: u32,
     bind_group: wgpu::BindGroup,
+    /// Rewritten when an animated pose moves the shape. The model matrix is its first 16 floats.
+    model_buffer: wgpu::Buffer,
 }
 
 pub struct Scene {
@@ -667,7 +669,7 @@ impl Gfx {
             let model_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("nifty model"),
                 contents: bytemuck::cast_slice(&model_uniform),
-                usage: wgpu::BufferUsages::UNIFORM,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
 
             meshes.push(Mesh {
@@ -705,6 +707,7 @@ impl Gfx {
                         resource: model_buffer.as_entire_binding(),
                     }],
                 }),
+                model_buffer,
             });
         }
 
@@ -967,6 +970,8 @@ pub struct PreviewCall {
     pub eye: Vec3,
     pub lod_mode: LodMode,
     pub lod_distance: f32,
+    /// Model matrices for the shapes an animation has moved, by shape block.
+    pub poses: Arc<HashMap<usize, Mat4>>,
 }
 
 impl PreviewCall {
@@ -990,6 +995,29 @@ fn draw_mesh(
 }
 
 impl egui_wgpu::CallbackTrait for PreviewCall {
+    /// The model matrix is the first 64 bytes of the uniform, so a pose rewrites only that
+    /// and leaves the material behind it alone.
+    fn prepare(
+        &self,
+        _device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        _screen: &egui_wgpu::ScreenDescriptor,
+        _encoder: &mut wgpu::CommandEncoder,
+        _resources: &mut egui_wgpu::CallbackResources,
+    ) -> Vec<wgpu::CommandBuffer> {
+        for mesh in &self.scene.meshes {
+            let Some(model) = self.poses.get(&mesh.shape_block) else {
+                continue;
+            };
+            queue.write_buffer(
+                &mesh.model_buffer,
+                0,
+                bytemuck::cast_slice(&model.to_cols_array()),
+            );
+        }
+        Vec::new()
+    }
+
     fn paint(
         &self,
         _info: egui::PaintCallbackInfo,

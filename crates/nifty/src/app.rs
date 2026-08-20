@@ -1,4 +1,9 @@
-use std::{collections::HashSet, io::Cursor, path::PathBuf, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    io::Cursor,
+    path::PathBuf,
+    sync::Arc,
+};
 
 use eframe::egui::{self, text::LayoutJob, Color32, FontId, TextFormat, WidgetText};
 use eframe::egui_wgpu;
@@ -6,13 +11,13 @@ use egui_dock::{DockArea, DockState, Style, TabViewer};
 use egui_ltreeview::{Action, NodeBuilder, TreeView, TreeViewState};
 use egui_phosphor::regular as icon;
 use nif::glam::camera::rh::{proj::directx::perspective, view::look_at_mat4};
-use nif::glam::Vec3;
+use nif::glam::{Mat4, Vec3};
 use nif::{blocks::Block, Nif};
 
 use crate::details::{self, Details};
 use crate::library::TextureLibrary;
 use crate::pick;
-use crate::scene::{Camera, Gfx, LodMode, PreviewCall, Scene};
+use crate::scene::{model_matrix, Camera, Gfx, LodMode, PreviewCall, Scene};
 
 struct Loaded {
     path: PathBuf,
@@ -20,6 +25,8 @@ struct Loaded {
     links: Vec<Vec<Link>>,
     consumed: usize,
     size: usize,
+    /// What every controller in the file covers, so the timeline has a range.
+    span: Option<(f32, f32)>,
 }
 
 struct State {
@@ -36,6 +43,9 @@ struct State {
     lod_mode: LodMode,
     /// Used by LodMode::Manual, in the file's own units.
     lod_distance: f32,
+    /// Where the timeline sits, in the file's own seconds.
+    time: f32,
+    playing: bool,
     /// Where the last pick happened, so clicking the same spot cycles through what is behind.
     last_pick: Option<egui::Pos2>,
     /// Set when the selection changed outside the tree, so the tree can catch up.
@@ -134,6 +144,8 @@ impl Default for State {
             grid: true,
             lod_mode: LodMode::Auto,
             lod_distance: 0.0,
+            time: 0.0,
+            playing: false,
             last_pick: None,
             sync_tree: false,
             openness: Vec::new(),
@@ -212,9 +224,11 @@ impl Nifty {
             }
             None => format!("{} blocks", nif.blocks.len()),
         });
+        state.time = nif::anim::span(&nif.blocks).map_or(0.0, |(start, _)| start);
         state.loaded = Some(Loaded {
             path,
             links: link_table(&nif.blocks),
+            span: nif::anim::span(&nif.blocks),
             nif,
             consumed: reader.position() as usize,
             size: bytes.len(),
@@ -568,6 +582,50 @@ impl TabViewer for Viewer<'_> {
 }
 
 impl Viewer<'_> {
+    /// The transport, and the poses it puts the file in. Empty when nothing animates.
+    fn timeline(&mut self, ui: &mut egui::Ui) -> Arc<HashMap<usize, Mat4>> {
+        let Some(loaded) = &self.state.loaded else {
+            return Arc::default();
+        };
+        let Some((start, end)) = loaded.span else {
+            return Arc::default();
+        };
+
+        if self.state.playing {
+            // stable_dt rather than dt, so one slow frame does not jump the animation
+            self.state.time += ui.input(|i| i.stable_dt).min(0.1);
+            if self.state.time > end {
+                self.state.time = start + (self.state.time - start) % (end - start).max(1e-6);
+            }
+            ui.ctx().request_repaint();
+        }
+
+        ui.horizontal_wrapped(|ui| {
+            let label = if self.state.playing { "pause" } else { "play" };
+            if ui.button(label).clicked() {
+                self.state.playing = !self.state.playing;
+            }
+            if ui.button("stop").clicked() {
+                self.state.playing = false;
+                self.state.time = start;
+            }
+            ui.add(
+                egui::Slider::new(&mut self.state.time, start..=end)
+                    .text("seconds")
+                    .drag_value_speed(0.01),
+            );
+            ui.weak(format!("{:.2} s span", end - start));
+        });
+
+        let mut poses = HashMap::new();
+        for visit in loaded.nif.walk().at_time(self.state.time) {
+            if visit.block.geometry().is_some() {
+                poses.insert(visit.index, model_matrix(&visit.transform));
+            }
+        }
+        Arc::new(poses)
+    }
+
     fn preview(&mut self, ui: &mut egui::Ui) {
         let (Some(scene), Some(gfx)) = (self.state.scene.clone(), self.gfx) else {
             ui.centered_and_justified(|ui| ui.label("nothing to draw"));
@@ -639,6 +697,8 @@ impl Viewer<'_> {
                 }
             });
         }
+
+        let poses = self.timeline(ui);
 
         let (rect, response) =
             ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
@@ -745,6 +805,7 @@ impl Viewer<'_> {
         ui.painter().add(egui_wgpu::Callback::new_paint_callback(
             rect,
             PreviewCall {
+                poses,
                 lod_mode: self.state.lod_mode,
                 lod_distance: self.state.lod_distance,
                 scene,
