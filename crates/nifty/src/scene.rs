@@ -14,6 +14,7 @@ use nif::{
 };
 use wgpu::util::DeviceExt as _;
 
+use crate::library::{self, TextureLibrary};
 use crate::texture::decode_texture;
 
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -280,11 +281,9 @@ impl Gfx {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            // Not the Srgb variant. eframe's target is Bgra8Unorm, which egui treats as already
-            // gamma encoded, and nothing here encodes back on the way out, so an sRGB decode at
-            // sample time would leave everything a stop too dark. Staying in gamma space also
-            // matches the engine: D3D9 fixed function modulated and blended gamma encoded texels
-            // with no sRGB awareness at all.
+            // Not the Srgb variant: eframe's target is Bgra8Unorm and nothing here encodes
+            // gamma on output, so decoding sRGB at sample time would make everything too dark.
+            // Gamma space also matches D3D9 fixed function, which had no sRGB handling.
             format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
@@ -317,11 +316,12 @@ impl Gfx {
         })
     }
 
-    /// Resolves a shape's base texture, if it is embedded rather than a file reference.
+    /// Resolves a shape's base texture, embedded or from the library on disk.
     fn shape_texture(
         &self,
         nif: &Nif,
         shape_properties: &[nif::common::BlockRef],
+        library: &TextureLibrary,
     ) -> Option<wgpu::BindGroup> {
         let texturing = shape_properties
             .iter()
@@ -337,8 +337,11 @@ impl Gfx {
         let Block::NiSourceTexture(source) = source else {
             return None;
         };
+        // most source textures name a file rather than carrying pixels
         if source.use_external {
-            return None;
+            let requested = source.file_name.to_string_lossy().into_owned();
+            let (width, height, rgba) = library.load(&requested)?;
+            return Some(self.upload_texture(width, height, &rgba));
         }
 
         let Some(Block::NiPixelData(pixels)) = source.pixel_data_ref.get(&nif.blocks) else {
@@ -353,9 +356,14 @@ impl Gfx {
     }
 
     /// A draw per shape, each carrying its own transform, not one merged mesh.
-    pub fn build_scene(&self, nif: &Nif) -> Scene {
+    pub fn build_scene(&self, nif: &Nif, library: &TextureLibrary) -> Scene {
         let device = &self.render_state.device;
         let white = self.upload_texture(1, 1, &[255, 255, 255, 255]);
+        // shapes whose texture could not be loaded get a checker rather than white
+        let missing = {
+            let (width, height, rgba) = library::placeholder();
+            self.upload_texture(width, height, &rgba)
+        };
         let mut cache: HashMap<usize, wgpu::BindGroup> = HashMap::new();
         let mut pipelines: HashMap<DrawState, wgpu::RenderPipeline> = HashMap::new();
         let mut meshes = Vec::new();
@@ -399,9 +407,9 @@ impl Gfx {
                 attributes.extend_from_slice(&uv);
             }
 
-            // NiMaterialProperty is a D3DMATERIAL9 verbatim. There is no ambient term here:
-            // the engine multiplies material ambient by the global ambient, which is black
-            // unless the scene carries an NiAmbientLight, and 31 of 31,434 corpus files do.
+            // NiMaterialProperty is a D3DMATERIAL9 verbatim. There is no ambient term: the
+            // engine multiplies material ambient by the global ambient, which is black unless
+            // the scene carries an NiAmbientLight.
             let material = geometry
                 .property_refs
                 .iter()
@@ -427,9 +435,9 @@ impl Gfx {
                 None => ([1.0; 4], [0.0; 4]),
             };
 
-            // NiVertexColorProperty does not tint: it re-routes which source feeds each D3D
-            // material channel. LightMode::Emissive uploads no lights at all, and paired with
-            // SourceEmissive it disables lighting outright so the vertex colour passes through.
+            // NiVertexColorProperty selects which source supplies each D3D material channel
+            // rather than tinting. LightMode::Emissive uploads no lights, and with SourceEmissive
+            // it disables lighting so the vertex colour is used directly.
             let vertex_color =
                 geometry
                     .property_refs
@@ -484,8 +492,7 @@ impl Gfx {
                     blend_factor(&a.destination_blend_mode(), true),
                 )
             });
-            // TestGreater is 22,323 of the corpus's 22,442 alpha tests, so the shader only
-            // implements "discard at or below the threshold". TestAlways never discards.
+            // the shader implements TestGreater only. TestAlways never discards.
             let (alpha_test, alpha_threshold) = match alpha {
                 Some(a) if a.alpha_test() && a.test_func() != TestFunction::TestAlways => {
                     (1.0, f32::from(a.threshold) / 255.0)
@@ -517,8 +524,8 @@ impl Gfx {
                 Some(key) => cache
                     .entry(key)
                     .or_insert_with(|| {
-                        self.shape_texture(nif, &geometry.property_refs)
-                            .unwrap_or_else(|| self.upload_texture(1, 1, &[255, 255, 255, 255]))
+                        self.shape_texture(nif, &geometry.property_refs, library)
+                            .unwrap_or_else(|| missing.clone())
                     })
                     .clone(),
                 None => white.clone(),
@@ -774,7 +781,7 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
                 render_pass.draw_indexed(0..mesh.edge_count, 0, 0..1);
             }
         } else {
-            // opaque first, then blended back to front, which is what the engine's sorter does
+            // opaque first, then blended back to front
             let mut blended: Vec<&Mesh> = Vec::new();
             for mesh in &self.scene.meshes {
                 if mesh.blended {
@@ -892,7 +899,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let shade = 0.2 + 0.65 * lambert + fill;
 
     // the texture modulates the lit colour, so emissive is inside the multiply, not over it:
-    // emissive 1,1,1 is a full-brightness texture, not white. shade stands in for the lights.
+    // emissive 1,1,1 is a full brightness texture, not white. shade replaces the light sum.
     let vertex = in.color.rgb;
     let emissive_src = mix(model.emissive.rgb, vertex, model.sources.x);
     let diffuse_src = mix(model.diffuse.rgb, vertex, model.sources.y);

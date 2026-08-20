@@ -41,8 +41,8 @@ pub fn ray_through(view_proj: Mat4, rect: egui::Rect, pointer: egui::Pos2) -> Op
 
 /// Every drawable shape the ray passes through, nearest first.
 ///
-/// Culling matches what the renderer does, so a back face you cannot see is not pickable.
-/// Shapes that blend to nothing are skipped for the same reason.
+/// Culling matches the renderer, so a back face that is not drawn is not pickable. Shapes that
+/// blend to nothing are skipped as well.
 pub fn hits(nif: &Nif, ray: &Ray) -> Vec<Hit> {
     let mut out = Vec::new();
 
@@ -57,7 +57,7 @@ pub fn hits(nif: &Nif, ray: &Ray) -> Vec<Hit> {
             continue;
         }
 
-        // scale 0 collapses the shape to nothing and makes the inverse meaningless
+        // a zero scale makes the inverse matrix meaningless
         if visit.transform.scale.abs() < 1e-8 {
             continue;
         }
@@ -126,7 +126,7 @@ fn invisible(nif: &Nif, properties: &[nif::common::BlockRef]) -> bool {
         })
 }
 
-/// Moller-Trumbore. The sign of the determinant is the facing, so culling falls out of it.
+/// Moller-Trumbore. The sign of the determinant gives the facing, which drives culling.
 fn intersect(
     origin: Vec3,
     direction: Vec3,

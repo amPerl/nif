@@ -9,6 +9,7 @@ use nif::glam::camera::rh::{proj::directx::perspective, view::look_at_mat4};
 use nif::glam::Vec3;
 use nif::{blocks::Block, Nif};
 
+use crate::library::TextureLibrary;
 use crate::pick;
 use crate::scene::{Camera, Gfx, PreviewCall, Scene};
 
@@ -104,6 +105,10 @@ pub struct Nifty {
     active: usize,
     error: Option<String>,
     gfx: Option<Gfx>,
+    /// Shared across documents: where to look for the textures NIFs reference by name.
+    library: TextureLibrary,
+    show_library: bool,
+    root_input: String,
 }
 
 impl Default for State {
@@ -132,6 +137,29 @@ impl Nifty {
             active: 0,
             error: None,
             gfx: cc.wgpu_render_state.as_ref().map(Gfx::new),
+            library: TextureLibrary::default(),
+            show_library: false,
+            root_input: String::new(),
+        }
+    }
+
+    /// Adds a directory to search for the textures NIFs name.
+    pub fn add_texture_root(&mut self, root: PathBuf) {
+        if self.library.add_root(root) {
+            self.rebuild_scenes();
+        }
+    }
+
+    /// Re-resolves every open document's textures, for when the roots change.
+    fn rebuild_scenes(&mut self) {
+        let Some(gfx) = &self.gfx else {
+            return;
+        };
+        for document in &mut self.documents {
+            let Some(loaded) = &document.state.loaded else {
+                continue;
+            };
+            document.state.scene = Some(Arc::new(gfx.build_scene(&loaded.nif, &self.library)));
         }
     }
 
@@ -159,7 +187,7 @@ impl Nifty {
         let mut state = State::default();
         state.status = Some(match &self.gfx {
             Some(gfx) => {
-                let scene = gfx.build_scene(&nif);
+                let scene = gfx.build_scene(&nif, &self.library);
                 let shapes = scene.meshes.len();
                 state.scene = Some(Arc::new(scene));
                 format!("{} blocks, {} shapes", nif.blocks.len(), shapes)
@@ -238,7 +266,7 @@ fn label_for(blocks: &[Block], index: usize, slot: Option<&str>, palette: &Palet
         .object_net()
         .map(|o| o.name.to_string_lossy().into_owned())
         .unwrap_or_default();
-    // source textures are almost always unnamed, and the path is what identifies them
+    // source textures are usually unnamed, so fall back to the file path
     if name.is_empty() {
         if let Block::NiSourceTexture(texture) = block {
             name = texture.file_name.to_string_lossy().into_owned();
@@ -297,8 +325,7 @@ fn linked(block: &Block) -> Vec<Link> {
         out.extend(refs.iter().filter_map(|r| r.index()).map(Link::plain));
     }
 
-    // the texture chain hangs off typed fields rather than the generic ref lists, so none of
-    // it reaches the tree without these
+    // these are reached through typed fields rather than the generic ref lists
     match block {
         Block::NiTexturingProperty(property) => {
             out.extend(property.textures().filter_map(|(slot, desc)| {
@@ -391,11 +418,9 @@ impl TabViewer for Viewer<'_> {
                         .unwrap_or_default();
                     (target, ancestors)
                 });
-                // The tree does not draw rows outside the clip rect, so an off screen row never
-                // runs its own draw closure and cannot ask to be scrolled to. Counting the rows
-                // it lays out gives an offset that brings the row into view; once it is drawn,
-                // its closure centres it exactly, which costs one frame and needs no assumption
-                // about how the tree sizes a row.
+                // The tree does not draw rows outside the clip rect, so an off screen row
+                // cannot request a scroll itself. Counting the rows it lays out gives an offset,
+                // applied on the next frame.
                 let mut rows = Rows {
                     target: sync.as_ref().and_then(|(target, _)| *target),
                     drawn: 0,
@@ -437,8 +462,7 @@ impl TabViewer for Viewer<'_> {
                     }
                 });
                 if let Some(row) = rows.found {
-                    // measured from what was actually laid out, rather than assuming the tree's
-                    // own row height formula
+                    // row height from the laid out content, not the tree's own formula
                     let height = output.content_size.y / rows.drawn.max(1) as f32;
                     let centred = (row as f32 + 0.5) * height - output.inner_rect.height() * 0.5;
                     self.state.scroll_to = Some(centred.max(0.0));
@@ -617,8 +641,7 @@ impl Viewer<'_> {
         let eye = target + direction * distance;
         let view_proj = projection * view;
 
-        // clicking the same spot again steps to whatever is behind the current selection, which
-        // is how you reach a shape hidden by the one in front of it
+        // clicking the same spot again selects the next hit behind the current one
         if response.clicked() {
             if let (Some(pointer), Some(loaded)) =
                 (response.interact_pointer_pos(), &self.state.loaded)
@@ -758,11 +781,82 @@ impl eframe::App for Nifty {
                 .filter_map(|f| f.path.clone())
                 .collect::<Vec<_>>()
         }) {
-            self.open(path);
+            if path.is_dir() {
+                if self.library.add_root(path) {
+                    self.rebuild_scenes();
+                }
+            } else {
+                self.open(path);
+            }
         }
         if ui.ctx().input(|i| i.key_pressed(egui::Key::F)) {
             if let Some(document) = self.documents.get_mut(self.active) {
                 document.focus_selected();
+            }
+        }
+
+        if self.show_library {
+            let mut library = std::mem::take(&mut self.library);
+            let mut input = std::mem::take(&mut self.root_input);
+            let mut open = true;
+            let mut changed = false;
+
+            egui::Window::new("texture directories")
+                .open(&mut open)
+                .default_width(560.0)
+                .show(ui.ctx(), |ui| {
+                    ui.label(
+                        "Textures are matched by file name only, ignoring the path, the extension and case.",
+                    );
+                    ui.separator();
+
+                    let mut remove = None;
+                    for (index, root) in library.roots().iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            if ui.small_button(icon::X).clicked() {
+                                remove = Some(index);
+                            }
+                            ui.monospace(root.display().to_string());
+                        });
+                    }
+                    if let Some(index) = remove {
+                        library.remove_root(index);
+                        changed = true;
+                    }
+                    if library.roots().is_empty() {
+                        ui.weak("no directories yet - drop a folder onto the window, or paste one");
+                    }
+
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        let entry = ui.text_edit_singleline(&mut input);
+                        let submitted =
+                            entry.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        if (ui.button("add").clicked() || submitted) && !input.trim().is_empty() {
+                            if library.add_root(PathBuf::from(input.trim())) {
+                                changed = true;
+                            }
+                            input.clear();
+                        }
+                        if ui.button("rescan").clicked() {
+                            library.rescan();
+                            changed = true;
+                        }
+                    });
+
+                    ui.separator();
+                    ui.label(format!(
+                        "{} textures indexed, {} name collisions",
+                        library.indexed(),
+                        library.collisions()
+                    ));
+                });
+
+            self.library = library;
+            self.root_input = input;
+            self.show_library = open;
+            if changed {
+                self.rebuild_scenes();
             }
         }
 
@@ -771,6 +865,9 @@ impl eframe::App for Nifty {
             active,
             error,
             gfx,
+            library,
+            show_library,
+            root_input: _,
         } = self;
 
         egui::Panel::top("bar").show(ui, |ui| {
@@ -803,6 +900,16 @@ impl eframe::App for Nifty {
                 if let Some(error) = error {
                     ui.colored_label(egui::Color32::from_rgb(220, 120, 90), error.as_str());
                 }
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let label = match library.roots().len() {
+                        0 => "textures: none".to_string(),
+                        n => format!("textures: {n} dirs, {} files", library.indexed()),
+                    };
+                    if ui.button(label).clicked() {
+                        *show_library = true;
+                    }
+                });
             });
         });
 
