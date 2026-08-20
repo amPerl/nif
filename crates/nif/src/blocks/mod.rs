@@ -259,6 +259,17 @@ impl Block {
         Some(obj)
     }
 
+    pub fn geometry(&self) -> Option<&NiGeometry> {
+        let geometry: &NiGeometry = match self {
+            Block::NiTriShape(b) => b,
+            Block::NiTriStrips(b) => b,
+            Block::NiParticleSystem(b) => b,
+            Block::NiMeshParticleSystem(b) => b,
+            _ => return None,
+        };
+        Some(geometry)
+    }
+
     pub fn av_object(&self) -> Option<&NiAvObject> {
         let obj: &NiAvObject = match self {
             Block::NiAvObject(b) => b,
