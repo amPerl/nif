@@ -22,3 +22,11 @@ pub enum MaterialColor {
     SelfIllum,
     Unknown(u16),
 }
+
+impl std::ops::Deref for NiMaterialColorController {
+    type Target = NiSingleInterpController;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}

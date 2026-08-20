@@ -31,9 +31,9 @@ where
     pub time: f32,
     pub value: T,
     #[br(if(key_type == KeyType::Quadratic))]
-    pub forward: Option<T>,
+    pub in_tangent: Option<T>,
     #[br(if(key_type == KeyType::Quadratic))]
-    pub backward: Option<T>,
+    pub out_tangent: Option<T>,
     #[br(if(key_type == KeyType::Tbc))]
     pub tbc: Option<Tbc>,
 }

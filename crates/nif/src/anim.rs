@@ -1,0 +1,605 @@
+use crate::blocks::{Block, NiAvObject, NiTimeController, NiTransformData, NiTransformInterpolator};
+use crate::common::{Key, KeyGroup, KeyType, Matrix33, NiQuatTransform, NiTransform, Quaternion, Vector3};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CycleType {
+    Loop,
+    Reverse,
+    Clamp,
+    Invalid(u8),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Pose {
+    pub rotation: Option<Quaternion>,
+    pub translation: Option<Vector3>,
+    pub scale: Option<f32>,
+}
+
+impl Pose {
+    pub fn is_empty(&self) -> bool {
+        self.rotation.is_none() && self.translation.is_none() && self.scale.is_none()
+    }
+
+    fn or(self, fallback: Pose) -> Pose {
+        Pose {
+            rotation: self.rotation.or(fallback.rotation),
+            translation: self.translation.or(fallback.translation),
+            scale: self.scale.or(fallback.scale),
+        }
+    }
+}
+
+impl Pose {
+    /// `base` with the animated channels replaced. A channel with no keys keeps its own value,
+    /// which is why an absent one has to stay absent rather than become a default.
+    pub fn apply(&self, base: &NiTransform) -> NiTransform {
+        NiTransform {
+            rotation: self.rotation.map_or(base.rotation, |q| q.to_matrix()),
+            translation: self.translation.unwrap_or(base.translation),
+            scale: self.scale.unwrap_or(base.scale),
+        }
+    }
+}
+
+/// The span every controller in the file covers, or None when it holds no animation.
+pub fn span(blocks: &[Block]) -> Option<(f32, f32)> {
+    let mut span: Option<(f32, f32)> = None;
+    for block in blocks {
+        let Some(time) = block.as_time_controller() else {
+            continue;
+        };
+        let (start, end) = (time.start_time, time.end_time);
+        if !start.is_finite() || !end.is_finite() || end <= start {
+            continue;
+        }
+        span = Some(match span {
+            Some((lo, hi)) => (lo.min(start), hi.max(end)),
+            None => (start, end),
+        });
+    }
+    span
+}
+
+/// The transform an object holds at `time`, following its controller chain. None when nothing
+/// animates it, so a caller can keep whatever it already had.
+pub fn transform_at(blocks: &[Block], object: &NiAvObject, time: f32) -> Option<NiTransform> {
+    let mut next = object.controller_ref;
+    // a chain, since one object can carry several controllers
+    let mut guard = 0;
+    while let Some(block) = next.get(blocks) {
+        guard += 1;
+        if guard > 64 {
+            break;
+        }
+        let Some(time_controller) = block.as_time_controller() else {
+            break;
+        };
+        next = time_controller.next_controller_ref;
+
+        let Block::NiTransformController(controller) = block else {
+            continue;
+        };
+        if !time_controller.is_active() {
+            continue;
+        }
+        let Some(Block::NiTransformInterpolator(interpolator)) =
+            controller.base.interpolator_ref.get(blocks)
+        else {
+            continue;
+        };
+        let pose = interpolator.sample(blocks, time_controller.local_time(time));
+        if pose.is_empty() {
+            continue;
+        }
+        return Some(pose.apply(&NiTransform::from(object)));
+    }
+    None
+}
+
+/// A channel the engine marks as absent, so the target keeps its own value.
+const INVALID: f32 = -f32::MAX;
+
+impl NiQuatTransform {
+    pub fn translation(&self) -> Option<Vector3> {
+        (self.translation.x != INVALID).then_some(self.translation)
+    }
+
+    pub fn rotation(&self) -> Option<Quaternion> {
+        (self.rotation.x != INVALID).then_some(self.rotation)
+    }
+
+    pub fn scale(&self) -> Option<f32> {
+        (self.scale != INVALID).then_some(self.scale)
+    }
+
+    pub fn pose(&self) -> Pose {
+        Pose {
+            rotation: self.rotation(),
+            translation: self.translation(),
+            scale: self.scale(),
+        }
+    }
+}
+
+impl NiTimeController {
+    pub fn cycle_type_enum(&self) -> CycleType {
+        match self.cycle_type() {
+            0 => CycleType::Loop,
+            1 => CycleType::Reverse,
+            2 => CycleType::Clamp,
+            other => CycleType::Invalid(other),
+        }
+    }
+
+    pub fn duration(&self) -> f32 {
+        self.end_time - self.start_time
+    }
+
+    /// Where `time` lands inside the controller's own span, after frequency, phase and the
+    /// cycle rule. `Reverse` runs the span forwards then backwards over twice the duration.
+    pub fn local_time(&self, time: f32) -> f32 {
+        let duration = self.duration();
+        let scaled = time * self.frequency + self.phase;
+        if duration <= 0.0 {
+            return self.start_time;
+        }
+        match self.cycle_type_enum() {
+            CycleType::Clamp | CycleType::Invalid(_) => {
+                scaled.clamp(self.start_time, self.end_time)
+            }
+            CycleType::Loop => {
+                let offset = (scaled - self.start_time).rem_euclid(duration);
+                self.start_time + offset
+            }
+            CycleType::Reverse => {
+                let offset = (scaled - self.start_time).rem_euclid(duration * 2.0);
+                self.start_time
+                    + if offset <= duration {
+                        offset
+                    } else {
+                        duration * 2.0 - offset
+                    }
+            }
+        }
+    }
+}
+
+pub trait Interpolate: Copy {
+    fn lerp(from: Self, to: Self, t: f32) -> Self;
+
+    /// Hermite, where the tangents are value deltas across the segment rather than slopes.
+    /// With both tangents equal to `to - from` this is exactly linear, which is how an
+    /// exporter writes a constant rate segment.
+    fn hermite(from: Self, out_of_from: Self, to: Self, into_to: Self, t: f32) -> Self;
+}
+
+impl Interpolate for f32 {
+    fn lerp(from: Self, to: Self, t: f32) -> Self {
+        from + (to - from) * t
+    }
+
+    fn hermite(from: Self, out_of_from: Self, to: Self, into_to: Self, t: f32) -> Self {
+        let (t2, t3) = (t * t, t * t * t);
+        (2.0 * t3 - 3.0 * t2 + 1.0) * from
+            + (t3 - 2.0 * t2 + t) * out_of_from
+            + (-2.0 * t3 + 3.0 * t2) * to
+            + (t3 - t2) * into_to
+    }
+}
+
+impl Interpolate for Vector3 {
+    fn lerp(from: Self, to: Self, t: f32) -> Self {
+        Vector3 {
+            x: f32::lerp(from.x, to.x, t),
+            y: f32::lerp(from.y, to.y, t),
+            z: f32::lerp(from.z, to.z, t),
+        }
+    }
+
+    fn hermite(from: Self, out_of_from: Self, to: Self, into_to: Self, t: f32) -> Self {
+        Vector3 {
+            x: f32::hermite(from.x, out_of_from.x, to.x, into_to.x, t),
+            y: f32::hermite(from.y, out_of_from.y, to.y, into_to.y, t),
+            z: f32::hermite(from.z, out_of_from.z, to.z, into_to.z, t),
+        }
+    }
+}
+
+impl<T> KeyGroup<T>
+where
+    T: Interpolate + Clone + binrw::BinRead + binrw::BinWrite + 'static,
+    T: for<'a> binrw::BinRead<Args<'a> = ()>,
+    T: for<'a> binrw::BinWrite<Args<'a> = ()>,
+{
+    /// The value at `time`, or None when the group carries no keys at all. Outside the key
+    /// range the nearest key holds, which is what the engine does at the ends of a span.
+    pub fn sample(&self, time: f32) -> Option<T> {
+        sample_keys(&self.keys, self.interpolation, time)
+    }
+}
+
+/// `Tbc` needs per key derivatives the file does not carry, so it falls back to linear here.
+fn sample_keys<T>(keys: &[Key<T>], interpolation: Option<KeyType>, time: f32) -> Option<T>
+where
+    T: Interpolate + Clone + binrw::BinRead + binrw::BinWrite + 'static,
+    T: for<'a> binrw::BinRead<Args<'a> = ()>,
+    T: for<'a> binrw::BinWrite<Args<'a> = ()>,
+{
+    let first = keys.first()?;
+    let last = keys.last()?;
+    if keys.len() == 1 || time <= first.time {
+        return Some(first.value);
+    }
+    if time >= last.time {
+        return Some(last.value);
+    }
+
+    // the last key at or before `time`, which is the segment's start
+    let at = keys.partition_point(|key| key.time <= time).saturating_sub(1);
+    let from = keys.get(at)?;
+    let Some(to) = keys.get(at.saturating_add(1)) else {
+        return Some(from.value);
+    };
+
+    let span = to.time - from.time;
+    if span <= 0.0 {
+        return Some(to.value);
+    }
+    let t = (time - from.time) / span;
+
+    match interpolation {
+        Some(KeyType::Const) => Some(from.value),
+        Some(KeyType::Quadratic) => {
+            // the file stores the in tangent first, so the segment leaves `from` on its
+            // second tangent and arrives at `to` on its first
+            match (from.out_tangent, to.in_tangent) {
+                (Some(out_of_from), Some(into_to)) => {
+                    Some(T::hermite(from.value, out_of_from, to.value, into_to, t))
+                }
+                _ => Some(T::lerp(from.value, to.value, t)),
+            }
+        }
+        _ => Some(T::lerp(from.value, to.value, t)),
+    }
+}
+
+impl Quaternion {
+    pub const IDENTITY: Quaternion = Quaternion {
+        w: 1.0,
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+    };
+
+    pub fn multiply(&self, other: &Quaternion) -> Quaternion {
+        Quaternion {
+            w: self.w * other.w - self.x * other.x - self.y * other.y - self.z * other.z,
+            x: self.w * other.x + self.x * other.w + self.y * other.z - self.z * other.y,
+            y: self.w * other.y - self.x * other.z + self.y * other.w + self.z * other.x,
+            z: self.w * other.z + self.x * other.y - self.y * other.x + self.z * other.w,
+        }
+    }
+
+    /// A rotation of `angle` radians about one axis, 0 for x, 1 for y, 2 for z.
+    fn about(axis: usize, angle: f32) -> Quaternion {
+        let (sin, cos) = (angle * 0.5).sin_cos();
+        let mut out = Quaternion {
+            w: cos,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        match axis {
+            0 => out.x = sin,
+            1 => out.y = sin,
+            _ => out.z = sin,
+        }
+        out
+    }
+
+    /// Gamebryo composes XYZ Euler angles as `Rx * (Ry * Rz)`, so z applies to a vector first.
+    pub fn from_euler_xyz(x: f32, y: f32, z: f32) -> Quaternion {
+        Quaternion::about(0, x).multiply(&Quaternion::about(1, y).multiply(&Quaternion::about(2, z)))
+    }
+
+    /// `Matrix33` stores its nine floats row by row, which is why the glam conversion
+    /// transposes a column load.
+    pub fn to_matrix(&self) -> Matrix33 {
+        let (w, x, y, z) = (self.w, self.x, self.y, self.z);
+        Matrix33 {
+            column_major: [
+                1.0 - 2.0 * (y * y + z * z),
+                2.0 * (x * y - w * z),
+                2.0 * (x * z + w * y),
+                2.0 * (x * y + w * z),
+                1.0 - 2.0 * (x * x + z * z),
+                2.0 * (y * z - w * x),
+                2.0 * (x * z - w * y),
+                2.0 * (y * z + w * x),
+                1.0 - 2.0 * (x * x + y * y),
+            ],
+        }
+    }
+
+    pub fn slerp(&self, other: &Quaternion, t: f32) -> Quaternion {
+        let mut dot = self.w * other.w + self.x * other.x + self.y * other.y + self.z * other.z;
+        // the shorter arc, since q and -q are the same rotation
+        let sign = if dot < 0.0 { -1.0 } else { 1.0 };
+        dot = dot.abs();
+
+        let (from_scale, to_scale) = if dot > 0.9995 {
+            (1.0 - t, t)
+        } else {
+            let theta = dot.clamp(-1.0, 1.0).acos();
+            let sin = theta.sin();
+            (((1.0 - t) * theta).sin() / sin, (t * theta).sin() / sin)
+        };
+        let to_scale = to_scale * sign;
+
+        Quaternion {
+            w: self.w * from_scale + other.w * to_scale,
+            x: self.x * from_scale + other.x * to_scale,
+            y: self.y * from_scale + other.y * to_scale,
+            z: self.z * from_scale + other.z * to_scale,
+        }
+    }
+}
+
+impl NiTransformData {
+    /// The rotation at `time`, from whichever of the two representations the block uses.
+    pub fn rotation_at(&self, time: f32) -> Option<Quaternion> {
+        if let Some(axes) = &self.xyz_rotations {
+            let mut angles = [0.0f32; 3];
+            let mut any = false;
+            for (axis, group) in axes.iter().enumerate().take(3) {
+                if let Some(angle) = group.sample(time) {
+                    angles[axis] = angle;
+                    any = true;
+                }
+            }
+            return any.then(|| Quaternion::from_euler_xyz(angles[0], angles[1], angles[2]));
+        }
+
+        let keys = &self.quaternion_keys;
+        let mut pairs = keys
+            .iter()
+            .filter_map(|key| Some((key.time?, key.value.as_ref()?)));
+        let first = pairs.next()?;
+        let mut previous = first;
+        for current in pairs {
+            if time <= current.0 {
+                let span = current.0 - previous.0;
+                if span <= 0.0 {
+                    return Some(*current.1);
+                }
+                let t = ((time - previous.0) / span).clamp(0.0, 1.0);
+                return Some(previous.1.slerp(current.1, t));
+            }
+            previous = current;
+        }
+        Some(*previous.1)
+    }
+
+    pub fn sample(&self, time: f32) -> Pose {
+        Pose {
+            rotation: self.rotation_at(time),
+            translation: self.translations.sample(time),
+            scale: self.scales.sample(time),
+        }
+    }
+}
+
+impl NiTransformInterpolator {
+    /// The pose at `time`. Channels the data has no keys for fall back to the interpolator's
+    /// own transform, and channels that transform marks absent stay absent.
+    pub fn sample(&self, blocks: &[Block], time: f32) -> Pose {
+        let data = match self.data_ref.get(blocks) {
+            Some(Block::NiTransformData(data)) => data.sample(time),
+            _ => Pose::default(),
+        };
+        data.or(self.transform.pose())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::KeyType;
+
+    fn key(time: f32, value: f32, in_tangent: f32, out_tangent: f32) -> Key<f32> {
+        Key {
+            time,
+            value,
+            in_tangent: Some(in_tangent),
+            out_tangent: Some(out_tangent),
+            tbc: None,
+        }
+    }
+
+    fn group(interpolation: KeyType, keys: Vec<Key<f32>>) -> KeyGroup<f32> {
+        KeyGroup {
+            interpolation: Some(interpolation),
+            keys,
+        }
+    }
+
+    /// The tangents in `samples/transform-a_i_0030.nif`: a full turn about z at a constant
+    /// rate. Read the two tangent fields the other way round and this eases instead.
+    #[test]
+    fn a_quadratic_segment_with_secant_tangents_is_linear() {
+        let turn = std::f32::consts::TAU;
+        let keys = group(
+            KeyType::Quadratic,
+            vec![
+                key(0.0, turn, -0.0, turn),
+                key(3.3333335, turn * 2.0, turn, -0.0),
+            ],
+        );
+        for (t, expected) in [
+            (0.0, turn),
+            (0.8333334, turn * 1.25),
+            (1.6666667, turn * 1.5),
+            (3.3333335, turn * 2.0),
+        ] {
+            let got = keys.sample(t).unwrap();
+            assert!(
+                (got - expected).abs() < 1e-3,
+                "at {t} got {got}, wanted {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_const_key_holds_until_the_next_one() {
+        let keys = group(
+            KeyType::Const,
+            vec![key(0.0, 5.0, 0.0, 0.0), key(2.0, 9.0, 0.0, 0.0)],
+        );
+        assert_eq!(keys.sample(0.0), Some(5.0));
+        assert_eq!(keys.sample(1.999), Some(5.0));
+        assert_eq!(keys.sample(2.0), Some(9.0));
+    }
+
+    #[test]
+    fn linear_runs_between_the_bracketing_keys() {
+        let keys = group(
+            KeyType::Linear,
+            vec![
+                key(0.0, 0.0, 0.0, 0.0),
+                key(1.0, 10.0, 0.0, 0.0),
+                key(2.0, 0.0, 0.0, 0.0),
+            ],
+        );
+        assert_eq!(keys.sample(0.5), Some(5.0));
+        assert_eq!(keys.sample(1.5), Some(5.0));
+    }
+
+    #[test]
+    fn outside_the_key_range_the_nearest_key_holds() {
+        let keys = group(
+            KeyType::Linear,
+            vec![key(1.0, 3.0, 0.0, 0.0), key(2.0, 4.0, 0.0, 0.0)],
+        );
+        assert_eq!(keys.sample(-5.0), Some(3.0));
+        assert_eq!(keys.sample(500.0), Some(4.0));
+    }
+
+    #[test]
+    fn an_empty_group_supplies_nothing() {
+        assert_eq!(group(KeyType::Linear, Vec::new()).sample(0.0), None);
+    }
+
+    #[test]
+    fn a_single_key_is_a_constant() {
+        let keys = group(KeyType::Quadratic, vec![key(7.0, 2.5, 1.0, 1.0)]);
+        assert_eq!(keys.sample(0.0), Some(2.5));
+        assert_eq!(keys.sample(7.0), Some(2.5));
+        assert_eq!(keys.sample(99.0), Some(2.5));
+    }
+
+    #[test]
+    fn an_absent_channel_is_not_a_value() {
+        let transform = NiQuatTransform {
+            translation: Vector3 {
+                x: -f32::MAX,
+                y: -f32::MAX,
+                z: -f32::MAX,
+            },
+            rotation: Quaternion {
+                w: -0.9848942,
+                x: -0.17299117,
+                y: 0.0075095175,
+                z: -0.0009886987,
+            },
+            scale: -f32::MAX,
+        };
+        let pose = transform.pose();
+        assert_eq!(pose.translation, None);
+        assert_eq!(pose.scale, None);
+        assert!(pose.rotation.is_some());
+    }
+
+    #[test]
+    fn euler_xyz_about_z_matches_a_z_quaternion() {
+        let angle = 1.2f32;
+        let euler = Quaternion::from_euler_xyz(0.0, 0.0, angle);
+        let direct = Quaternion::about(2, angle);
+        for (a, b) in [
+            (euler.w, direct.w),
+            (euler.x, direct.x),
+            (euler.y, direct.y),
+            (euler.z, direct.z),
+        ] {
+            assert!((a - b).abs() < 1e-6, "{a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn slerp_ends_land_on_their_keys() {
+        let from = Quaternion::about(2, 0.0);
+        let to = Quaternion::about(2, 1.0);
+        let start = from.slerp(&to, 0.0);
+        let end = from.slerp(&to, 1.0);
+        assert!((start.w - from.w).abs() < 1e-6);
+        assert!((end.z - to.z).abs() < 1e-6);
+    }
+
+    #[test]
+    fn an_identity_quaternion_is_an_identity_matrix() {
+        assert_eq!(Quaternion::IDENTITY.to_matrix(), Matrix33::IDENTITY);
+    }
+
+    #[test]
+    fn a_quarter_turn_about_z_sends_x_to_y() {
+        let matrix = Quaternion::about(2, std::f32::consts::FRAC_PI_2).to_matrix();
+        // row major, so column 0 is the image of the x axis
+        let (x, y) = (matrix.get(0, 0).unwrap(), matrix.get(1, 0).unwrap());
+        assert!(x.abs() < 1e-6, "{x}");
+        assert!((y - 1.0).abs() < 1e-6, "{y}");
+    }
+
+    #[test]
+    fn an_absent_channel_keeps_the_objects_own_value() {
+        let base = NiTransform {
+            rotation: Matrix33::IDENTITY,
+            translation: Vector3 {
+                x: 1.0,
+                y: 2.0,
+                z: 3.0,
+            },
+            scale: 4.0,
+        };
+        let pose = Pose {
+            rotation: Some(Quaternion::about(2, 0.5)),
+            translation: None,
+            scale: None,
+        };
+        let applied = pose.apply(&base);
+        assert_eq!(applied.translation, base.translation);
+        assert_eq!(applied.scale, base.scale);
+        assert_ne!(applied.rotation, base.rotation);
+    }
+
+    #[test]
+    fn a_looping_controller_wraps_and_a_clamping_one_does_not() {
+        let mut controller = NiTimeController {
+            next_controller_ref: crate::common::BlockRef::None,
+            flags: 0x0008,
+            frequency: 1.0,
+            phase: 0.0,
+            start_time: 0.0,
+            end_time: 4.0,
+            target_ref: crate::common::BlockRef::None,
+        };
+        assert_eq!(controller.cycle_type_enum(), CycleType::Loop);
+        assert_eq!(controller.local_time(5.0), 1.0);
+        assert_eq!(controller.local_time(-1.0), 3.0);
+
+        // cycle type sits in bits 1 and 2
+        controller.flags = 0x0008 | (2 << 1);
+        assert_eq!(controller.cycle_type_enum(), CycleType::Clamp);
+        assert_eq!(controller.local_time(5.0), 4.0);
+        assert_eq!(controller.local_time(-1.0), 0.0);
+    }
+}

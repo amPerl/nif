@@ -14,3 +14,11 @@ pub struct NiFlipController {
     #[br(count = num_sources)]
     pub source_refs: Vec<BlockRef>,
 }
+
+impl std::ops::Deref for NiFlipController {
+    type Target = NiFloatInterpController;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}

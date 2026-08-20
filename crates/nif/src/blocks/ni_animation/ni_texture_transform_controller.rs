@@ -11,3 +11,11 @@ pub struct NiTextureTransformController {
     pub texture_slot: u32, // TexType
     pub operation: u32,    // TexTransform (new: TransformMember)
 }
+
+impl std::ops::Deref for NiTextureTransformController {
+    type Target = NiFloatInterpController;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}

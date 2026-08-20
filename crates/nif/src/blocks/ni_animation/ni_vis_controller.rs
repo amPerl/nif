@@ -6,3 +6,11 @@ use binrw::{BinRead, BinWrite};
 pub struct NiVisController {
     pub base: NiBoolInterpController,
 }
+
+impl std::ops::Deref for NiVisController {
+    type Target = NiBoolInterpController;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}

@@ -31,6 +31,7 @@ pub struct Walk<'a> {
     stack: Vec<Frame>,
     path: Vec<usize>,
     lod: LodPolicy,
+    time: Option<f32>,
 }
 
 enum Selection {
@@ -49,6 +50,7 @@ impl<'a> Walk<'a> {
             }],
             path: Vec::new(),
             lod: LodPolicy::All,
+            time: None,
         }
     }
 
@@ -67,11 +69,19 @@ impl<'a> Walk<'a> {
             stack,
             path: Vec::new(),
             lod: LodPolicy::All,
+            time: None,
         }
     }
 
     pub fn with_lod(mut self, lod: LodPolicy) -> Self {
         self.lod = lod;
+        self
+    }
+
+    /// Compose each object's transform as its controllers leave it at `time`, rather than as
+    /// the file stores it.
+    pub fn at_time(mut self, time: f32) -> Self {
+        self.time = Some(time);
         self
     }
 
@@ -119,7 +129,13 @@ impl<'a> Iterator for Walk<'a> {
             self.path.push(frame.index);
 
             let transform = match block.av_object() {
-                Some(av) => frame.parent.compose(&NiTransform::from(av)),
+                Some(av) => {
+                    let local = self
+                        .time
+                        .and_then(|time| crate::anim::transform_at(self.blocks, av, time))
+                        .unwrap_or_else(|| NiTransform::from(av));
+                    frame.parent.compose(&local)
+                }
                 None => frame.parent,
             };
 

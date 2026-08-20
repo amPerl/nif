@@ -28,3 +28,11 @@ pub enum GeomMorpherFlags {
     UpdateNormalsEnabled,
     Unknown(u16),
 }
+
+impl std::ops::Deref for NiGeomMorpherController {
+    type Target = NiInterpController;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}

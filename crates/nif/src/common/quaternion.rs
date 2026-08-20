@@ -1,7 +1,7 @@
 use super::Vector3;
 use binrw::{BinRead, BinWrite};
 
-#[derive(Debug, PartialEq, BinRead, BinWrite, Clone)]
+#[derive(Debug, PartialEq, BinRead, BinWrite, Clone, Copy)]
 #[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct Quaternion {
     pub w: f32,

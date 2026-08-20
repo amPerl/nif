@@ -6,3 +6,11 @@ use binrw::{BinRead, BinWrite};
 pub struct NiTransformController {
     pub base: NiSingleInterpController,
 }
+
+impl std::ops::Deref for NiTransformController {
+    type Target = NiSingleInterpController;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}

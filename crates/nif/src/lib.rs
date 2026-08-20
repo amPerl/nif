@@ -4,6 +4,7 @@ use binrw::{
 };
 pub use error::NifError;
 
+pub mod anim;
 pub mod blocks;
 pub mod common;
 pub mod error;

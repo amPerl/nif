@@ -6,3 +6,11 @@ use binrw::{BinRead, BinWrite};
 pub struct NiInterpController {
     pub base: NiTimeController,
 }
+
+impl std::ops::Deref for NiInterpController {
+    type Target = NiTimeController;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}

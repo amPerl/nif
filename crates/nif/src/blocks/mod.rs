@@ -261,6 +261,29 @@ impl Block {
         Some(obj)
     }
 
+    pub fn as_time_controller(&self) -> Option<&NiTimeController> {
+        let controller: &NiTimeController = match self {
+            Block::NiTimeController(b) => b,
+            Block::NiInterpController(b) => b,
+            Block::NiSingleInterpController(b) => b,
+            Block::NiFloatInterpController(b) => b,
+            Block::NiAlphaController(b) => b,
+            Block::NiTransformController(b) => b,
+            Block::NiFlipController(b) => b,
+            Block::NiTextureTransformController(b) => b,
+            Block::NiVisController(b) => b,
+            Block::NiGeomMorpherController(b) => b,
+            Block::NiMaterialColorController(b) => b,
+            Block::NiMultiTargetTransformController(b) => b,
+            Block::NiExtraDataController(b) => b,
+            Block::NiFloatExtraDataController(b) => b,
+            Block::NiLightDimmerController(b) => b,
+            Block::NiBoneLODController(b) => b,
+            _ => return None,
+        };
+        Some(controller)
+    }
+
     pub fn geometry(&self) -> Option<&NiGeometry> {
         let geometry: &NiGeometry = match self {
             Block::NiTriShape(b) => b,
