@@ -15,6 +15,6 @@ egui_ltreeview = "0.8.0"
 egui-phosphor = "0.13.0"
 bytemuck = "1.25.2"
 texpresso = "2.0.2"
-facet-reflect = "0.50.0-rc.5"
+facet-reflect = "0.50.0-rc.6"
 walkdir = "2.5.0"
 image = { version = "0.25.10", default-features = false, features = ["bmp", "tga"] }
