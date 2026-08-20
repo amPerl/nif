@@ -32,6 +32,7 @@ struct State {
     cull: bool,
     colors: bool,
     textures: bool,
+    grid: bool,
     lod_mode: LodMode,
     /// Used by LodMode::Manual, in the file's own units.
     lod_distance: f32,
@@ -130,6 +131,7 @@ impl Default for State {
             cull: true,
             colors: true,
             textures: true,
+            grid: true,
             lod_mode: LodMode::Auto,
             lod_distance: 0.0,
             last_pick: None,
@@ -581,14 +583,16 @@ impl Viewer<'_> {
             ui.checkbox(&mut self.state.cull, "cull backfaces");
             ui.checkbox(&mut self.state.colors, "material colours");
             ui.checkbox(&mut self.state.textures, "textures");
+            ui.checkbox(&mut self.state.grid, "grid");
             if ui.button("reset view").clicked() {
                 self.state.camera = Camera::default();
             }
             ui.separator();
             ui.label(format!(
-                "{} shapes, radius {:.1}  ·  F frames the selection",
+                "{} shapes, radius {:.1}, grid {}  ·  F frames the selection",
                 scene.meshes.len(),
-                scene.radius
+                scene.radius,
+                format_spacing(scene.grid.spacing)
             ));
         });
 
@@ -745,6 +749,7 @@ impl Viewer<'_> {
                 lod_distance: self.state.lod_distance,
                 scene,
                 wireframe: self.state.wireframe,
+                grid: self.state.grid,
                 cull: self.state.cull,
                 selected: self.state.selected,
                 eye,
@@ -789,6 +794,12 @@ fn ancestors_of(links: &[Vec<Link>], roots: &[usize], target: usize) -> Vec<usiz
         seen.clear();
     }
     path
+}
+
+/// A grid spacing reads as a number, not as an exponent: 0.1 rather than 1e-1.
+fn format_spacing(spacing: f32) -> String {
+    let decimals = (-spacing.log10().floor()).clamp(0.0, 6.0) as usize;
+    format!("{spacing:.decimals$}/cell")
 }
 
 /// What the tree lays every row out at, from `interact_size` plus the spacing between rows.

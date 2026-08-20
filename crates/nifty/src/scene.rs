@@ -23,6 +23,7 @@ pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 pub struct Preview {
     wire: wgpu::RenderPipeline,
     highlight: wgpu::RenderPipeline,
+    grid: wgpu::RenderPipeline,
     camera_bind_group: wgpu::BindGroup,
 }
 
@@ -62,6 +63,17 @@ pub struct Scene {
     pub center: Vec3,
     pub radius: f32,
     pub lods: HashMap<usize, Lod>,
+    pub grid: Grid,
+}
+
+/// The ground plane and axes. Sized to the file when the scene is built, since one spacing
+/// cannot serve a 2 unit gauge and a 6,000 unit parking lot.
+pub struct Grid {
+    vertices: wgpu::Buffer,
+    count: u32,
+    model: wgpu::BindGroup,
+    texture: wgpu::BindGroup,
+    pub spacing: f32,
 }
 
 /// A NiLODNode's switching distances, and the point they are measured from.
@@ -280,6 +292,19 @@ impl Gfx {
             wgpu::PrimitiveTopology::LineList,
             "fs_highlight",
         );
+        // depth tested and depth writing, so geometry hides the part of the floor behind it
+        let grid = build_pipeline(
+            device,
+            &layout,
+            &shader,
+            render_state.target_format,
+            DrawState {
+                cull: None,
+                ..DrawState::opaque()
+            },
+            wgpu::PrimitiveTopology::LineList,
+            "fs_line",
+        );
         // line list rather than PolygonMode::Line, which needs a device feature
         let wire = build_pipeline(
             device,
@@ -301,6 +326,7 @@ impl Gfx {
             .insert(Preview {
                 wire,
                 highlight,
+                grid,
                 camera_bind_group,
             });
 
@@ -689,11 +715,43 @@ impl Gfx {
             ((min + max) * 0.5, (max - min).length() * 0.5)
         };
 
+        // the floor has to reach the geometry as well as the origin, which a chunk sitting
+        // far out is nowhere near
+        let (lines, spacing) = grid_lines(center.length() + radius);
+        let mut identity = [0f32; 32];
+        identity[..16].copy_from_slice(&Mat4::IDENTITY.to_cols_array());
+        let grid = Grid {
+            count: (lines.len() / 9) as u32,
+            vertices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("nifty grid"),
+                contents: bytemuck::cast_slice(&lines),
+                usage: wgpu::BufferUsages::VERTEX,
+            }),
+            model: device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("nifty grid"),
+                layout: &self.model_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: device
+                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("nifty grid model"),
+                            contents: bytemuck::cast_slice(&identity),
+                            usage: wgpu::BufferUsages::UNIFORM,
+                        })
+                        .as_entire_binding(),
+                }],
+            }),
+            // the layout carries a texture group whether the shader samples it or not
+            texture: white,
+            spacing,
+        };
+
         Scene {
             meshes,
             center,
             radius: radius.max(0.001),
             lods,
+            grid,
         }
     }
 }
@@ -737,6 +795,52 @@ fn texturing_key(nif: &Nif, properties: &[nif::common::BlockRef]) -> Option<usiz
         .as_ref()?
         .source_ref
         .index()
+}
+
+/// A grid on the XY plane through the origin, plus the positive axes over it, as a line list.
+/// NIF is Z up, so XY is the ground. Returns the vertex data and the spacing it chose.
+///
+/// `reach` is how far the scene gets from the origin, and the spacing is the power of ten that
+/// puts roughly ten cells between the two, so the numbers on it stay round.
+fn grid_lines(reach: f32) -> (Vec<f32>, f32) {
+    let spacing = 10f32.powf((reach.max(1e-3) / 10.0).log10().round());
+    let cells = ((reach / spacing).ceil() as i32).clamp(4, 40);
+    let half = cells as f32 * spacing;
+
+    let mut out = Vec::new();
+    let mut line = |from: Vec3, to: Vec3, color: [f32; 4]| {
+        for point in [from, to] {
+            out.extend_from_slice(&[point.x, point.y, point.z]);
+            out.extend_from_slice(&color);
+            out.extend_from_slice(&[0.0, 0.0]);
+        }
+    };
+
+    for i in -cells..=cells {
+        let at = i as f32 * spacing;
+        // every tenth line is brighter, so the scale reads without counting cells
+        let color = if i % 10 == 0 {
+            [0.46, 0.48, 0.54, 1.0]
+        } else {
+            [0.32, 0.34, 0.38, 1.0]
+        };
+        if i == 0 {
+            // the positive halves of these two are the axes below. Drawing both would put two
+            // lines in one place, which is what fights for depth once precision drops off.
+            line(Vec3::new(0.0, -half, 0.0), Vec3::ZERO, color);
+            line(Vec3::new(-half, 0.0, 0.0), Vec3::ZERO, color);
+            continue;
+        }
+        line(Vec3::new(at, -half, 0.0), Vec3::new(at, half, 0.0), color);
+        line(Vec3::new(-half, at, 0.0), Vec3::new(half, at, 0.0), color);
+    }
+
+    // only the positive half of each axis is drawn, so the direction is not a guess
+    line(Vec3::ZERO, Vec3::X * half, [0.88, 0.30, 0.30, 1.0]);
+    line(Vec3::ZERO, Vec3::Y * half, [0.35, 0.80, 0.40, 1.0]);
+    line(Vec3::ZERO, Vec3::Z * half, [0.35, 0.60, 0.95, 1.0]);
+
+    (out, spacing)
 }
 
 /// Maps every block under a NiLODNode to that node and the level it belongs to. A nested LOD
@@ -856,6 +960,7 @@ pub(crate) fn model_matrix(transform: &NiTransform) -> Mat4 {
 pub struct PreviewCall {
     pub scene: Arc<Scene>,
     pub wireframe: bool,
+    pub grid: bool,
     pub cull: bool,
     pub selected: Option<usize>,
     /// Blended shapes sort against this.
@@ -896,6 +1001,15 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
         };
 
         render_pass.set_bind_group(0, &preview.camera_bind_group, &[]);
+
+        if self.grid {
+            let grid = &self.scene.grid;
+            render_pass.set_pipeline(&preview.grid);
+            render_pass.set_bind_group(1, &grid.model, &[]);
+            render_pass.set_bind_group(2, &grid.texture, &[]);
+            render_pass.set_vertex_buffer(0, grid.vertices.slice(..));
+            render_pass.draw(0..grid.count, 0..1);
+        }
 
         if self.wireframe {
             render_pass.set_pipeline(&preview.wire);
@@ -998,6 +1112,11 @@ fn vs_main(
 }
 
 @fragment
+fn fs_line(in: VertexOut) -> @location(0) vec4<f32> {
+    return in.color;
+}
+
+@fragment
 fn fs_wire(in: VertexOut) -> @location(0) vec4<f32> {
     return vec4<f32>(0.35, 0.95, 0.55, 1.0);
 }
@@ -1051,3 +1170,60 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     return vec4<f32>(mix(lit, shaded, camera.flags.y), alpha);
 }
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::grid_lines;
+
+    /// Every vertex is position, colour and uv, and the axes are the last three lines.
+    const STRIDE: usize = 9;
+
+    #[test]
+    fn spacing_is_a_round_number_about_a_tenth_of_the_reach() {
+        for (reach, expected) in [
+            (1.0, 0.1),
+            (10.0, 1.0),
+            (50.0, 10.0),
+            (6000.0, 1000.0),
+            (0.05, 0.01),
+        ] {
+            let (_, spacing) = grid_lines(reach);
+            assert_eq!(spacing, expected, "reach {reach}");
+        }
+    }
+
+    #[test]
+    fn the_floor_reaches_at_least_as_far_as_the_scene() {
+        for reach in [0.05, 1.0, 7.5, 240.0, 6000.0] {
+            let (lines, _) = grid_lines(reach);
+            let furthest = lines
+                .chunks(STRIDE)
+                .map(|v| v[0].abs().max(v[1].abs()))
+                .fold(0.0, f32::max);
+            // a cell edge is a product of floats, so it can land an ulp short of the reach
+            assert!(
+                furthest >= reach * (1.0 - 1e-6),
+                "reach {reach} got {furthest}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_scene_at_the_origin_still_gets_a_grid() {
+        let (lines, spacing) = grid_lines(0.0);
+        assert!(spacing > 0.0);
+        assert!(!lines.is_empty());
+        assert!(lines.iter().all(|f| f.is_finite()));
+    }
+
+    #[test]
+    fn only_the_positive_axes_are_drawn() {
+        let (lines, _) = grid_lines(10.0);
+        // three axis lines, two vertices each, at the end of the buffer
+        let axes = &lines[lines.len() - 6 * STRIDE..];
+        for (i, axis) in axes.chunks(2 * STRIDE).enumerate() {
+            assert_eq!(&axis[..3], &[0.0, 0.0, 0.0], "axis {i} starts at the origin");
+            assert!(axis[STRIDE + i] > 0.0, "axis {i} runs positive");
+        }
+    }
+}
