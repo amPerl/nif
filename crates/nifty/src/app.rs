@@ -17,7 +17,7 @@ use nif::{blocks::Block, Nif};
 use crate::details::{self, Details};
 use crate::library::TextureLibrary;
 use crate::pick;
-use crate::scene::{model_matrix, Camera, Gfx, LodMode, PreviewCall, Scene};
+use crate::scene::{Camera, Gfx, LodMode, PreviewCall, Scene, Viewpoint};
 
 struct Loaded {
     path: PathBuf,
@@ -27,6 +27,8 @@ struct Loaded {
     size: usize,
     /// What every controller in the file covers, so the timeline has a range.
     span: Option<(f32, f32)>,
+    /// Billboards have to be re-oriented whenever the camera moves, animation or not.
+    billboards: bool,
 }
 
 struct State {
@@ -229,6 +231,10 @@ impl Nifty {
             path,
             links: link_table(&nif.blocks),
             span: nif::anim::span(&nif.blocks),
+            billboards: nif
+                .blocks
+                .iter()
+                .any(|block| matches!(block, Block::NiBillboardNode(_))),
             nif,
             consumed: reader.position() as usize,
             size: bytes.len(),
@@ -582,14 +588,28 @@ impl TabViewer for Viewer<'_> {
 }
 
 impl Viewer<'_> {
-    /// The transport, and the poses it puts the file in. Empty when nothing animates.
-    fn timeline(&mut self, ui: &mut egui::Ui) -> Arc<HashMap<usize, Mat4>> {
+    /// Model matrices for whatever the viewpoint has moved since the scene was built. Empty
+    /// when nothing has, so a still file costs no walk.
+    fn poses(&self, viewpoint: Viewpoint) -> Arc<HashMap<usize, Mat4>> {
         let Some(loaded) = &self.state.loaded else {
             return Arc::default();
         };
-        let Some((start, end)) = loaded.span else {
+        if viewpoint.is_static() {
             return Arc::default();
-        };
+        }
+        let mut poses = HashMap::new();
+        for visit in viewpoint.walk(&loaded.nif) {
+            if visit.block.geometry().is_some() {
+                poses.insert(visit.index, Mat4::from(&visit.transform));
+            }
+        }
+        Arc::new(poses)
+    }
+
+    /// The transport. Returns where the timeline sits, or None when nothing animates.
+    fn timeline(&mut self, ui: &mut egui::Ui) -> Option<f32> {
+        let loaded = self.state.loaded.as_ref()?;
+        let (start, end) = loaded.span?;
 
         if self.state.playing {
             // stable_dt rather than dt, so one slow frame does not jump the animation
@@ -617,13 +637,7 @@ impl Viewer<'_> {
             ui.weak(format!("{:.2} s span", end - start));
         });
 
-        let mut poses = HashMap::new();
-        for visit in loaded.nif.walk().at_time(self.state.time) {
-            if visit.block.geometry().is_some() {
-                poses.insert(visit.index, model_matrix(&visit.transform));
-            }
-        }
-        Arc::new(poses)
+        Some(self.state.time)
     }
 
     fn preview(&mut self, ui: &mut egui::Ui) {
@@ -698,9 +712,7 @@ impl Viewer<'_> {
             });
         }
 
-        let poses = self.timeline(ui);
-        // picking follows the drawn pose, so what you can click cannot drift from what you see
-        let animated = (!poses.is_empty()).then_some(self.state.time);
+        let time = self.timeline(ui);
 
         let (rect, response) =
             ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
@@ -765,6 +777,20 @@ impl Viewer<'_> {
         let eye = target + direction * distance;
         let view_proj = projection * view;
 
+        // the view matrix rows are the camera's own axes in world space, which is what a
+        // billboard turns to match
+        let billboards = self.state.loaded.as_ref().is_some_and(|l| l.billboards);
+        let viewpoint = Viewpoint {
+            time,
+            camera: billboards.then(|| nif::billboard::Camera {
+                location: eye.into(),
+                right: view.row(0).truncate().into(),
+                up: view.row(1).truncate().into(),
+                direction: (-view.row(2).truncate()).into(),
+            }),
+        };
+        let poses = self.poses(viewpoint);
+
         // clicking the same spot again selects the next hit behind the current one
         if response.clicked() {
             if let (Some(pointer), Some(loaded)) =
@@ -774,7 +800,7 @@ impl Viewer<'_> {
                 let visible =
                     scene.visible_shapes(self.state.lod_mode, self.state.lod_distance, eye);
                 let hits = pick::ray_through(view_proj, rect, pointer)
-                    .map(|ray| pick::hits(&loaded.nif, &ray, &visible, animated))
+                    .map(|ray| pick::hits(&loaded.nif, &ray, &visible, viewpoint))
                     .unwrap_or_default();
                 let repeat = self
                     .state

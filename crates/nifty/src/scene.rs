@@ -9,7 +9,7 @@ use nif::{
         AlphaFunction, ApplyMode, Block, LightMode, NiGeometry, NiGeometryData, StencilDrawMode,
         TestFunction, VertMode,
     },
-    common::{NiTransform, Triangle},
+    common::Triangle,
     Nif,
 };
 use wgpu::util::DeviceExt as _;
@@ -82,6 +82,35 @@ pub struct Grid {
 pub struct Lod {
     pub center: Vec3,
     pub ranges: Vec<(f32, f32)>,
+}
+
+/// How the scene is being looked at, which decides the transforms a walk composes: where the
+/// timeline sits, and where the camera is for billboards to turn towards.
+///
+/// Drawing and picking both walk through this, so what you can click cannot drift from what is
+/// on screen.
+#[derive(Clone, Copy, Default)]
+pub struct Viewpoint {
+    pub time: Option<f32>,
+    pub camera: Option<nif::billboard::Camera>,
+}
+
+impl Viewpoint {
+    pub fn walk<'a>(&self, nif: &'a Nif) -> nif::walk::Walk<'a> {
+        let mut walk = nif.walk();
+        if let Some(time) = self.time {
+            walk = walk.at_time(time);
+        }
+        if let Some(camera) = self.camera {
+            walk = walk.seen_from(camera);
+        }
+        walk
+    }
+
+    /// Nothing moves, so the transforms the scene was built with still stand.
+    pub fn is_static(&self) -> bool {
+        self.time.is_none() && self.camera.is_none()
+    }
 }
 
 /// Which level of each LOD node to draw.
@@ -471,11 +500,11 @@ impl Gfx {
             if let Block::NiLODNode(node) = visit.block {
                 if let Some(Block::NiRangeLODData(data)) = node.lod_level_data_ref.get(&nif.blocks)
                 {
-                    let local = Vec3::new(data.center.x, data.center.y, data.center.z);
+                    let local = Vec3::from(&data.center);
                     lods.insert(
                         visit.index,
                         Lod {
-                            center: model_matrix(&visit.transform).transform_point3(local),
+                            center: Mat4::from(&visit.transform).transform_point3(local),
                             ranges: data
                                 .lod_levels
                                 .iter()
@@ -496,14 +525,14 @@ impl Gfx {
                 continue;
             }
 
-            let model = model_matrix(&visit.transform);
+            let model = Mat4::from(&visit.transform);
             let colors = data.vertex_colors.as_ref();
             let uvs = data.uv_sets.first().map(|set| &set.uvs);
             let mut attributes: Vec<f32> = Vec::with_capacity(vertices.len() * 9);
             let mut shape_min = Vec3::splat(f32::MAX);
             let mut shape_max = Vec3::splat(f32::MIN);
             for (i, v) in vertices.iter().enumerate() {
-                let world = model.transform_point3(Vec3::new(v.x, v.y, v.z));
+                let world = model.transform_point3(Vec3::from(v));
                 min = min.min(world);
                 max = max.max(world);
                 shape_min = shape_min.min(world);
@@ -952,12 +981,6 @@ fn uniform_entry() -> wgpu::BindGroupLayoutEntry {
         },
         count: None,
     }
-}
-
-pub(crate) fn model_matrix(transform: &NiTransform) -> Mat4 {
-    Mat4::from_translation(transform.translation.into())
-        * Mat4::from_mat3(transform.rotation.into())
-        * Mat4::from_scale(Vec3::splat(transform.scale))
 }
 
 pub struct PreviewCall {

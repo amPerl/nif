@@ -6,7 +6,7 @@ use nif::blocks::Block;
 use nif::glam::{Mat4, Vec3, Vec4};
 use nif::Nif;
 
-use crate::scene::{cull_of, geometry_of, model_matrix};
+use crate::scene::{cull_of, geometry_of, Viewpoint};
 
 /// A shape the ray passed through.
 pub struct Hit {
@@ -42,20 +42,16 @@ pub fn ray_through(view_proj: Mat4, rect: egui::Rect, pointer: egui::Pos2) -> Op
 }
 
 /// Every drawable shape the ray passes through, nearest first. `visible` is the set of shape
-/// blocks currently drawn, so a hidden LOD level cannot be picked, and `time` is where the
-/// preview's timeline sits, so an animated shape is picked where it is drawn rather than where
-/// the file stores it.
+/// blocks currently drawn, so a hidden LOD level cannot be picked, and `viewpoint` is the one
+/// the preview is drawing from, so an animated or billboarded shape is picked where it appears
+/// rather than where the file stores it.
 ///
 /// Culling matches the renderer, so a back face that is not drawn is not pickable. Shapes that
 /// blend to nothing are skipped as well.
-pub fn hits(nif: &Nif, ray: &Ray, visible: &HashSet<usize>, time: Option<f32>) -> Vec<Hit> {
+pub fn hits(nif: &Nif, ray: &Ray, visible: &HashSet<usize>, viewpoint: Viewpoint) -> Vec<Hit> {
     let mut out = Vec::new();
 
-    let walk = match time {
-        Some(time) => nif.walk().at_time(time),
-        None => nif.walk(),
-    };
-    for visit in walk {
+    for visit in viewpoint.walk(nif) {
         if !visible.contains(&visit.index) {
             continue;
         }
@@ -73,7 +69,7 @@ pub fn hits(nif: &Nif, ray: &Ray, visible: &HashSet<usize>, time: Option<f32>) -
         if visit.transform.scale.abs() < 1e-8 {
             continue;
         }
-        let model = model_matrix(&visit.transform);
+        let model = Mat4::from(&visit.transform);
         let inverse = model.inverse();
         let origin = inverse.transform_point3(ray.origin);
         let direction = inverse.transform_vector3(ray.direction);
@@ -88,7 +84,7 @@ pub fn hits(nif: &Nif, ray: &Ray, visible: &HashSet<usize>, time: Option<f32>) -
             ) else {
                 continue;
             };
-            let (a, b, c) = (vec(a), vec(b), vec(c));
+            let (a, b, c) = (Vec3::from(a), Vec3::from(b), Vec3::from(c));
             let Some(local) = intersect(origin, direction, a, b, c, cull) else {
                 continue;
             };
@@ -109,10 +105,6 @@ pub fn hits(nif: &Nif, ray: &Ray, visible: &HashSet<usize>, time: Option<f32>) -
 
     out.sort_by(|a, b| a.distance.total_cmp(&b.distance));
     out
-}
-
-fn vec(v: &nif::common::Vector3) -> Vec3 {
-    Vec3::new(v.x, v.y, v.z)
 }
 
 fn stencil_draw_mode<'a>(
