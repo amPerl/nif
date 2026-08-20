@@ -9,6 +9,7 @@ use nif::glam::camera::rh::{proj::directx::perspective, view::look_at_mat4};
 use nif::glam::Vec3;
 use nif::{blocks::Block, Nif};
 
+use crate::details::{self, Previews};
 use crate::library::TextureLibrary;
 use crate::pick;
 use crate::scene::{Camera, Gfx, PreviewCall, Scene};
@@ -36,6 +37,8 @@ struct State {
     sync_tree: bool,
     /// Offset the hierarchy adopts next frame, once the row it needs has been counted.
     scroll_to: Option<f32>,
+    /// Decoded images for the details pane, keyed by block.
+    previews: Previews,
 }
 
 #[derive(Debug, PartialEq)]
@@ -92,11 +95,11 @@ impl Document {
 
 fn default_dock() -> DockState<Tab> {
     let mut dock = DockState::new(vec![Tab::Hierarchy, Tab::Header, Tab::Blocks]);
-    dock.main_surface_mut().split_right(
-        egui_dock::NodeIndex::root(),
-        0.4,
-        vec![Tab::Preview, Tab::Details],
-    );
+    let [_, right] =
+        dock.main_surface_mut()
+            .split_right(egui_dock::NodeIndex::root(), 0.3, vec![Tab::Preview]);
+    dock.main_surface_mut()
+        .split_below(right, 0.7, vec![Tab::Details]);
     dock
 }
 
@@ -126,6 +129,7 @@ impl Default for State {
             last_pick: None,
             sync_tree: false,
             scroll_to: None,
+            previews: Previews::default(),
         }
     }
 }
@@ -160,6 +164,7 @@ impl Nifty {
                 continue;
             };
             document.state.scene = Some(Arc::new(gfx.build_scene(&loaded.nif, &self.library)));
+            document.state.previews.clear();
         }
     }
 
@@ -326,6 +331,14 @@ fn linked(block: &Block) -> Vec<Link> {
     }
 
     // these are reached through typed fields rather than the generic ref lists
+    if let Some(object) = block.object_net() {
+        out.extend(object.controller_ref.index().map(Link::plain));
+    }
+    if let Some(geometry) = block.geometry() {
+        out.extend(geometry.data_ref.index().map(Link::plain));
+        out.extend(geometry.skin_instance_ref.index().map(Link::plain));
+    }
+
     match block {
         Block::NiTexturingProperty(property) => {
             out.extend(property.textures().filter_map(|(slot, desc)| {
@@ -346,37 +359,10 @@ fn linked(block: &Block) -> Vec<Link> {
     out
 }
 
-fn describe(block: &Block) -> String {
-    if let Block::NiPixelData(pixels) = block {
-        let mips: Vec<String> = pixels
-            .mipmaps
-            .iter()
-            .map(|m| format!("  {}x{} @ {}", m.width, m.height, m.offset))
-            .collect();
-        let faces: Vec<String> = pixels
-            .pixel_data
-            .iter()
-            .enumerate()
-            .map(|(i, f)| format!("  face {i}: {} bytes", f.data.len()))
-            .collect();
-        return format!(
-            "NiPixelData\nbytes_per_pixel: {}\nmipmaps:\n{}\nfaces:\n{}",
-            pixels.bytes_per_pixel,
-            mips.join("\n"),
-            faces.join("\n")
-        );
-    }
-
-    let text = format!("{block:#?}");
-    match text.char_indices().nth(200_000) {
-        Some((cut, _)) => format!("{}\n…truncated", &text[..cut]),
-        None => text,
-    }
-}
-
 struct Viewer<'a> {
     state: &'a mut State,
     gfx: Option<&'a Gfx>,
+    library: &'a TextureLibrary,
 }
 
 impl TabViewer for Viewer<'_> {
@@ -499,14 +485,22 @@ impl TabViewer for Viewer<'_> {
                     self.state.selected = clicked;
                 }
             }
-            Tab::Details => match self.state.selected.and_then(|i| blocks.get(i)) {
+            Tab::Details => match self.state.selected {
                 None => {
                     ui.centered_and_justified(|ui| ui.label("no block selected"));
                 }
-                Some(block) => {
-                    egui::ScrollArea::both()
-                        .auto_shrink(false)
-                        .show(ui, |ui| ui.monospace(describe(block)));
+                Some(index) => {
+                    // a link in the value column selects the block it points at
+                    if let Some(target) = details::show(
+                        ui,
+                        &mut self.state.previews,
+                        &loaded.nif,
+                        self.library,
+                        index,
+                    ) {
+                        self.state.selected = Some(target);
+                        self.state.sync_tree = true;
+                    }
                 }
             },
             Tab::Preview => {}
@@ -939,6 +933,7 @@ impl eframe::App for Nifty {
                     &mut Viewer {
                         state: &mut document.state,
                         gfx: gfx.as_ref(),
+                        library,
                     },
                 );
         });

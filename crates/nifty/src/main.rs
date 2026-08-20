@@ -7,6 +7,7 @@
 
 mod app;
 mod dds;
+mod details;
 mod library;
 mod pick;
 mod scene;
