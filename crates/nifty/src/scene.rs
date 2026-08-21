@@ -116,6 +116,14 @@ impl Viewpoint {
     }
 }
 
+/// What the walk found for the frame being drawn: where shapes have moved, and which are culled.
+/// Empty when the file has nothing that moves or hides.
+#[derive(Default)]
+pub struct Frame {
+    pub poses: HashMap<usize, Mat4>,
+    pub hidden: HashSet<usize>,
+}
+
 /// Which level of each LOD node to draw.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum LodMode {
@@ -1022,23 +1030,24 @@ pub struct PreviewCall {
     pub eye: Vec3,
     pub lod_mode: LodMode,
     pub lod_distance: f32,
-    /// Model matrices for the shapes an animation has moved, by shape block.
-    pub poses: Arc<HashMap<usize, Mat4>>,
+    pub frame: Arc<Frame>,
 }
 
 impl PreviewCall {
     /// Where the shape's centre is this frame. A billboard turns and an animated node moves, so
     /// the centre the scene was built with is not where it is being drawn.
     fn center(&self, mesh: &Mesh) -> Vec3 {
-        match self.poses.get(&mesh.shape_block) {
+        match self.frame.poses.get(&mesh.shape_block) {
             Some(model) => model.transform_point3(mesh.local_center),
             None => mesh.center,
         }
     }
 
     fn visible(&self, mesh: &Mesh) -> bool {
-        self.scene
-            .shows(mesh, self.lod_mode, self.lod_distance, self.eye)
+        !self.frame.hidden.contains(&mesh.shape_block)
+            && self
+                .scene
+                .shows(mesh, self.lod_mode, self.lod_distance, self.eye)
     }
 }
 
@@ -1067,7 +1076,7 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
         _resources: &mut egui_wgpu::CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
         for mesh in &self.scene.meshes {
-            let Some(model) = self.poses.get(&mesh.shape_block) else {
+            let Some(model) = self.frame.poses.get(&mesh.shape_block) else {
                 continue;
             };
             queue.write_buffer(
@@ -1144,7 +1153,7 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
             return;
         };
         render_pass.set_pipeline(&preview.highlight);
-        for mesh in &self.scene.meshes {
+        for mesh in self.scene.meshes.iter().filter(|m| self.visible(m)) {
             if mesh.shape_block != selected && mesh.data_block != selected {
                 continue;
             }

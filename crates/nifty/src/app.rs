@@ -1,9 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    io::Cursor,
-    path::PathBuf,
-    sync::Arc,
-};
+use std::{collections::HashSet, io::Cursor, path::PathBuf, sync::Arc};
 
 use eframe::egui::{self, text::LayoutJob, Color32, FontId, TextFormat, WidgetText};
 use eframe::egui_wgpu;
@@ -17,7 +12,7 @@ use nif::{blocks::Block, Nif};
 use crate::details::{self, Details};
 use crate::library::TextureLibrary;
 use crate::pick;
-use crate::scene::{Camera, Gfx, LodMode, PreviewCall, Scene, Viewpoint};
+use crate::scene::{Camera, Frame, Gfx, LodMode, PreviewCall, Scene, Viewpoint};
 
 struct Loaded {
     path: PathBuf,
@@ -29,6 +24,10 @@ struct Loaded {
     span: Option<(f32, f32)>,
     /// Billboards have to be re-oriented whenever the camera moves, animation or not.
     billboards: bool,
+    /// Something in the file can be culled, so the walk has to run even when nothing moves.
+    hideable: bool,
+    /// Whether playback should start over at the end, or hold what the file settles on.
+    repeats: bool,
 }
 
 struct State {
@@ -235,6 +234,11 @@ impl Nifty {
                 .blocks
                 .iter()
                 .any(|block| matches!(block, Block::NiBillboardNode(_))),
+            repeats: nif::anim::repeats(&nif.blocks),
+            hideable: nif.blocks.iter().any(|block| {
+                matches!(block, Block::NiVisController(_))
+                    || block.av_object().is_some_and(|av| av.is_hidden())
+            }),
             nif,
             consumed: reader.position() as usize,
             size: bytes.len(),
@@ -588,22 +592,26 @@ impl TabViewer for Viewer<'_> {
 }
 
 impl Viewer<'_> {
-    /// Model matrices for whatever the viewpoint has moved since the scene was built. Empty
-    /// when nothing has, so a still file costs no walk.
-    fn poses(&self, viewpoint: Viewpoint) -> Arc<HashMap<usize, Mat4>> {
+    /// Where the shapes are and which of them are culled, for the frame about to be drawn.
+    /// Skipped entirely when the file holds nothing that moves or hides.
+    fn frame(&self, viewpoint: Viewpoint) -> Arc<Frame> {
         let Some(loaded) = &self.state.loaded else {
             return Arc::default();
         };
-        if viewpoint.is_static() {
+        if viewpoint.is_static() && !loaded.hideable {
             return Arc::default();
         }
-        let mut poses = HashMap::new();
+        let mut frame = Frame::default();
         for visit in viewpoint.walk(&loaded.nif) {
-            if visit.block.geometry().is_some() {
-                poses.insert(visit.index, Mat4::from(&visit.transform));
+            if visit.block.geometry().is_none() {
+                continue;
+            }
+            frame.poses.insert(visit.index, Mat4::from(&visit.transform));
+            if visit.hidden {
+                frame.hidden.insert(visit.index);
             }
         }
-        Arc::new(poses)
+        Arc::new(frame)
     }
 
     /// The transport. Returns where the timeline sits, or None when nothing animates.
@@ -611,11 +619,19 @@ impl Viewer<'_> {
         let loaded = self.state.loaded.as_ref()?;
         let (start, end) = loaded.span?;
 
+        let repeats = loaded.repeats;
         if self.state.playing {
             // stable_dt rather than dt, so one slow frame does not jump the animation
             self.state.time += ui.input(|i| i.stable_dt).min(0.1);
             if self.state.time > end {
-                self.state.time = start + (self.state.time - start) % (end - start).max(1e-6);
+                // a file whose controllers all clamp is played once, and holds what it ends on.
+                // Starting over would be a loop the file never asked for.
+                if repeats {
+                    self.state.time = start + (self.state.time - start) % (end - start).max(1e-6);
+                } else {
+                    self.state.time = end;
+                    self.state.playing = false;
+                }
             }
             ui.ctx().request_repaint();
         }
@@ -634,7 +650,11 @@ impl Viewer<'_> {
                     .text("seconds")
                     .drag_value_speed(0.01),
             );
-            ui.weak(format!("{:.2} s span", end - start));
+            ui.weak(format!(
+                "{:.2} s span, {}",
+                end - start,
+                if repeats { "repeats" } else { "plays once" }
+            ));
         });
 
         Some(self.state.time)
@@ -789,7 +809,7 @@ impl Viewer<'_> {
                 direction: (-view.row(2).truncate()).into(),
             }),
         };
-        let poses = self.poses(viewpoint);
+        let frame = self.frame(viewpoint);
 
         // clicking the same spot again selects the next hit behind the current one
         if response.clicked() {
@@ -797,8 +817,9 @@ impl Viewer<'_> {
                 (response.interact_pointer_pos(), &self.state.loaded)
             {
                 // only what is drawn can be picked, so a hidden LOD level is not selectable
-                let visible =
+                let mut visible =
                     scene.visible_shapes(self.state.lod_mode, self.state.lod_distance, eye);
+                visible.retain(|shape| !frame.hidden.contains(shape));
                 let hits = pick::ray_through(view_proj, rect, pointer)
                     .map(|ray| pick::hits(&loaded.nif, &ray, &visible, viewpoint))
                     .unwrap_or_default();
@@ -833,7 +854,7 @@ impl Viewer<'_> {
         ui.painter().add(egui_wgpu::Callback::new_paint_callback(
             rect,
             PreviewCall {
-                poses,
+                frame,
                 lod_mode: self.state.lod_mode,
                 lod_distance: self.state.lod_distance,
                 scene,

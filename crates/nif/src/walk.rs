@@ -18,12 +18,16 @@ pub struct Visit<'a> {
     pub block: &'a Block,
     pub transform: NiTransform,
     pub depth: usize,
+    /// Culled, along with everything under it. Either the object's own flag or, when the walk
+    /// is at a time, whatever its visibility controller says instead.
+    pub hidden: bool,
 }
 
 struct Frame {
     index: usize,
     parent: NiTransform,
     depth: usize,
+    hidden: bool,
 }
 
 pub struct Walk<'a> {
@@ -50,6 +54,7 @@ impl<'a> Walk<'a> {
                 index: root,
                 parent: NiTransform::IDENTITY,
                 depth: 0,
+                hidden: false,
             }],
             path: Vec::new(),
             lod: LodPolicy::All,
@@ -67,6 +72,7 @@ impl<'a> Walk<'a> {
                 index,
                 parent: NiTransform::IDENTITY,
                 depth: 0,
+                hidden: false,
             })
             .collect();
         stack.reverse();
@@ -171,6 +177,20 @@ impl<'a> Iterator for Walk<'a> {
                 None => frame.parent,
             };
 
+            let hidden = frame.hidden
+                || match block.av_object() {
+                    Some(av) => {
+                        #[cfg(feature = "glam")]
+                        let shown = self
+                            .time
+                            .and_then(|time| crate::anim::visible_at(self.blocks, av, time));
+                        #[cfg(not(feature = "glam"))]
+                        let shown: Option<bool> = None;
+                        shown.map_or(av.is_hidden(), |shown| !shown)
+                    }
+                    None => false,
+                };
+
             let children = block.child_refs().unwrap_or(&[]);
             if !children.is_empty() {
                 let selection = match block {
@@ -183,6 +203,7 @@ impl<'a> Iterator for Walk<'a> {
                             index,
                             parent: transform,
                             depth: frame.depth + 1,
+                            hidden,
                         });
                     }
                 };
@@ -204,6 +225,7 @@ impl<'a> Iterator for Walk<'a> {
                 block,
                 transform,
                 depth: frame.depth,
+                hidden,
             });
         }
         None

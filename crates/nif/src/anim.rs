@@ -3,7 +3,9 @@ use glam::{EulerRot, Mat3, Quat};
 use crate::blocks::{
     Block, NiAvObject, NiTimeController, NiTransformData, NiTransformInterpolator,
 };
-use crate::common::{Key, KeyGroup, KeyType, NiQuatTransform, NiTransform, Quaternion, Vector3};
+use crate::common::{
+    BlockRef, Key, KeyGroup, KeyType, NiQuatTransform, NiTransform, Quaternion, Vector3,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CycleType {
@@ -70,22 +72,11 @@ pub fn span(blocks: &[Block]) -> Option<(f32, f32)> {
 /// The transform an object holds at `time`, following its controller chain. None when nothing
 /// animates it, so a caller can keep whatever it already had.
 pub fn transform_at(blocks: &[Block], object: &NiAvObject, time: f32) -> Option<NiTransform> {
-    let mut next = object.controller_ref;
-    // a chain, since one object can carry several controllers
-    let mut guard = 0;
-    while let Some(block) = next.get(blocks) {
-        guard += 1;
-        if guard > 64 {
-            break;
-        }
-        let Some(time_controller) = block.as_time_controller() else {
-            break;
-        };
-        next = time_controller.next_controller_ref;
-
+    for block in controllers(blocks, object.controller_ref) {
         let Block::NiTransformController(controller) = block else {
             continue;
         };
+        let time_controller: &NiTimeController = controller;
         if !time_controller.is_active() {
             continue;
         }
@@ -223,6 +214,79 @@ where
     pub fn sample(&self, time: f32) -> Option<T> {
         sample_keys(&self.keys, self.interpolation, time)
     }
+}
+
+impl KeyGroup<u8> {
+    /// A bool track steps: a key holds until the next one is reached, with no blending between
+    /// them. Outside the range the nearest key holds.
+    pub fn step(&self, time: f32) -> Option<u8> {
+        let first = self.keys.first()?;
+        if time <= first.time {
+            return Some(first.value);
+        }
+        let at = self
+            .keys
+            .partition_point(|key| key.time <= time)
+            .saturating_sub(1);
+        self.keys.get(at).map(|key| key.value)
+    }
+}
+
+/// Whether anything in the file repeats. When nothing does, every controller holds its final
+/// value once its span is over, so a player should stop at the end rather than start again.
+pub fn repeats(blocks: &[Block]) -> bool {
+    blocks
+        .iter()
+        .filter_map(Block::as_time_controller)
+        .filter(|controller| controller.is_active())
+        .any(|controller| {
+            matches!(
+                controller.cycle_type_enum(),
+                CycleType::Loop | CycleType::Reverse
+            )
+        })
+}
+
+/// Whether an object's visibility controller shows it at `time`. None when nothing animates its
+/// visibility, so the caller keeps whatever the object's own flag says.
+pub fn visible_at(blocks: &[Block], object: &NiAvObject, time: f32) -> Option<bool> {
+    for block in controllers(blocks, object.controller_ref) {
+        let Block::NiVisController(controller) = block else {
+            continue;
+        };
+        let time_controller: &NiTimeController = controller;
+        if !time_controller.is_active() {
+            continue;
+        }
+        let Some(Block::NiBoolInterpolator(interpolator)) =
+            controller.base.base.interpolator_ref.get(blocks)
+        else {
+            continue;
+        };
+        let keyed = match interpolator.data_ref.get(blocks) {
+            Some(Block::NiBoolData(data)) => data.data.step(time_controller.local_time(time)),
+            _ => None,
+        };
+        // with no keys of its own the interpolator supplies a single value instead
+        return match keyed {
+            Some(value) => Some(value != 0),
+            None => interpolator.pose_value(),
+        };
+    }
+    None
+}
+
+/// Every controller on an object, following the chain from one to the next.
+fn controllers(blocks: &[Block], first: BlockRef) -> impl Iterator<Item = &Block> {
+    let mut next = first;
+    let mut guard = 0;
+    std::iter::from_fn(move || {
+        let block = next.get(blocks)?;
+        let time_controller = block.as_time_controller()?;
+        next = time_controller.next_controller_ref;
+        guard += 1;
+        (guard <= 64).then_some(block)
+    })
 }
 
 /// `Tbc` needs per key derivatives the file does not carry, so it falls back to linear here.
@@ -411,6 +475,34 @@ mod tests {
         );
         assert_eq!(keys.sample(-5.0), Some(3.0));
         assert_eq!(keys.sample(500.0), Some(4.0));
+    }
+
+    #[test]
+    fn a_bool_track_holds_each_key_until_the_next() {
+        let keys = KeyGroup {
+            interpolation: Some(KeyType::Const),
+            keys: vec![
+                Key {
+                    time: 0.0,
+                    value: 1u8,
+                    in_tangent: None,
+                    out_tangent: None,
+                    tbc: None,
+                },
+                Key {
+                    time: 0.1,
+                    value: 0u8,
+                    in_tangent: None,
+                    out_tangent: None,
+                    tbc: None,
+                },
+            ],
+        };
+        assert_eq!(keys.step(-1.0), Some(1));
+        assert_eq!(keys.step(0.0), Some(1));
+        assert_eq!(keys.step(0.099), Some(1));
+        assert_eq!(keys.step(0.1), Some(0));
+        assert_eq!(keys.step(50.0), Some(0));
     }
 
     #[test]
