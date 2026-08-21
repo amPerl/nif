@@ -7,7 +7,7 @@ use nif::glam::{Mat4, Vec3};
 use nif::{
     blocks::{
         AlphaFunction, ApplyMode, Block, LightMode, NiGeometry, NiGeometryData, StencilDrawMode,
-        TestFunction, VertMode,
+        TestFunction, VertMode, ZCompareMode,
     },
     common::Triangle,
     Nif,
@@ -42,6 +42,9 @@ pub struct Mesh {
     pub shape_block: usize,
     pub data_block: usize,
     pub center: Vec3,
+    /// The same centre before the shape's transform, so an animated or billboarded pose can be
+    /// applied to it at draw time.
+    local_center: Vec3,
     pub radius: f32,
     /// The NiLODNode this shape sits under, and which of its levels, if any.
     lod: Option<(usize, usize)>,
@@ -176,7 +179,8 @@ impl Lod {
 struct DrawState {
     cull: Option<wgpu::Face>,
     depth_write: bool,
-    depth_test: bool,
+    /// Testing disabled is `Always`, so this one field covers both flags.
+    depth: wgpu::CompareFunction,
     blend: Option<(wgpu::BlendFactor, wgpu::BlendFactor)>,
 }
 
@@ -185,9 +189,32 @@ impl DrawState {
         Self {
             cull: Some(wgpu::Face::Back),
             depth_write: true,
-            depth_test: true,
+            depth: wgpu::CompareFunction::LessEqual,
             blend: None,
         }
+    }
+}
+
+/// A z buffer property's own comparison. `LessEqual` is also the default a shape without one
+/// takes, which matters where coincident geometry is drawn twice: `Less` would drop the second
+/// draw instead of letting it blend over the first.
+fn depth_of(zbuffer: Option<&nif::blocks::NiZBufferProperty>) -> wgpu::CompareFunction {
+    let Some(zbuffer) = zbuffer else {
+        return wgpu::CompareFunction::LessEqual;
+    };
+    if !zbuffer.depth_test() {
+        return wgpu::CompareFunction::Always;
+    }
+    match zbuffer.function {
+        ZCompareMode::ZCompAlways => wgpu::CompareFunction::Always,
+        ZCompareMode::ZCompLess => wgpu::CompareFunction::Less,
+        ZCompareMode::ZCompEqual => wgpu::CompareFunction::Equal,
+        ZCompareMode::ZCompLessEqual => wgpu::CompareFunction::LessEqual,
+        ZCompareMode::ZCompGreater => wgpu::CompareFunction::Greater,
+        ZCompareMode::ZCompNotEqual => wgpu::CompareFunction::NotEqual,
+        ZCompareMode::ZCompGreaterEqual => wgpu::CompareFunction::GreaterEqual,
+        ZCompareMode::ZCompNever => wgpu::CompareFunction::Never,
+        ZCompareMode::Unknown(_) => wgpu::CompareFunction::LessEqual,
     }
 }
 
@@ -317,7 +344,7 @@ impl Gfx {
             DrawState {
                 cull: None,
                 depth_write: false,
-                depth_test: false,
+                depth: wgpu::CompareFunction::Always,
                 blend: None,
             },
             wgpu::PrimitiveTopology::LineList,
@@ -531,12 +558,17 @@ impl Gfx {
             let mut attributes: Vec<f32> = Vec::with_capacity(vertices.len() * 9);
             let mut shape_min = Vec3::splat(f32::MAX);
             let mut shape_max = Vec3::splat(f32::MIN);
+            let mut local_min = Vec3::splat(f32::MAX);
+            let mut local_max = Vec3::splat(f32::MIN);
             for (i, v) in vertices.iter().enumerate() {
-                let world = model.transform_point3(Vec3::from(v));
+                let local = Vec3::from(v);
+                let world = model.transform_point3(local);
                 min = min.min(world);
                 max = max.max(world);
                 shape_min = shape_min.min(world);
                 shape_max = shape_max.max(world);
+                local_min = local_min.min(local);
+                local_max = local_max.max(local);
 
                 let color = colors
                     .and_then(|c| c.get(i))
@@ -646,7 +678,7 @@ impl Gfx {
             let state = DrawState {
                 cull: cull_of(stencil.map(|p| &p.draw_mode)),
                 depth_write: zbuffer.is_none_or(|z| z.depth_write()),
-                depth_test: zbuffer.is_none_or(|z| z.depth_test()),
+                depth: depth_of(zbuffer),
                 blend,
             };
             let pipeline = pipelines
@@ -708,6 +740,7 @@ impl Gfx {
                 pipeline,
                 pipeline_unculled,
                 center: (shape_min + shape_max) * 0.5,
+                local_center: (local_min + local_max) * 0.5,
                 radius: ((shape_max - shape_min).length() * 0.5).max(0.001),
                 data_block: geometry.data_ref.index().unwrap_or(usize::MAX),
                 texture,
@@ -956,11 +989,7 @@ fn build_pipeline(
         depth_stencil: Some(wgpu::DepthStencilState {
             format: DEPTH_FORMAT,
             depth_write_enabled: Some(state.depth_write),
-            depth_compare: Some(if state.depth_test {
-                wgpu::CompareFunction::Less
-            } else {
-                wgpu::CompareFunction::Always
-            }),
+            depth_compare: Some(state.depth),
             stencil: Default::default(),
             bias: Default::default(),
         }),
@@ -998,6 +1027,15 @@ pub struct PreviewCall {
 }
 
 impl PreviewCall {
+    /// Where the shape's centre is this frame. A billboard turns and an animated node moves, so
+    /// the centre the scene was built with is not where it is being drawn.
+    fn center(&self, mesh: &Mesh) -> Vec3 {
+        match self.poses.get(&mesh.shape_block) {
+            Some(model) => model.transform_point3(mesh.local_center),
+            None => mesh.center,
+        }
+    }
+
     fn visible(&self, mesh: &Mesh) -> bool {
         self.scene
             .shows(mesh, self.lod_mode, self.lod_distance, self.eye)
@@ -1087,9 +1125,9 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
                 draw_mesh(render_pass, mesh, pipeline);
             }
             blended.sort_by(|a, b| {
-                b.center
+                self.center(b)
                     .distance_squared(self.eye)
-                    .total_cmp(&a.center.distance_squared(self.eye))
+                    .total_cmp(&self.center(a).distance_squared(self.eye))
             });
             for mesh in blended {
                 let pipeline = if self.cull {
