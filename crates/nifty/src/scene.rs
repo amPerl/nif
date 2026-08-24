@@ -32,8 +32,14 @@ const UV_OFFSET: u64 = 32 * 4;
 
 /// The shader's `Model` and `Camera` structs, in floats. Every buffer bound as one has to be
 /// this long, the grid's included.
-const MODEL_FLOATS: u64 = 40;
+const MODEL_FLOATS: u64 = 56;
 const CAMERA_FLOATS: u64 = 24;
+
+/// Position, colour and two uv sets. The second exists because the dark slot reads uv set 1.
+const VERTEX_FLOATS: usize = 3 + 4 + 2 + 2;
+
+/// The slots the renderer draws, in the order their uv transforms sit in the model uniform.
+const DRAWN_SLOTS: [TextureSlot; 3] = [TextureSlot::Base, TextureSlot::Dark, TextureSlot::Glow];
 
 /// Lives in `callback_resources`, which is all `paint` can reach.
 pub struct Preview {
@@ -48,7 +54,7 @@ pub struct Gfx {
     pub render_state: egui_wgpu::RenderState,
     model_layout: wgpu::BindGroupLayout,
     texture_layout: wgpu::BindGroupLayout,
-    sampler: wgpu::Sampler,
+    samplers: [wgpu::Sampler; 4],
     shader: wgpu::ShaderModule,
     pipeline_layout: wgpu::PipelineLayout,
     pub camera_buffer: wgpu::Buffer,
@@ -148,8 +154,10 @@ pub struct Frame {
     pub hidden: HashSet<usize>,
     /// Material alpha a controller has replaced, by the material's own block.
     pub alpha: HashMap<usize, f32>,
-    /// The base slot's uv transform where a controller drives it, by texturing property block.
-    pub uv: HashMap<usize, [f32; 8]>,
+    /// Every drawn slot's uv transform where a controller drives one, by texturing property
+    /// block. All three slots ride together, since one controller per member means several can
+    /// target one property at once.
+    pub uv: HashMap<usize, [f32; 24]>,
     /// The source a flip controller has swapped into the base slot, by texturing property block.
     pub flip: HashMap<usize, usize>,
 }
@@ -318,32 +326,26 @@ impl Gfx {
         });
         let texture_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("nifty texture"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
+            entries: &slot_layout_entries(),
         });
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("nifty sampler"),
-            address_mode_u: wgpu::AddressMode::Repeat,
-            address_mode_v: wgpu::AddressMode::Repeat,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
+        // one per address mode combination, since TexClampMode is per map and glow maps are
+        // clamped about as often as they wrap
+        let samplers = std::array::from_fn(|i| {
+            let mode = |wraps| {
+                if wraps {
+                    wgpu::AddressMode::Repeat
+                } else {
+                    wgpu::AddressMode::ClampToEdge
+                }
+            };
+            device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("nifty sampler"),
+                address_mode_u: mode(i & 1 != 0),
+                address_mode_v: mode(i & 2 != 0),
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                ..Default::default()
+            })
         });
 
         let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -437,7 +439,7 @@ impl Gfx {
             render_state: render_state.clone(),
             model_layout,
             texture_layout,
-            sampler,
+            samplers,
             shader,
             pipeline_layout: layout,
             camera_buffer,
@@ -456,7 +458,11 @@ impl Gfx {
         )
     }
 
-    fn upload_texture(&self, width: u32, height: u32, rgba: &[u8]) -> wgpu::BindGroup {
+    fn sampler(&self, wraps_u: bool, wraps_v: bool) -> wgpu::Sampler {
+        self.samplers[usize::from(wraps_u) | usize::from(wraps_v) << 1].clone()
+    }
+
+    fn upload_texture(&self, width: u32, height: u32, rgba: &[u8]) -> wgpu::TextureView {
         let device = &self.render_state.device;
         let size = wgpu::Extent3d {
             width,
@@ -487,37 +493,36 @@ impl Gfx {
             size,
         );
 
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("nifty texture"),
-            layout: &self.texture_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
-            ],
-        })
+        texture.create_view(&wgpu::TextureViewDescriptor::default())
     }
 
-    /// Resolves a shape's base texture, embedded or from the library on disk.
-    fn shape_texture(
-        &self,
-        nif: &Nif,
-        shape_properties: &[nif::common::BlockRef],
-        library: &TextureLibrary,
-    ) -> Option<wgpu::BindGroup> {
-        let texturing = shape_properties
+    /// One bind group per shape, carrying the base, dark and glow slots with the address mode
+    /// each `TexDesc` asked for. A slot the shape does not use gets a default that changes
+    /// nothing: white for dark, since it multiplies, and black for glow, since it adds.
+    fn slot_group(&self, slots: [(&wgpu::TextureView, &wgpu::Sampler); 3]) -> wgpu::BindGroup {
+        let entries: Vec<wgpu::BindGroupEntry> = slots
             .iter()
-            .find_map(|r| match r.get(&nif.blocks) {
-                Some(Block::NiTexturingProperty(p)) => Some(p),
-                _ => None,
-            })?;
-        self.source_texture(nif, texturing.base_texture.as_ref()?.source_ref, library)
+            .enumerate()
+            .flat_map(|(i, (view, sampler))| {
+                [
+                    wgpu::BindGroupEntry {
+                        binding: (i * 2) as u32,
+                        resource: wgpu::BindingResource::TextureView(view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: (i * 2 + 1) as u32,
+                        resource: wgpu::BindingResource::Sampler(sampler),
+                    },
+                ]
+            })
+            .collect();
+        self.render_state
+            .device
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("nifty textures"),
+                layout: &self.texture_layout,
+                entries: &entries,
+            })
     }
 
     /// One `NiSourceTexture`, embedded or from the library on disk.
@@ -526,7 +531,7 @@ impl Gfx {
         nif: &Nif,
         source_ref: nif::common::BlockRef,
         library: &TextureLibrary,
-    ) -> Option<wgpu::BindGroup> {
+    ) -> Option<wgpu::TextureView> {
         let Some(Block::NiSourceTexture(source)) = source_ref.get(&nif.blocks) else {
             return None;
         };
@@ -553,12 +558,13 @@ impl Gfx {
         let lod_of = lod_ancestry(nif);
         let device = &self.render_state.device;
         let white = self.upload_texture(1, 1, &[255, 255, 255, 255]);
+        let black = self.upload_texture(1, 1, &[0, 0, 0, 255]);
         // shapes whose texture could not be loaded get a checker rather than white
         let missing = {
             let (width, height, rgba) = library::placeholder();
             self.upload_texture(width, height, &rgba)
         };
-        let mut cache: HashMap<usize, wgpu::BindGroup> = HashMap::new();
+        let mut cache: HashMap<usize, wgpu::TextureView> = HashMap::new();
         let mut pipelines: HashMap<DrawState, wgpu::RenderPipeline> = HashMap::new();
         let mut meshes = Vec::new();
         let mut lods: HashMap<usize, Lod> = HashMap::new();
@@ -597,8 +603,11 @@ impl Gfx {
 
             let model = Mat4::from(&visit.transform);
             let colors = data.vertex_colors.as_ref();
+            // the dark slot reads uv set 1 in all but 10 of the corpus's 1,871 dark maps, so
+            // two sets go up and each slot picks the one its own TexDesc names
             let uvs = data.uv_sets.first().map(|set| &set.uvs);
-            let mut attributes: Vec<f32> = Vec::with_capacity(vertices.len() * 9);
+            let uvs1 = data.uv_sets.get(1).map(|set| &set.uvs).or(uvs);
+            let mut attributes: Vec<f32> = Vec::with_capacity(vertices.len() * VERTEX_FLOATS);
             let mut shape_min = Vec3::splat(f32::MAX);
             let mut shape_max = Vec3::splat(f32::MIN);
             let mut local_min = Vec3::splat(f32::MAX);
@@ -621,9 +630,14 @@ impl Gfx {
                     .and_then(|set| set.get(i))
                     .map(|t| [t.u, t.v])
                     .unwrap_or([0.0, 0.0]);
+                let uv1 = uvs1
+                    .and_then(|set| set.get(i))
+                    .map(|t| [t.u, t.v])
+                    .unwrap_or(uv);
                 attributes.extend_from_slice(&[v.x, v.y, v.z]);
                 attributes.extend_from_slice(&color);
                 attributes.extend_from_slice(&uv);
+                attributes.extend_from_slice(&uv1);
             }
 
             // NiMaterialProperty is a D3DMATERIAL9 verbatim. There is no ambient term: the
@@ -743,18 +757,39 @@ impl Gfx {
 
             // one upload per source texture, not per shape that uses it
             let texture_key = texturing_key(nif, &geometry.property_refs);
-            let texture = match texture_key {
-                Some(key) => cache
-                    .entry(key)
-                    .or_insert_with(|| {
-                        self.shape_texture(nif, &geometry.property_refs, library)
-                            .unwrap_or_else(|| missing.clone())
-                    })
-                    .clone(),
-                None => white.clone(),
-            };
-
+            let property = texturing_of(nif, &geometry.property_refs);
             let texturing_block = texturing_index(nif, &geometry.property_refs);
+
+            // a slot the shape does not use has to change nothing: dark multiplies so it
+            // defaults to white, glow adds so it defaults to black
+            let mut views = [white.clone(), white.clone(), black.clone()];
+            let mut samplers = [
+                self.sampler(true, true),
+                self.sampler(true, true),
+                self.sampler(true, true),
+            ];
+
+            for (position, slot) in DRAWN_SLOTS.iter().enumerate() {
+                let Some(desc) = property.and_then(|p| p.texture(*slot)) else {
+                    continue;
+                };
+                if let Some(key) = desc.source_ref.index() {
+                    views[position] = cache
+                        .entry(key)
+                        .or_insert_with(|| {
+                            self.source_texture(nif, desc.source_ref, library)
+                                .unwrap_or_else(|| missing.clone())
+                        })
+                        .clone();
+                }
+                samplers[position] =
+                    self.sampler(desc.clamp_mode.wraps_u(), desc.clamp_mode.wraps_v());
+            }
+            let texture = self.slot_group([
+                (&views[0], &samplers[0]),
+                (&views[1], &samplers[1]),
+                (&views[2], &samplers[2]),
+            ]);
             // every frame a flip controller can reach, uploaded once each and shared by block
             let mut flip_frames = HashMap::new();
             for block in &nif.blocks {
@@ -770,13 +805,19 @@ impl Gfx {
                     let Some(index) = source_ref.index() else {
                         continue;
                     };
-                    let group = cache
+                    let view = cache
                         .entry(index)
                         .or_insert_with(|| {
                             self.source_texture(nif, *source_ref, library)
                                 .unwrap_or_else(|| missing.clone())
                         })
                         .clone();
+                    // the other two slots keep whatever the shape itself carries
+                    let group = self.slot_group([
+                        (&view, &samplers[0]),
+                        (&views[1], &samplers[1]),
+                        (&views[2], &samplers[2]),
+                    ]);
                     flip_frames.insert(index, group);
                 }
             }
@@ -792,16 +833,7 @@ impl Gfx {
                 replace * f32::from(texture_key.is_some()),
             ]);
             model_uniform[28..32].copy_from_slice(&[alpha_threshold, alpha_test, 0.0, 0.0]);
-            model_uniform[32..40].copy_from_slice(&uv_rows(
-                texturing_of(nif, &geometry.property_refs).and_then(|property| {
-                    nif::anim::texture_transform_at(
-                        &nif.blocks,
-                        property,
-                        nif::blocks::TextureSlot::Base,
-                        0.0,
-                    )
-                }),
-            ));
+            model_uniform[32..56].copy_from_slice(&slot_uv_rows(&nif.blocks, property, 0.0));
 
             let mut indices: Vec<u16> = Vec::with_capacity(triangles.len() * 3);
             let mut edges: Vec<u16> = Vec::with_capacity(triangles.len() * 6);
@@ -867,14 +899,15 @@ impl Gfx {
             ((min + max) * 0.5, (max - min).length() * 0.5)
         };
 
+        let samplers_for_grid = self.sampler(true, true);
         // the floor has to reach the geometry as well as the origin, which a chunk sitting
         // far out is nowhere near
         let (lines, spacing) = grid_lines(center.length() + radius);
         let mut identity = [0f32; MODEL_FLOATS as usize];
         identity[..16].copy_from_slice(&Mat4::IDENTITY.to_cols_array());
-        identity[32..40].copy_from_slice(&uv_rows(None));
+        identity[32..56].copy_from_slice(&slot_uv_rows(&[], None, 0.0));
         let grid = Grid {
-            count: (lines.len() / 9) as u32,
+            count: (lines.len() / VERTEX_FLOATS) as u32,
             vertices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("nifty grid"),
                 contents: bytemuck::cast_slice(&lines),
@@ -895,7 +928,11 @@ impl Gfx {
                 }],
             }),
             // the layout carries a texture group whether the shader samples it or not
-            texture: white,
+            texture: self.slot_group([
+                (&white, &samplers_for_grid),
+                (&white, &samplers_for_grid),
+                (&black, &samplers_for_grid),
+            ]),
             spacing,
         };
 
@@ -935,13 +972,34 @@ pub(crate) fn geometry_of<'a>(
 /// A uv transform as the two rows that reach the shader, since the third is always (0, 0, 1).
 /// No transform is the identity, which matters: a map with none must keep its uvs untouched,
 /// because the engine's substitute carries a v flip rather than being neutral.
-pub fn uv_rows(transform: Option<nif::blocks::TextureTransform>) -> [f32; 8] {
+/// `uv_set` rides in the first row's spare lane, since the shader has to know which of the two
+/// sets in the vertex buffer this slot reads. Dark is the reason there are two.
+pub fn uv_rows(transform: Option<nif::blocks::TextureTransform>, uv_set: u32) -> [f32; 8] {
+    let set = if uv_set == 0 { 0.0 } else { 1.0 };
     let Some(transform) = transform else {
-        return [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+        return [1.0, 0.0, 0.0, set, 0.0, 1.0, 0.0, 0.0];
     };
     let m = transform.matrix();
     let (x, y) = (m.x_axis, m.y_axis);
-    [x.x, y.x, m.z_axis.x, 0.0, x.y, y.y, m.z_axis.y, 0.0]
+    [x.x, y.x, m.z_axis.x, set, x.y, y.y, m.z_axis.y, 0.0]
+}
+
+/// Every drawn slot's uv rows at `time`, in `DRAWN_SLOTS` order. Both the scene build and the
+/// per frame update go through this, so an animated slot cannot be one the build forgot.
+pub fn slot_uv_rows(
+    blocks: &[Block],
+    property: Option<&nif::blocks::NiTexturingProperty>,
+    time: f32,
+) -> [f32; 24] {
+    let mut out = [0.0; 24];
+    for (position, slot) in DRAWN_SLOTS.iter().enumerate() {
+        let desc = property.and_then(|p| p.texture(*slot));
+        let transform =
+            property.and_then(|p| nif::anim::texture_transform_at(blocks, p, *slot, time));
+        let rows = uv_rows(transform, desc.map_or(0, |d| d.uv_set));
+        out[position * 8..(position + 1) * 8].copy_from_slice(&rows);
+    }
+    out
 }
 
 fn texturing_index(nif: &Nif, properties: &[nif::common::BlockRef]) -> Option<usize> {
@@ -984,7 +1042,7 @@ fn grid_lines(reach: f32) -> (Vec<f32>, f32) {
         for point in [from, to] {
             out.extend_from_slice(&[point.x, point.y, point.z]);
             out.extend_from_slice(&color);
-            out.extend_from_slice(&[0.0, 0.0]);
+            out.extend_from_slice(&[0.0, 0.0, 0.0, 0.0]);
         }
     };
 
@@ -1068,9 +1126,11 @@ fn build_pipeline(
             module: shader,
             entry_point: Some("vs_main"),
             buffers: &[wgpu::VertexBufferLayout {
-                array_stride: 36,
+                array_stride: (VERTEX_FLOATS * 4) as u64,
                 step_mode: wgpu::VertexStepMode::Vertex,
-                attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x4, 2 => Float32x2],
+                attributes: &wgpu::vertex_attr_array![
+                    0 => Float32x3, 1 => Float32x4, 2 => Float32x2, 3 => Float32x2
+                ],
             }],
             compilation_options: Default::default(),
         },
@@ -1111,6 +1171,24 @@ fn build_pipeline(
 
 /// `floats` is what the shader's matching struct holds. Declaring it makes a buffer that has
 /// fallen behind the struct fail when the bind group is built, rather than once per draw call.
+/// A texture and sampler pair per drawn slot, in `DRAWN_SLOTS` order.
+fn slot_layout_entries() -> [wgpu::BindGroupLayoutEntry; 6] {
+    std::array::from_fn(|i| wgpu::BindGroupLayoutEntry {
+        binding: i as u32,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: if i % 2 == 0 {
+            wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            }
+        } else {
+            wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)
+        },
+        count: None,
+    })
+}
+
 fn uniform_entry(floats: u64) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding: 0,
@@ -1304,20 +1382,26 @@ struct Model {
     sources: vec4<f32>,
     // alpha test threshold, alpha test enabled
     alpha: vec4<f32>,
-    uv_row0: vec4<f32>,
-    uv_row1: vec4<f32>,
+    // two rows per drawn slot, base then dark then glow. The third row is always (0, 0, 1),
+    // and row0.w names which of the two uv sets the slot reads.
+    uv: array<vec4<f32>, 6>,
 };
 
 @group(0) @binding(0) var<uniform> camera: Camera;
 @group(1) @binding(0) var<uniform> model: Model;
 @group(2) @binding(0) var base_texture: texture_2d<f32>;
 @group(2) @binding(1) var base_sampler: sampler;
+@group(2) @binding(2) var dark_texture: texture_2d<f32>;
+@group(2) @binding(3) var dark_sampler: sampler;
+@group(2) @binding(4) var glow_texture: texture_2d<f32>;
+@group(2) @binding(5) var glow_sampler: sampler;
 
 struct VertexOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) world: vec3<f32>,
     @location(1) color: vec4<f32>,
     @location(2) uv: vec2<f32>,
+    @location(3) uv1: vec2<f32>,
 };
 
 @vertex
@@ -1325,6 +1409,7 @@ fn vs_main(
     @location(0) position: vec3<f32>,
     @location(1) color: vec4<f32>,
     @location(2) uv: vec2<f32>,
+    @location(3) uv1: vec2<f32>,
 ) -> VertexOut {
     let world = model.model * vec4<f32>(position, 1.0);
     var out: VertexOut;
@@ -1332,7 +1417,20 @@ fn vs_main(
     out.world = world.xyz;
     out.color = color;
     out.uv = uv;
+    out.uv1 = uv1;
     return out;
+}
+
+/// The uv a slot samples at, after its own set choice and its own transform.
+fn slot_uv(slot: u32, in: VertexOut) -> vec2<f32> {
+    let row0 = model.uv[slot * 2u];
+    let row1 = model.uv[slot * 2u + 1u];
+    var source = in.uv;
+    if (row0.w > 0.5) {
+        source = in.uv1;
+    }
+    let uvw = vec3<f32>(source, 1.0);
+    return vec2<f32>(dot(row0.xyz, uvw), dot(row1.xyz, uvw));
 }
 
 @fragment
@@ -1381,12 +1479,16 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let plain = vec3<f32>(0.78, 0.80, 0.84) * shade;
     let lit = mix(plain, material_lit, camera.flags.x);
 
-    // the uv transform is a 3x3 applied as matrix * (u, v, 1); the third row is always (0, 0, 1)
-    let uvw = vec3<f32>(in.uv, 1.0);
-    let uv = vec2<f32>(dot(model.uv_row0.xyz, uvw), dot(model.uv_row1.xyz, uvw));
-    let texel = textureSample(base_texture, base_sampler, uv);
+    let texel = textureSample(base_texture, base_sampler, slot_uv(0u, in));
+    // the dark map accumulates before the base map, which then modulates onto it, so it
+    // multiplies. An absent slot is white and changes nothing.
+    let dark = textureSample(dark_texture, dark_sampler, slot_uv(1u, in)).rgb;
+    // the glow map is added in a ONE,ONE pass after everything, so it is unlit. Absent is black.
+    let glow = textureSample(glow_texture, glow_sampler, slot_uv(2u, in)).rgb;
+
     let replace = model.sources.w * camera.flags.x;
-    let shaded = mix(lit * texel.rgb, texel.rgb, replace);
+    let base = texel.rgb * dark;
+    let shaded = mix(lit * base, base, replace) + glow;
 
     // alpha follows the same source as diffuse, and the texture modulates it like the colour
     let alpha_src = mix(model.diffuse.a, in.color.a, model.sources.y);
@@ -1402,8 +1504,8 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
 mod tests {
     use super::grid_lines;
 
-    /// Every vertex is position, colour and uv, and the axes are the last three lines.
-    const STRIDE: usize = 9;
+    /// Every vertex is position, colour and two uv sets, and the axes are the last three lines.
+    const STRIDE: usize = super::VERTEX_FLOATS;
 
     #[test]
     fn spacing_is_a_round_number_about_a_tenth_of_the_reach() {

@@ -630,16 +630,10 @@ impl Viewer<'_> {
                 let Block::NiTexturingProperty(property) = block else {
                     continue;
                 };
-                if let Some(transform) = nif::anim::texture_transform_at(
-                    &loaded.nif.blocks,
-                    property,
-                    nif::blocks::TextureSlot::Base,
-                    time,
-                ) {
-                    frame
-                        .uv
-                        .insert(index, crate::scene::uv_rows(Some(transform)));
-                }
+                frame.uv.insert(
+                    index,
+                    crate::scene::slot_uv_rows(&loaded.nif.blocks, Some(property), time),
+                );
                 let flipped = nif::anim::flip_source_at(
                     &loaded.nif.blocks,
                     property,

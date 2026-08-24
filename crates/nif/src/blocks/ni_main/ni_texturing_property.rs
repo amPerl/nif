@@ -370,6 +370,20 @@ pub enum TexClampMode {
     Unknown(u32),
 }
 
+impl TexClampMode {
+    /// Whether u repeats past the edge rather than holding it. `Unknown` is treated as wrapping,
+    /// which is the engine's default.
+    pub fn wraps_u(&self) -> bool {
+        matches!(self, TexClampMode::WrapSClampT | TexClampMode::WrapSWrapT)
+            || matches!(self, TexClampMode::Unknown(_))
+    }
+
+    pub fn wraps_v(&self) -> bool {
+        matches!(self, TexClampMode::ClampSWrapT | TexClampMode::WrapSWrapT)
+            || matches!(self, TexClampMode::Unknown(_))
+    }
+}
+
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
 #[cfg_attr(feature = "facet", derive(facet::Facet))]
 #[cfg_attr(feature = "facet", repr(u8))]
