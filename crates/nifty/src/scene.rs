@@ -23,6 +23,10 @@ pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// Every pipeline here has to agree with it or wgpu rejects the draw.
 pub const MSAA_SAMPLES: u32 = 4;
 
+/// Where the diffuse alpha sits in the model uniform, so a controller can rewrite that float
+/// alone and leave the rest of the material behind it.
+const ALPHA_OFFSET: u64 = 19 * 4;
+
 /// Lives in `callback_resources`, which is all `paint` can reach.
 pub struct Preview {
     wire: wgpu::RenderPipeline,
@@ -49,6 +53,8 @@ pub struct Mesh {
     /// The same centre before the shape's transform, so an animated or billboarded pose can be
     /// applied to it at draw time.
     local_center: Vec3,
+    /// The NiMaterialProperty this shape draws with, which is what an alpha controller targets.
+    material_block: Option<usize>,
     pub radius: f32,
     /// The NiLODNode this shape sits under, and which of its levels, if any.
     lod: Option<(usize, usize)>,
@@ -126,6 +132,8 @@ impl Viewpoint {
 pub struct Frame {
     pub poses: HashMap<usize, Mat4>,
     pub hidden: HashSet<usize>,
+    /// Material alpha a controller has replaced, by the material's own block.
+    pub alpha: HashMap<usize, f32>,
 }
 
 /// Which level of each LOD node to draw.
@@ -598,11 +606,15 @@ impl Gfx {
             // NiMaterialProperty is a D3DMATERIAL9 verbatim. There is no ambient term: the
             // engine multiplies material ambient by the global ambient, which is black unless
             // the scene carries an NiAmbientLight.
-            let material = geometry
-                .property_refs
-                .iter()
-                .find_map(|r| match r.get(&nif.blocks) {
-                    Some(Block::NiMaterialProperty(m)) => Some(m),
+            // the block index as well as the material, since that is what a controller targets
+            let material_index = geometry.property_refs.iter().find(|r| {
+                matches!(r.get(&nif.blocks), Some(Block::NiMaterialProperty(_)))
+            });
+            let material_index = material_index.and_then(|r| r.index());
+            let material = material_index
+                .and_then(|index| nif.blocks.get(index))
+                .and_then(|block| match block {
+                    Block::NiMaterialProperty(m) => Some(m),
                     _ => None,
                 });
             let (diffuse, emissive) = match material {
@@ -753,6 +765,7 @@ impl Gfx {
                 pipeline_unculled,
                 center: (shape_min + shape_max) * 0.5,
                 local_center: (local_min + local_max) * 0.5,
+                material_block: material_index,
                 radius: ((shape_max - shape_min).length() * 0.5).max(0.001),
                 data_block: geometry.data_ref.index().unwrap_or(usize::MAX),
                 texture,
@@ -1083,14 +1096,19 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
         _resources: &mut egui_wgpu::CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
         for mesh in &self.scene.meshes {
-            let Some(model) = self.frame.poses.get(&mesh.shape_block) else {
-                continue;
-            };
-            queue.write_buffer(
-                &mesh.model_buffer,
-                0,
-                bytemuck::cast_slice(&model.to_cols_array()),
-            );
+            if let Some(model) = self.frame.poses.get(&mesh.shape_block) {
+                queue.write_buffer(
+                    &mesh.model_buffer,
+                    0,
+                    bytemuck::cast_slice(&model.to_cols_array()),
+                );
+            }
+            if let Some(alpha) = mesh
+                .material_block
+                .and_then(|block| self.frame.alpha.get(&block))
+            {
+                queue.write_buffer(&mesh.model_buffer, ALPHA_OFFSET, bytemuck::bytes_of(alpha));
+            }
         }
         Vec::new()
     }

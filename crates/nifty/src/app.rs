@@ -611,6 +611,20 @@ impl Viewer<'_> {
                 frame.hidden.insert(visit.index);
             }
         }
+        // an alpha controller hangs off the material rather than the shape, and one material
+        // can be shared, so these are collected by material block
+        if let Some(time) = viewpoint.time {
+            for (index, block) in loaded.nif.blocks.iter().enumerate() {
+                let Block::NiMaterialProperty(material) = block else {
+                    continue;
+                };
+                if let Some(alpha) = nif::anim::alpha_at(&loaded.nif.blocks, material, time) {
+                    // a quadratic track overshoots its keys, and files do drive alpha negative.
+                    // The fixed function pipeline clamped the material colour, so clamp here.
+                    frame.alpha.insert(index, alpha.clamp(0.0, 1.0));
+                }
+            }
+        }
         Arc::new(frame)
     }
 

@@ -1,7 +1,8 @@
 use glam::{Mat3, Quat};
 
 use crate::blocks::{
-    Block, NiAvObject, NiTimeController, NiTransformData, NiTransformInterpolator,
+    Block, NiAvObject, NiMaterialProperty, NiTimeController, NiTransformData,
+    NiTransformInterpolator,
 };
 use crate::common::{
     BlockRef, Key, KeyGroup, KeyType, NiQuatTransform, NiTransform, Quaternion, Vector3,
@@ -245,6 +246,33 @@ pub fn repeats(blocks: &[Block]) -> bool {
                 CycleType::Loop | CycleType::Reverse
             )
         })
+}
+
+/// The alpha a material's controller sets at `time`. None when nothing animates it, so the
+/// caller keeps the value the file stores. The controller replaces that value rather than
+/// scaling it.
+pub fn alpha_at(blocks: &[Block], material: &NiMaterialProperty, time: f32) -> Option<f32> {
+    for block in controllers(blocks, material.controller_ref) {
+        let Block::NiAlphaController(controller) = block else {
+            continue;
+        };
+        let time_controller: &NiTimeController = controller;
+        if !time_controller.is_active() {
+            continue;
+        }
+        let Some(Block::NiFloatInterpolator(interpolator)) =
+            controller.base.base.interpolator_ref.get(blocks)
+        else {
+            continue;
+        };
+        let keyed = match interpolator.data_ref.get(blocks) {
+            Some(Block::NiFloatData(data)) => data.data.sample(time_controller.local_time(time)),
+            _ => None,
+        };
+        // with no keys of its own the interpolator supplies a single value instead
+        return Some(keyed.unwrap_or(interpolator.value));
+    }
+    None
 }
 
 /// Whether an object's visibility controller shows it at `time`. None when nothing animates its
