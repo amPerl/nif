@@ -33,13 +33,88 @@ const UV_OFFSET: u64 = 32 * 4;
 /// The shader's `Model` and `Camera` structs, in floats. Every buffer bound as one has to be
 /// this long, the grid's included.
 const MODEL_FLOATS: u64 = 56;
-const CAMERA_FLOATS: u64 = 24;
+const CAMERA_FLOATS: u64 = 40;
 
 /// Position, colour and two uv sets. The second exists because the dark slot reads uv set 1.
 const VERTEX_FLOATS: usize = 3 + 4 + 2 + 2;
 
 /// The slots the renderer draws, in the order their uv transforms sit in the model uniform.
 const DRAWN_SLOTS: [TextureSlot; 3] = [TextureSlot::Base, TextureSlot::Dark, TextureSlot::Glow];
+
+/// The one light the viewer invents, since a NIF does not carry the scene's lighting. Only 55 of
+/// the 18,569 files whose shapes name a custom shader contain a light block at all, so a faithful
+/// reading of the file would leave almost everything black.
+///
+/// Every path reads this: the fixed function stand in and each custom shader, so moving it moves
+/// the whole scene consistently. The defaults reproduce the shading nifty had when these were
+/// constants baked into the fragment shader.
+#[derive(Clone, Copy, PartialEq)]
+pub struct Light {
+    /// The way the light travels, matching the engine's own convention, so a shader that wants
+    /// the direction back to the light negates it.
+    pub direction: Vec3,
+    pub ambient: Vec3,
+    pub diffuse: Vec3,
+    pub specular: Vec3,
+    /// A view dependent rim that is nifty's own viewing aid rather than anything the engine had.
+    pub fill: f32,
+}
+
+impl Default for Light {
+    fn default() -> Self {
+        Light {
+            // NIF is Z up, so a key light from above means +Z. Stored as the direction of
+            // travel, which is away from the eye and downward.
+            direction: -Vec3::new(0.3, 0.45, 0.85).normalize(),
+            ambient: Vec3::splat(0.2),
+            diffuse: Vec3::splat(0.65),
+            specular: Vec3::splat(1.0),
+            fill: 0.3,
+        }
+    }
+}
+
+impl Light {
+    /// The camera uniform's trailing 16 floats.
+    fn uniform(&self) -> [f32; 16] {
+        let d = self.direction.normalize_or_zero();
+        [
+            d.x,
+            d.y,
+            d.z,
+            self.fill,
+            self.ambient.x,
+            self.ambient.y,
+            self.ambient.z,
+            0.0,
+            self.diffuse.x,
+            self.diffuse.y,
+            self.diffuse.z,
+            0.0,
+            self.specular.x,
+            self.specular.y,
+            self.specular.z,
+            0.0,
+        ]
+    }
+}
+
+/// Fills the camera uniform, so its layout lives in one place rather than at the call site.
+pub fn camera_uniform(
+    view_proj: Mat4,
+    eye: Vec3,
+    colors: bool,
+    textures: bool,
+    light: &Light,
+) -> [f32; CAMERA_FLOATS as usize] {
+    let mut out = [0.0; CAMERA_FLOATS as usize];
+    out[..16].copy_from_slice(&view_proj.to_cols_array());
+    out[16..19].copy_from_slice(&eye.to_array());
+    out[20] = f32::from(colors);
+    out[21] = f32::from(textures);
+    out[24..40].copy_from_slice(&light.uniform());
+    out
+}
 
 /// Lives in `callback_resources`, which is all `paint` can reach.
 pub struct Preview {
@@ -350,7 +425,7 @@ impl Gfx {
 
         let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("nifty camera"),
-            size: 96,
+            size: CAMERA_FLOATS * 4,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -1373,6 +1448,11 @@ struct Camera {
     view_proj: mat4x4<f32>,
     eye: vec4<f32>,
     flags: vec4<f32>,
+    // the direction the light travels, with the rim strength in w
+    light_dir: vec4<f32>,
+    light_ambient: vec4<f32>,
+    light_diffuse: vec4<f32>,
+    light_specular: vec4<f32>,
 };
 struct Model {
     model: mat4x4<f32>,
@@ -1458,12 +1538,12 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         normal = -normal;
     }
 
-    // NIF is Z-up, so a key light from above means +Z
-    let key = normalize(vec3<f32>(0.3, 0.45, 0.85));
-    let lambert = clamp(dot(normal, key), 0.0, 1.0);
-    let fill = 0.3 * clamp(dot(normal, to_eye), 0.0, 1.0);
+    // the light travels away from its source, so the direction back to it is negated
+    let to_light = -camera.light_dir.xyz;
+    let lambert = clamp(dot(normal, to_light), 0.0, 1.0);
+    let fill = camera.light_dir.w * clamp(dot(normal, to_eye), 0.0, 1.0);
 
-    let shade = 0.2 + 0.65 * lambert + fill;
+    let shade = camera.light_ambient.rgb + camera.light_diffuse.rgb * lambert + vec3<f32>(fill);
 
     // the texture modulates the lit colour, so emissive is inside the multiply, not over it:
     // emissive 1,1,1 is a full brightness texture, not white. shade replaces the light sum.
@@ -1502,7 +1582,42 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
 
 #[cfg(test)]
 mod tests {
-    use super::grid_lines;
+    use super::{grid_lines, Light};
+    use nif::glam::Vec3;
+
+    /// The light replaced constants baked into the fragment shader. If the defaults drift, every
+    /// file in the viewer changes appearance, so they are pinned to what those constants were.
+    #[test]
+    fn the_default_light_reproduces_the_shading_it_replaced() {
+        let light = Light::default();
+
+        assert_eq!(light.ambient, Vec3::splat(0.2));
+        assert_eq!(light.diffuse, Vec3::splat(0.65));
+        assert_eq!(light.fill, 0.3);
+
+        // the shader negates the direction to face the light, so the stored value is the
+        // negation of the old key. Getting this backwards lights the far side of everything.
+        let to_light = -light.direction;
+        assert!(
+            to_light.abs_diff_eq(Vec3::new(0.3, 0.45, 0.85).normalize(), 1e-6),
+            "direction of travel points {:?}",
+            light.direction
+        );
+        assert!(
+            to_light.z > 0.0,
+            "NIF is Z up, so the key light comes from above"
+        );
+    }
+
+    #[test]
+    fn the_camera_uniform_carries_the_light_at_the_end() {
+        let light = Light::default();
+        let filled =
+            super::camera_uniform(nif::glam::Mat4::IDENTITY, Vec3::ZERO, true, true, &light);
+
+        assert_eq!(filled.len(), super::CAMERA_FLOATS as usize);
+        assert_eq!(&filled[24..40], &light.uniform());
+    }
 
     /// Every vertex is position, colour and two uv sets, and the axes are the last three lines.
     const STRIDE: usize = super::VERTEX_FLOATS;

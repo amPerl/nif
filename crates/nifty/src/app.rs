@@ -12,7 +12,7 @@ use nif::{blocks::Block, Nif};
 use crate::details::{self, Details};
 use crate::library::TextureLibrary;
 use crate::pick;
-use crate::scene::{Camera, Frame, Gfx, LodMode, PreviewCall, Scene, Viewpoint};
+use crate::scene::{Camera, Frame, Gfx, Light, LodMode, PreviewCall, Scene, Viewpoint};
 
 struct Loaded {
     path: PathBuf,
@@ -128,6 +128,9 @@ pub struct Nifty {
     library: TextureLibrary,
     show_library: bool,
     root_input: String,
+    /// The viewer's own light. A NIF carries no scene lighting, so every shading path reads this.
+    light: Light,
+    show_light: bool,
 }
 
 impl Default for State {
@@ -165,6 +168,8 @@ impl Nifty {
             library: TextureLibrary::default(),
             show_library: false,
             root_input: String::new(),
+            light: Light::default(),
+            show_light: false,
         }
     }
 
@@ -387,6 +392,7 @@ struct Viewer<'a> {
     state: &'a mut State,
     gfx: Option<&'a Gfx>,
     library: &'a TextureLibrary,
+    light: &'a Light,
 }
 
 impl TabViewer for Viewer<'_> {
@@ -876,11 +882,13 @@ impl Viewer<'_> {
             }
         }
 
-        let mut uniform = [0f32; 24];
-        uniform[..16].copy_from_slice(&view_proj.to_cols_array());
-        uniform[16..19].copy_from_slice(&eye.to_array());
-        uniform[20] = if self.state.colors { 1.0 } else { 0.0 };
-        uniform[21] = if self.state.textures { 1.0 } else { 0.0 };
+        let uniform = crate::scene::camera_uniform(
+            view_proj,
+            eye,
+            self.state.colors,
+            self.state.textures,
+            self.light,
+        );
         gfx.render_state
             .queue
             .write_buffer(&gfx.camera_buffer, 0, bytemuck::cast_slice(&uniform));
@@ -1106,6 +1114,63 @@ impl eframe::App for Nifty {
             }
         }
 
+        if self.show_light {
+            let mut open = true;
+            let mut light = self.light;
+            egui::Window::new("light")
+                .open(&mut open)
+                .default_width(300.0)
+                .show(ui.ctx(), |ui| {
+                    ui.label("A NIF carries no scene lighting, so this light is the viewer's own.");
+                    ui.label("Every shape reads it, including the custom shaders.");
+                    ui.separator();
+
+                    let colour = |ui: &mut egui::Ui, name: &str, value: &mut Vec3| {
+                        ui.horizontal(|ui| {
+                            let mut rgb = [value.x, value.y, value.z];
+                            ui.label(format!("{name:<9}"));
+                            if ui.color_edit_button_rgb(&mut rgb).changed() {
+                                *value = Vec3::from(rgb);
+                            }
+                            let mut scale = value.max_element();
+                            if ui
+                                .add(egui::Slider::new(&mut scale, 0.0..=2.0).text("level"))
+                                .changed()
+                            {
+                                let unit = value.normalize_or(Vec3::ONE.normalize());
+                                *value = unit * (scale / unit.max_element());
+                            }
+                        });
+                    };
+                    colour(ui, "ambient", &mut light.ambient);
+                    colour(ui, "diffuse", &mut light.diffuse);
+                    colour(ui, "specular", &mut light.specular);
+
+                    ui.separator();
+                    // the direction of travel, so the readout matches the engine's convention
+                    let mut azimuth = light.direction.y.atan2(light.direction.x).to_degrees();
+                    let mut elevation = light.direction.z.asin().to_degrees();
+                    let turned = ui
+                        .add(egui::Slider::new(&mut azimuth, -180.0..=180.0).text("azimuth"))
+                        .changed()
+                        | ui.add(egui::Slider::new(&mut elevation, -89.0..=89.0).text("elevation"))
+                            .changed();
+                    if turned {
+                        let (az, el) = (azimuth.to_radians(), elevation.to_radians());
+                        light.direction =
+                            Vec3::new(az.cos() * el.cos(), az.sin() * el.cos(), el.sin());
+                    }
+                    ui.add(egui::Slider::new(&mut light.fill, 0.0..=1.0).text("rim"));
+
+                    ui.separator();
+                    if ui.button("reset").clicked() {
+                        light = Light::default();
+                    }
+                });
+            self.light = light;
+            self.show_light = open;
+        }
+
         if self.show_library {
             let mut library = std::mem::take(&mut self.library);
             let mut input = std::mem::take(&mut self.root_input);
@@ -1192,6 +1257,8 @@ impl eframe::App for Nifty {
             library,
             show_library,
             root_input: _,
+            light,
+            show_light,
         } = self;
 
         egui::Panel::top("bar").show(ui, |ui| {
@@ -1233,6 +1300,9 @@ impl eframe::App for Nifty {
                     if ui.button(label).clicked() {
                         *show_library = true;
                     }
+                    if ui.button("light").clicked() {
+                        *show_light = true;
+                    }
                 });
             });
         });
@@ -1251,6 +1321,7 @@ impl eframe::App for Nifty {
                         state: &mut document.state,
                         gfx: gfx.as_ref(),
                         library,
+                        light,
                     },
                 );
         });
