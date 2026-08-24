@@ -29,6 +29,8 @@ struct Loaded {
     hideable: bool,
     /// Whether playback should start over at the end, or hold what the file settles on.
     repeats: bool,
+    /// Particle state, which has to outlive a scene rebuild and so cannot live in the scene.
+    systems: Vec<nif::psys::System>,
 }
 
 struct State {
@@ -242,13 +244,21 @@ impl Nifty {
             Some(gfx) => {
                 let (scene, unhandled) = gfx.build_scene(&nif, &self.library, &self.shaders);
                 let shapes = scene.meshes.len();
+                let systems = scene.particles.len();
                 state.scene = Some(Arc::new(scene));
                 state.unhandled = unhandled;
-                format!("{} blocks, {} shapes", nif.blocks.len(), shapes)
+                match systems {
+                    0 => format!("{} blocks, {} shapes", nif.blocks.len(), shapes),
+                    n => format!(
+                        "{} blocks, {shapes} shapes, {n} particle systems",
+                        nif.blocks.len()
+                    ),
+                }
             }
             None => format!("{} blocks", nif.blocks.len()),
         });
         state.time = nif::anim::span(&nif.blocks).map_or(0.0, |(start, _)| start);
+        let systems = nif::psys::systems(&nif.blocks);
         state.loaded = Some(Loaded {
             path,
             links: link_table(&nif.blocks),
@@ -258,6 +268,7 @@ impl Nifty {
                 .iter()
                 .any(|block| matches!(block, Block::NiBillboardNode(_))),
             repeats: nif::anim::repeats(&nif.blocks),
+            systems,
             hideable: nif.blocks.iter().any(|block| {
                 matches!(block, Block::NiVisController(_))
                     || block.av_object().is_some_and(|av| av.is_hidden())
@@ -618,11 +629,12 @@ impl TabViewer for Viewer<'_> {
 impl Viewer<'_> {
     /// Where the shapes are and which of them are culled, for the frame about to be drawn.
     /// Skipped entirely when the file holds nothing that moves or hides.
-    fn frame(&self, viewpoint: Viewpoint) -> Arc<Frame> {
+    fn frame(&mut self, viewpoint: Viewpoint) -> Arc<Frame> {
         let Some(loaded) = &self.state.loaded else {
             return Arc::default();
         };
-        if viewpoint.is_static() && !loaded.hideable {
+        // a particle system is animation even when nothing else in the file moves
+        if viewpoint.is_static() && !loaded.hideable && loaded.systems.is_empty() {
             return Arc::default();
         }
         let mut frame = Frame::default();
@@ -682,6 +694,18 @@ impl Viewer<'_> {
                 }
             }
         }
+
+        // the simulation carries state, so it is advanced here and the result handed to the
+        // renderer, which keeps the drawing side free of anything that has to persist
+        if let Some(loaded) = self.state.loaded.as_mut() {
+            let time = viewpoint.time.unwrap_or(0.0);
+            for system in &mut loaded.systems {
+                system.seek(&loaded.nif.blocks, time);
+                frame
+                    .particles
+                    .insert(system.block, system.particles().to_vec());
+            }
+        }
         Arc::new(frame)
     }
 
@@ -736,7 +760,8 @@ impl Viewer<'_> {
             ui.centered_and_justified(|ui| ui.label("nothing to draw"));
             return;
         };
-        if scene.meshes.is_empty() {
+        // a particle system draws without any stored geometry, so it counts as something to draw
+        if scene.meshes.is_empty() && scene.particles.is_empty() {
             ui.centered_and_justified(|ui| ui.label("no drawable geometry"));
             return;
         }
@@ -897,7 +922,7 @@ impl Viewer<'_> {
                     scene.visible_shapes(self.state.lod_mode, self.state.lod_distance, eye);
                 visible.retain(|shape| !frame.hidden.contains(shape));
                 let hits = pick::ray_through(view_proj, rect, pointer)
-                    .map(|ray| pick::hits(&loaded.nif, &ray, &visible, viewpoint))
+                    .map(|ray| pick::hits(&loaded.nif, &ray, &visible, viewpoint, &frame))
                     .unwrap_or_default();
                 let repeat = self
                     .state
@@ -941,6 +966,8 @@ impl Viewer<'_> {
                 cull: self.state.cull,
                 selected: self.state.selected,
                 eye,
+                right: view.row(0).truncate(),
+                up: view.row(1).truncate(),
             },
         ));
     }

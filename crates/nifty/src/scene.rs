@@ -199,8 +199,38 @@ pub struct Mesh {
     model_buffer: wgpu::Buffer,
 }
 
+/// A particle system's drawing side. The geometry is generated per frame rather than stored, so
+/// the buffers are sized once for the system's capacity and rewritten as the simulation moves.
+pub struct ParticleMesh {
+    /// The NiParticleSystem this draws, which is what the frame's particles are keyed by.
+    pub block: usize,
+    /// Where the system sits when nothing animates it. The frame's pose wins when there is one,
+    /// because a system whose node moves has to be drawn where picking will look for it.
+    pub model: Mat4,
+    pub capacity: usize,
+    /// How far a particle can get from the system before it dies, in world units. The system
+    /// stores no geometry, so without this it contributes nothing to the scene bounds and the
+    /// camera frames nothing.
+    pub reach: f32,
+    pipeline: wgpu::RenderPipeline,
+    texture: wgpu::BindGroup,
+    bind_group: wgpu::BindGroup,
+    vertices: wgpu::Buffer,
+    indices: wgpu::Buffer,
+    /// The quad outlines, so a particle shows in wireframe like any other geometry.
+    edges: wgpu::Buffer,
+}
+
+/// Something drawn in the blended pass, which sorts back to front across both kinds.
+enum Blended<'a> {
+    Shape(&'a Mesh),
+    /// The system and how many of its quads are alive this frame.
+    Particles(&'a ParticleMesh, usize),
+}
+
 pub struct Scene {
     pub meshes: Vec<Mesh>,
+    pub particles: Vec<ParticleMesh>,
     pub center: Vec3,
     pub radius: f32,
     pub lods: HashMap<usize, Lod>,
@@ -270,6 +300,9 @@ pub struct Frame {
     pub uv: HashMap<usize, [f32; BOUND_SLOTS * 8]>,
     /// The source a flip controller has swapped into the base slot, by texturing property block.
     pub flip: HashMap<usize, usize>,
+    /// Where each particle system's particles are, by the system's own block. Simulated by the
+    /// caller, since the state has to outlive a scene rebuild.
+    pub particles: HashMap<usize, Vec<nif::psys::Particle>>,
 }
 
 /// Which level of each LOD node to draw.
@@ -672,6 +705,141 @@ impl Gfx {
     }
 
     /// A draw per shape, each carrying its own transform, not one merged mesh.
+    /// Buffers for one particle system, sized once for its capacity. The vertices are rewritten
+    /// every frame from the simulation, so the contents here are only a starting size.
+    fn particle_mesh(
+        &self,
+        nif: &Nif,
+        visit: &nif::walk::Visit<'_>,
+        geometry: &NiGeometry,
+        library: &TextureLibrary,
+        module: &wgpu::ShaderModule,
+    ) -> Option<ParticleMesh> {
+        let device = &self.render_state.device;
+        let capacity = match geometry.data_ref.get(&nif.blocks) {
+            Some(Block::NiPSysData(data)) => data.vertex_count(),
+            _ => 0,
+        };
+        if capacity == 0 {
+            return None;
+        }
+
+        // the furthest a particle can travel is its fastest speed over its longest life, and
+        // both take their variation the way the emitter applies it
+        let reach = nif
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                Block::NiPSysBoxEmitter(e) => Some(&e.base.base),
+                Block::NiPSysCylinderEmitter(e) => Some(&e.base.base),
+                Block::NiPSysSphereEmitter(e) => Some(&e.base.base),
+                Block::NiPSysMeshEmitter(e) => Some(&e.base),
+                _ => None,
+            })
+            .map(|emitter| {
+                let speed = emitter.speed + emitter.speed_variation * 0.5;
+                let life = emitter.life_span + emitter.life_span_variation * 0.5;
+                let radius = emitter.initial_radius + emitter.radius_variation;
+                (speed * life).max(0.0) + radius.max(0.0)
+            })
+            .fold(0.0f32, f32::max);
+
+        let alpha = geometry
+            .property_refs
+            .iter()
+            .find_map(|r| match r.get(&nif.blocks) {
+                Some(Block::NiAlphaProperty(p)) => Some(p),
+                _ => None,
+            });
+        let blend = alpha.filter(|a| a.alpha_blend()).map(|a| {
+            (
+                blend_factor(&a.source_blend_mode(), false),
+                blend_factor(&a.destination_blend_mode(), true),
+            )
+        });
+        let state = DrawState {
+            // a quad already faces the camera, so culling it would only ever hide it
+            cull: None,
+            // particles are a haze over the scene rather than part of it
+            depth_write: false,
+            depth: wgpu::CompareFunction::LessEqual,
+            blend,
+        };
+
+        // four corners a quad, and two triangles wound the way the renderer expects
+        let mut indices: Vec<u16> = Vec::with_capacity(capacity * 6);
+        let mut edges: Vec<u16> = Vec::with_capacity(capacity * 8);
+        for quad in 0..capacity.min(u16::MAX as usize / 4) {
+            let base = (quad * 4) as u16;
+            indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+            let corner = |i: u16| base + i;
+            for side in 0..4u16 {
+                edges.extend_from_slice(&[corner(side), corner((side + 1) % 4)]);
+            }
+        }
+
+        let mut uniform = [0f32; MODEL_FLOATS as usize];
+        // the quads are built in world space, so the model matrix has nothing left to do
+        uniform[..16].copy_from_slice(&Mat4::IDENTITY.to_cols_array());
+        uniform[16..20].copy_from_slice(&[1.0, 1.0, 1.0, 1.0]);
+        // the particle's own colour drives emissive with lighting off, which is what makes a
+        // particle glow at its own brightness rather than take the scene's
+        uniform[24..28].copy_from_slice(&[1.0, 0.0, 0.0, 0.0]);
+        uniform[32..64].copy_from_slice(&slot_uv_rows(&nif.blocks, None, DEFAULT_SLOTS, 0.0));
+
+        let view = texturing_of(nif, &geometry.property_refs)
+            .and_then(|property| property.texture(TextureSlot::Base))
+            .and_then(|desc| self.source_texture(nif, desc.source_ref, library));
+        let white = self.upload_texture(1, 1, &[255, 255, 255, 255]);
+        let sampler = self.sampler(shaders::Sampling {
+            address: (
+                wgpu::AddressMode::ClampToEdge,
+                wgpu::AddressMode::ClampToEdge,
+            ),
+            filter: wgpu::FilterMode::Linear,
+        });
+        let view = view.unwrap_or(white);
+
+        let model_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("nifty particles model"),
+            contents: bytemuck::cast_slice(&uniform),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        Some(ParticleMesh {
+            block: visit.index,
+            model: Mat4::from(&visit.transform),
+            capacity,
+            reach: reach * visit.transform.scale.abs(),
+            pipeline: self.pipeline(state, module),
+            texture: self.slot_group(std::array::from_fn(|_| (&view, &sampler))),
+            bind_group: device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("nifty particles"),
+                layout: &self.model_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: model_buffer.as_entire_binding(),
+                }],
+            }),
+            vertices: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("nifty particles"),
+                size: (capacity * 4 * VERTEX_FLOATS * 4) as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            indices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("nifty particles"),
+                contents: bytemuck::cast_slice(&indices),
+                usage: wgpu::BufferUsages::INDEX,
+            }),
+            edges: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("nifty particle edges"),
+                contents: bytemuck::cast_slice(&edges),
+                usage: wgpu::BufferUsages::INDEX,
+            }),
+        })
+    }
+
     /// Returns the scene and the technique names it asked for that nothing could draw, so the
     /// caller can report them rather than let a wrong render pass as a right one.
     pub fn build_scene(
@@ -706,6 +874,7 @@ impl Gfx {
             .expect("the built in fixed function shader has to compile");
         let mut unhandled: Vec<String> = Vec::new();
         let mut meshes = Vec::new();
+        let mut particles = Vec::new();
         let mut lods: HashMap<usize, Lod> = HashMap::new();
         let mut min = Vec3::splat(f32::MAX);
         let mut max = Vec3::splat(f32::MIN);
@@ -730,6 +899,19 @@ impl Gfx {
                 }
             }
 
+            // A particle system carries no stored geometry, so its quads are generated per frame
+            // and it takes buffers sized for its capacity. This has to come before `geometry_of`,
+            // which only resolves the shapes that store triangles.
+            if let Block::NiParticleSystem(psys) = visit.block {
+                let mesh = self.particle_mesh(nif, &visit, &psys.base, library, &fixed_module);
+                if let Some(mesh) = mesh {
+                    let centre = mesh.model.transform_point3(Vec3::ZERO);
+                    min = min.min(centre - Vec3::splat(mesh.reach));
+                    max = max.max(centre + Vec3::splat(mesh.reach));
+                    particles.push(mesh);
+                }
+                continue;
+            }
             let Some((geometry, data, triangles)) = geometry_of(nif, visit.block) else {
                 continue;
             };
@@ -1098,7 +1280,8 @@ impl Gfx {
         }
 
         // min/max, not a half-extent about the origin, since terrain chunks sit far off it.
-        let (center, radius) = if meshes.is_empty() {
+        // Particle systems extend the bounds too, so a file made only of them still frames.
+        let (center, radius) = if meshes.is_empty() && particles.is_empty() {
             (Vec3::ZERO, 1.0)
         } else {
             ((min + max) * 0.5, (max - min).length() * 0.5)
@@ -1146,6 +1329,7 @@ impl Gfx {
         (
             Scene {
                 meshes,
+                particles,
                 center,
                 radius: radius.max(0.001),
                 lods,
@@ -1442,6 +1626,9 @@ pub struct PreviewCall {
     pub selected: Option<usize>,
     /// Blended shapes sort against this.
     pub eye: Vec3,
+    /// The camera's own axes in world space, which is what a particle quad is built on.
+    pub right: Vec3,
+    pub up: Vec3,
     pub lod_mode: LodMode,
     pub lod_distance: f32,
     pub frame: Arc<Frame>,
@@ -1487,6 +1674,14 @@ fn draw_mesh(
     render_pass.draw_indexed(0..mesh.count, 0, 0..1);
 }
 
+impl PreviewCall {
+    /// The axes a camera facing quad spans. Taken from the camera rather than computed per
+    /// particle, so every quad in a frame faces the same way.
+    fn quad_axes(&self) -> (Vec3, Vec3) {
+        (self.right, self.up)
+    }
+}
+
 impl egui_wgpu::CallbackTrait for PreviewCall {
     /// The model matrix is the first 64 bytes of the uniform, so a pose rewrites only that
     /// and leaves the material behind it alone.
@@ -1514,6 +1709,49 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
             }
             if let Some(rows) = self.frame.uv.get(&mesh.shape_block) {
                 queue.write_buffer(&mesh.model_buffer, UV_OFFSET, bytemuck::cast_slice(rows));
+            }
+        }
+        // the quads are generated here rather than stored, since a particle moves every frame
+        for mesh in &self.scene.particles {
+            let Some(particles) = self.frame.particles.get(&mesh.block) else {
+                continue;
+            };
+            // the pose the frame walked, so an animated system draws where it now is rather
+            // than where the scene was built. Picking walks at the same time, and the two have
+            // to agree or the ray tests empty space.
+            let model = self
+                .frame
+                .poses
+                .get(&mesh.block)
+                .copied()
+                .unwrap_or(mesh.model);
+            let scale = model.x_axis.truncate().length();
+            let (right, up) = self.quad_axes();
+            let mut vertices: Vec<f32> = Vec::with_capacity(particles.len() * 4 * VERTEX_FLOATS);
+            for particle in particles.iter().take(mesh.capacity) {
+                let centre = model.transform_point3(Vec3::from(&particle.position));
+                let colour = &particle.color;
+                // the radius is in the system's space, like the position it sits at, and the
+                // scale comes from the same matrix as the position so the two cannot disagree
+                let half = particle.radius.max(0.0) * scale;
+                // a quad facing the camera, wound so the shared corners meet the index pattern
+                for (corner, uv) in [
+                    ((-1.0, -1.0), (0.0, 1.0)),
+                    ((1.0, -1.0), (1.0, 1.0)),
+                    ((1.0, 1.0), (1.0, 0.0)),
+                    ((-1.0, 1.0), (0.0, 0.0)),
+                ] {
+                    let at = centre + right * (corner.0 * half) + up * (corner.1 * half);
+                    vertices.extend_from_slice(&[at.x, at.y, at.z]);
+                    // the normal faces the camera, so anything lighting it sees the quad flat on
+                    let normal = right.cross(up);
+                    vertices.extend_from_slice(&[normal.x, normal.y, normal.z]);
+                    vertices.extend_from_slice(&[colour.r, colour.g, colour.b, colour.a]);
+                    vertices.extend_from_slice(&[uv.0, uv.1, uv.0, uv.1, uv.0, uv.1]);
+                }
+            }
+            if !vertices.is_empty() {
+                queue.write_buffer(&mesh.vertices, 0, bytemuck::cast_slice(&vertices));
             }
         }
         Vec::new()
@@ -1551,10 +1789,23 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
             }
         } else {
             // opaque first, then blended back to front
-            let mut blended: Vec<&Mesh> = Vec::new();
+            // A particle system is blended geometry like any other, so it sorts with the rest
+            // rather than after it. Drawing it last put it behind anything blended that writes
+            // depth, which is why particles inside a transparent shell vanished.
+            let mut blended: Vec<Blended> = Vec::new();
+            for mesh in &self.scene.particles {
+                let quads = self
+                    .frame
+                    .particles
+                    .get(&mesh.block)
+                    .map_or(0, |p| p.len().min(mesh.capacity));
+                if quads > 0 {
+                    blended.push(Blended::Particles(mesh, quads));
+                }
+            }
             for mesh in self.scene.meshes.iter().filter(|m| self.visible(m)) {
                 if mesh.blended {
-                    blended.push(mesh);
+                    blended.push(Blended::Shape(mesh));
                     continue;
                 }
                 let pipeline = if self.cull {
@@ -1564,19 +1815,63 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
                 };
                 draw_mesh(render_pass, mesh, pipeline, self.texture_of(mesh));
             }
+            let centre = |item: &Blended| match item {
+                Blended::Shape(mesh) => self.center(mesh),
+                Blended::Particles(mesh, _) => self
+                    .frame
+                    .poses
+                    .get(&mesh.block)
+                    .copied()
+                    .unwrap_or(mesh.model)
+                    .transform_point3(Vec3::ZERO),
+            };
             blended.sort_by(|a, b| {
-                self.center(b)
+                centre(b)
                     .distance_squared(self.eye)
-                    .total_cmp(&self.center(a).distance_squared(self.eye))
+                    .total_cmp(&centre(a).distance_squared(self.eye))
             });
-            for mesh in blended {
-                let pipeline = if self.cull {
-                    &mesh.pipeline
-                } else {
-                    &mesh.pipeline_unculled
-                };
-                draw_mesh(render_pass, mesh, pipeline, self.texture_of(mesh));
+            for item in blended {
+                match item {
+                    Blended::Shape(mesh) => {
+                        let pipeline = if self.cull {
+                            &mesh.pipeline
+                        } else {
+                            &mesh.pipeline_unculled
+                        };
+                        draw_mesh(render_pass, mesh, pipeline, self.texture_of(mesh));
+                    }
+                    Blended::Particles(mesh, quads) => {
+                        render_pass.set_pipeline(&mesh.pipeline);
+                        render_pass.set_bind_group(1, &mesh.bind_group, &[]);
+                        render_pass.set_bind_group(2, &mesh.texture, &[]);
+                        render_pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                        render_pass
+                            .set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint16);
+                        render_pass.draw_indexed(0..(quads * 6) as u32, 0, 0..1);
+                    }
+                }
             }
+        }
+
+        for mesh in &self.scene.particles {
+            let Some(particles) = self.frame.particles.get(&mesh.block) else {
+                continue;
+            };
+            let quads = particles.len().min(mesh.capacity);
+            if quads == 0 {
+                continue;
+            }
+            // the solid pass draws these among the blended shapes, so only the outlines are
+            // left here
+            if !self.wireframe {
+                continue;
+            }
+            render_pass.set_pipeline(&preview.wire);
+            render_pass.set_bind_group(1, &mesh.bind_group, &[]);
+            render_pass.set_bind_group(2, &mesh.texture, &[]);
+            render_pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+            render_pass.set_index_buffer(mesh.edges.slice(..), wgpu::IndexFormat::Uint16);
+            render_pass.draw_indexed(0..(quads * 8) as u32, 0, 0..1);
         }
 
         // the selected shape gets its wireframe drawn over everything, so it stays findable
@@ -1593,6 +1888,25 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
             render_pass.set_vertex_buffer(0, mesh.vertices.slice(..));
             render_pass.set_index_buffer(mesh.edges.slice(..), wgpu::IndexFormat::Uint16);
             render_pass.draw_indexed(0..mesh.edge_count, 0, 0..1);
+        }
+        // a selected particle system outlines its quads the same way, so picking one shows what
+        // was picked rather than leaving the selection invisible
+        for mesh in &self.scene.particles {
+            if mesh.block != selected {
+                continue;
+            }
+            let Some(particles) = self.frame.particles.get(&mesh.block) else {
+                continue;
+            };
+            let quads = particles.len().min(mesh.capacity);
+            if quads == 0 {
+                continue;
+            }
+            render_pass.set_bind_group(1, &mesh.bind_group, &[]);
+            render_pass.set_bind_group(2, &mesh.texture, &[]);
+            render_pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+            render_pass.set_index_buffer(mesh.edges.slice(..), wgpu::IndexFormat::Uint16);
+            render_pass.draw_indexed(0..(quads * 8) as u32, 0, 0..1);
         }
     }
 }

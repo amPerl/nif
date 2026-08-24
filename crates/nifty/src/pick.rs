@@ -19,6 +19,25 @@ pub struct Ray {
     pub direction: Vec3,
 }
 
+/// Where a ray first meets a sphere, or None when it misses or the sphere is behind it.
+fn sphere_hit(ray: &Ray, centre: Vec3, radius: f32) -> Option<f32> {
+    if radius <= 0.0 {
+        return None;
+    }
+    let to_centre = centre - ray.origin;
+    let along = to_centre.dot(ray.direction);
+    let closest = to_centre - ray.direction * along;
+    let gap = radius * radius - closest.length_squared();
+    if gap < 0.0 {
+        return None;
+    }
+    let half = gap.sqrt();
+    // the near intersection, unless the ray starts inside, where the far one is what it meets
+    let near = along - half;
+    let distance = if near >= 0.0 { near } else { along + half };
+    (distance >= 0.0).then_some(distance)
+}
+
 /// The ray under the cursor. The projection is DirectX style, so near is depth 0.
 pub fn ray_through(view_proj: Mat4, rect: egui::Rect, pointer: egui::Pos2) -> Option<Ray> {
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
@@ -48,10 +67,41 @@ pub fn ray_through(view_proj: Mat4, rect: egui::Rect, pointer: egui::Pos2) -> Op
 ///
 /// Culling matches the renderer, so a back face that is not drawn is not pickable. Shapes that
 /// blend to nothing are skipped as well.
-pub fn hits(nif: &Nif, ray: &Ray, visible: &HashSet<usize>, viewpoint: Viewpoint) -> Vec<Hit> {
+pub fn hits(
+    nif: &Nif,
+    ray: &Ray,
+    visible: &HashSet<usize>,
+    viewpoint: Viewpoint,
+    frame: &crate::scene::Frame,
+) -> Vec<Hit> {
     let mut out = Vec::new();
 
     for visit in viewpoint.walk(nif) {
+        // A particle system stores no geometry, so the ray meets the particles the frame
+        // simulated rather than anything in the file. Each is treated as a sphere of its own
+        // radius, which is what a camera facing quad covers from any angle.
+        if let Block::NiParticleSystem(_) = visit.block {
+            let Some(particles) = frame.particles.get(&visit.index) else {
+                continue;
+            };
+            let model = Mat4::from(&visit.transform);
+            // taken from the matrix, the same way the renderer sizes a quad
+            let scale = model.x_axis.truncate().length();
+            let nearest = particles
+                .iter()
+                .filter_map(|particle| {
+                    let centre = model.transform_point3(Vec3::from(&particle.position));
+                    sphere_hit(ray, centre, particle.radius.max(0.0) * scale)
+                })
+                .fold(f32::MAX, f32::min);
+            if nearest < f32::MAX {
+                out.push(Hit {
+                    block: visit.index,
+                    distance: nearest,
+                });
+            }
+            continue;
+        }
         if !visible.contains(&visit.index) {
             continue;
         }
@@ -173,6 +223,42 @@ fn intersect(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ray(origin: Vec3, at: Vec3) -> Ray {
+        Ray {
+            origin,
+            direction: (at - origin).normalize(),
+        }
+    }
+
+    #[test]
+    fn a_particle_is_hit_at_its_near_side() {
+        let centre = Vec3::new(0.0, 0.0, 10.0);
+        let hit = sphere_hit(&ray(Vec3::ZERO, centre), centre, 2.0);
+        // the near surface, not the centre, so a nearer particle wins the sort
+        assert!(hit.is_some_and(|d| (d - 8.0).abs() < 1e-4), "got {hit:?}");
+    }
+
+    #[test]
+    fn a_ray_that_passes_beside_a_particle_misses() {
+        let centre = Vec3::new(0.0, 0.0, 10.0);
+        let beside = ray(Vec3::ZERO, Vec3::new(5.0, 0.0, 10.0));
+        assert!(sphere_hit(&beside, centre, 1.0).is_none());
+    }
+
+    #[test]
+    fn a_particle_behind_the_camera_is_not_hit() {
+        let behind = Vec3::new(0.0, 0.0, -10.0);
+        let forward = ray(Vec3::ZERO, Vec3::new(0.0, 0.0, 1.0));
+        assert!(sphere_hit(&forward, behind, 2.0).is_none());
+    }
+
+    #[test]
+    fn a_ray_starting_inside_a_particle_leaves_through_the_far_side() {
+        let forward = ray(Vec3::ZERO, Vec3::new(0.0, 0.0, 1.0));
+        let hit = sphere_hit(&forward, Vec3::ZERO, 3.0);
+        assert!(hit.is_some_and(|d| (d - 3.0).abs() < 1e-4), "got {hit:?}");
+    }
 
     // counter-clockwise seen from +Z, which is the NIF front face
     const A: Vec3 = Vec3::new(0.0, 0.0, 0.0);
