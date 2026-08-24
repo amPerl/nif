@@ -184,6 +184,9 @@ pub struct Grid {
     model: wgpu::BindGroup,
     texture: wgpu::BindGroup,
     pub spacing: f32,
+    /// How far the floor reaches from the origin. The far plane has to clear it, or the grid is
+    /// cut off rather than merely small when the camera closes in on something.
+    pub half: f32,
 }
 
 /// A NiLODNode's switching distances, and the point they are measured from.
@@ -977,11 +980,12 @@ impl Gfx {
         let samplers_for_grid = self.sampler(true, true);
         // the floor has to reach the geometry as well as the origin, which a chunk sitting
         // far out is nowhere near
-        let (lines, spacing) = grid_lines(center.length() + radius);
+        let (lines, spacing, half) = grid_lines(center.length() + radius);
         let mut identity = [0f32; MODEL_FLOATS as usize];
         identity[..16].copy_from_slice(&Mat4::IDENTITY.to_cols_array());
         identity[32..56].copy_from_slice(&slot_uv_rows(&[], None, 0.0));
         let grid = Grid {
+            half,
             count: (lines.len() / VERTEX_FLOATS) as u32,
             vertices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("nifty grid"),
@@ -1107,7 +1111,7 @@ fn texturing_key(nif: &Nif, properties: &[nif::common::BlockRef]) -> Option<usiz
 ///
 /// `reach` is how far the scene gets from the origin, and the spacing is the power of ten that
 /// puts roughly ten cells between the two, so the numbers on it stay round.
-fn grid_lines(reach: f32) -> (Vec<f32>, f32) {
+fn grid_lines(reach: f32) -> (Vec<f32>, f32, f32) {
     let spacing = 10f32.powf((reach.max(1e-3) / 10.0).log10().round());
     let cells = ((reach / spacing).ceil() as i32).clamp(4, 40);
     let half = cells as f32 * spacing;
@@ -1145,7 +1149,7 @@ fn grid_lines(reach: f32) -> (Vec<f32>, f32) {
     line(Vec3::ZERO, Vec3::Y * half, [0.35, 0.80, 0.40, 1.0]);
     line(Vec3::ZERO, Vec3::Z * half, [0.35, 0.60, 0.95, 1.0]);
 
-    (out, spacing)
+    (out, spacing, half)
 }
 
 /// Maps every block under a NiLODNode to that node and the level it belongs to. A nested LOD
@@ -1631,7 +1635,7 @@ mod tests {
             (6000.0, 1000.0),
             (0.05, 0.01),
         ] {
-            let (_, spacing) = grid_lines(reach);
+            let (_, spacing, _) = grid_lines(reach);
             assert_eq!(spacing, expected, "reach {reach}");
         }
     }
@@ -1639,7 +1643,7 @@ mod tests {
     #[test]
     fn the_floor_reaches_at_least_as_far_as_the_scene() {
         for reach in [0.05, 1.0, 7.5, 240.0, 6000.0] {
-            let (lines, _) = grid_lines(reach);
+            let (lines, _, _) = grid_lines(reach);
             let furthest = lines
                 .chunks(STRIDE)
                 .map(|v| v[0].abs().max(v[1].abs()))
@@ -1652,9 +1656,26 @@ mod tests {
         }
     }
 
+    /// The far plane is computed from `Grid::half`, so if that understates the geometry the
+    /// floor gets clipped again, which is the bug it was added to fix.
+    #[test]
+    fn the_reported_extent_bounds_every_grid_vertex() {
+        for reach in [0.0, 0.05, 1.0, 7.5, 240.0, 6000.0] {
+            let (lines, _, half) = grid_lines(reach);
+            let furthest = lines
+                .chunks(STRIDE)
+                .map(|v| v[0].abs().max(v[1].abs()))
+                .fold(0.0, f32::max);
+            assert!(
+                half >= furthest,
+                "reach {reach} reported {half} but a vertex sits at {furthest}"
+            );
+        }
+    }
+
     #[test]
     fn a_scene_at_the_origin_still_gets_a_grid() {
-        let (lines, spacing) = grid_lines(0.0);
+        let (lines, spacing, _) = grid_lines(0.0);
         assert!(spacing > 0.0);
         assert!(!lines.is_empty());
         assert!(lines.iter().all(|f| f.is_finite()));
@@ -1662,7 +1683,7 @@ mod tests {
 
     #[test]
     fn only_the_positive_axes_are_drawn() {
-        let (lines, _) = grid_lines(10.0);
+        let (lines, _, _) = grid_lines(10.0);
         // three axis lines, two vertices each, at the end of the buffer
         let axes = &lines[lines.len() - 6 * STRIDE..];
         for (i, axis) in axes.chunks(2 * STRIDE).enumerate() {

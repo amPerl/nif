@@ -827,14 +827,19 @@ impl Viewer<'_> {
         // NIF is Z-up; only the camera rig needs to know that
         let target = scene.center + camera.pan;
         let view = look_at_mat4(target + direction * distance, target, Vec3::Z);
-        // near and far track the distance, so precision stays put as you close in
+        let eye = target + direction * distance;
+        // The near plane tracks the distance, so precision stays where the camera is looking.
+        // The far plane cannot: it has to clear everything drawn, and the floor is sized to the
+        // scene rather than to the zoom. Tying it to the distance alone cut the grid off as soon
+        // as you closed in on a small shape.
+        let reach =
+            (eye.length() + scene.grid.half).max(eye.distance(scene.center) + scene.radius) * 1.25;
         let projection = perspective(
             fov,
             rect.width() / rect.height(),
             (distance * 0.01).max(1e-5),
-            distance * 50.0,
+            (distance * 50.0).max(reach),
         );
-        let eye = target + direction * distance;
         let view_proj = projection * view;
 
         // the view matrix rows are the camera's own axes in world space, which is what a
