@@ -16,6 +16,9 @@ pub mod error;
 pub mod header;
 pub mod walk;
 
+#[cfg(feature = "glam")]
+pub mod psys;
+
 #[cfg(feature = "facet")]
 pub mod reflect;
 
