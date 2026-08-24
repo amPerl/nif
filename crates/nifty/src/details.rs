@@ -10,7 +10,9 @@ use eframe::egui;
 use egui_phosphor::regular as icon;
 use facet_reflect::Peek;
 use nif::blocks::{Block, LightMode, StencilDrawMode, VertMode};
-use nif::common::{BlockRef, ByteColor4, Color3, Color4};
+use nif::common::{
+    BlockRef, ByteColor4, Color3, Color4, Matrix33, Quaternion, TexCoord, Triangle, Vector3,
+};
 use nif::Nif;
 
 use crate::library::TextureLibrary;
@@ -376,6 +378,36 @@ impl Walk<'_> {
             self.list(owner, name, peek, depth, &here);
             return;
         }
+        // an enum was falling through to debug formatting, which dumped every NiString inside
+        // it as a byte array. A fieldless variant is its own name; one carrying data reads as
+        // that name plus its fields, so a nested string renders as text like any other.
+        if let Ok(variant) = peek.into_enum() {
+            let active = variant.active_variant().ok();
+            let fields = active.map(|v| v.data.fields.len()).unwrap_or(0);
+            let named = active.map(|v| v.name).unwrap_or("?");
+            if fields == 0 {
+                self.push(owner, name, Value::Text(named.to_string()), depth);
+                return;
+            }
+            self.push(owner, name, Value::Text(named.to_string()), depth);
+            for position in 0..fields {
+                if let Ok(Some(inner)) = variant.field(position) {
+                    let inner_name = active
+                        .and_then(|v| v.data.fields.get(position))
+                        .map(|f| f.name)
+                        .unwrap_or("value");
+                    // a tuple variant names its fields by position, and a row labelled "0"
+                    // says nothing, so it borrows the name of the field holding the enum
+                    let inner_name = if inner_name.bytes().all(|b| b.is_ascii_digit()) {
+                        name
+                    } else {
+                        inner_name
+                    };
+                    self.field(named, inner_name, inner, depth + 1, &here);
+                }
+            }
+            return;
+        }
         if is_struct(peek) && !INLINE.contains(&peek.shape().type_identifier) {
             self.section(name, depth);
             let inner_owner = peek.shape().type_identifier;
@@ -595,6 +627,32 @@ fn scalar(peek: Peek<'_, '_>) -> Option<Value> {
     if let Ok(string) = peek.get::<nif::blocks::NiString>() {
         return Some(Value::Text(string.to_string_lossy().into_owned()));
     }
+    // the numeric leaves, which otherwise read as their whole Debug form
+    if let Ok(v) = peek.get::<Vector3>() {
+        return Some(Value::Text(format!("{}, {}, {}", v.x, v.y, v.z)));
+    }
+    if let Ok(t) = peek.get::<TexCoord>() {
+        return Some(Value::Text(format!("{}, {}", t.u, t.v)));
+    }
+    if let Ok(q) = peek.get::<Quaternion>() {
+        return Some(Value::Text(format!("{}, {}, {}, {}", q.w, q.x, q.y, q.z)));
+    }
+    if let Ok(t) = peek.get::<Triangle>() {
+        return Some(Value::Text(format!("{}, {}, {}", t.a, t.b, t.c)));
+    }
+    if let Ok(m) = peek.get::<Matrix33>() {
+        // stored row by row despite the field name, so this prints rows
+        let row = |i: usize| {
+            let r = &m.column_major[i * 3..i * 3 + 3];
+            format!("{}, {}, {}", r[0], r[1], r[2])
+        };
+        return Some(Value::Text(format!(
+            "[{}] [{}] [{}]",
+            row(0),
+            row(1),
+            row(2)
+        )));
+    }
     None
 }
 
@@ -606,5 +664,60 @@ fn unwrap_pointer<'m, 'f>(peek: Peek<'m, 'f>) -> Peek<'m, 'f> {
     match peek.into_pointer() {
         Ok(pointer) => pointer.borrow_inner().unwrap_or(peek),
         Err(_) => peek,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An enum used to fall through to debug formatting, which printed every `NiString` inside
+    /// it as a byte array: a shader name read as `NiString { value: [65, 99, ..] }`. The walk
+    /// descends the active variant now, so a nested string renders as text like any other.
+    #[test]
+    fn a_shader_name_inside_an_enum_reads_as_text() {
+        let bytes = std::fs::read("../nif/tests/11.nif").expect("fixture");
+        let nif = Nif::parse(&mut std::io::Cursor::new(&bytes)).expect("parse");
+        let index = nif
+            .blocks
+            .iter()
+            .position(|block| {
+                block
+                    .geometry()
+                    .and_then(|g| g.material_data.shader())
+                    .is_some()
+            })
+            .expect("a fixture shape naming a shader");
+
+        let library = TextureLibrary::default();
+        let expanded = HashSet::new();
+        let entries = rows(&nif.blocks[index], &nif, &library, index, &expanded);
+
+        let texts: Vec<&str> = entries
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Field(row) => match &row.value {
+                    Value::Text(text) => Some(text.as_str()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+
+        assert!(
+            texts.contains(&"ToonShading"),
+            "the shader name is not a row of its own: {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|text| text.contains("NiString")),
+            "something still debug formats a NiString: {texts:?}"
+        );
+        // the same walk used to leave every numeric leaf in its Debug form
+        for noisy in ["Vector3 {", "Matrix33 {", "TexCoord {", "Quaternion {"] {
+            assert!(
+                !texts.iter().any(|text| text.contains(noisy)),
+                "{noisy} still reads as debug output: {texts:?}"
+            );
+        }
     }
 }
