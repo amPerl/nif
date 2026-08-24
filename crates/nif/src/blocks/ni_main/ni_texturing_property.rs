@@ -88,6 +88,24 @@ pub enum TextureSlot {
     Shader(u32),
 }
 
+impl TextureSlot {
+    /// The slot a controller names by index. `NiTextureTransformController` and
+    /// `NiFlipController` both address a map this way, and the order is the order the maps are
+    /// stored in.
+    pub fn from_index(index: u32) -> Option<TextureSlot> {
+        Some(match index {
+            0 => TextureSlot::Base,
+            1 => TextureSlot::Dark,
+            2 => TextureSlot::Detail,
+            3 => TextureSlot::Gloss,
+            4 => TextureSlot::Glow,
+            5 => TextureSlot::BumpMap,
+            6..=9 => TextureSlot::Decal((index - 6) as u8),
+            _ => return None,
+        })
+    }
+}
+
 impl std::fmt::Display for TextureSlot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -130,6 +148,12 @@ impl NiTexturingProperty {
             let map = entry.get()?;
             Some((TextureSlot::Shader(map.map_id), &map.map))
         }))
+    }
+
+    /// The map in one slot, or None when the slot is empty.
+    pub fn texture(&self, slot: TextureSlot) -> Option<&TexDesc> {
+        self.textures()
+            .find_map(|(found, desc)| (found == slot).then_some(desc))
     }
 }
 
@@ -177,7 +201,7 @@ pub struct TexDesc {
     pub transform: TexTransform,
 }
 
-#[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[derive(Debug, PartialEq, BinRead, BinWrite, Clone)]
 #[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct TextureTransform {
     pub translation: TexCoord,
@@ -185,6 +209,66 @@ pub struct TextureTransform {
     pub w_rotation: f32,
     pub transform_type: u32,
     pub center_offset: TexCoord,
+}
+
+impl TextureTransform {
+    pub const MAYA_DEPRECATED: u32 = 0;
+    pub const MAX: u32 = 1;
+    pub const MAYA: u32 = 2;
+
+    /// What the engine substitutes when a controller drives a map that carries no transform of
+    /// its own.
+    pub fn identity() -> TextureTransform {
+        TextureTransform {
+            translation: TexCoord { u: 0.0, v: 0.0 },
+            tiling: TexCoord { u: 1.0, v: 1.0 },
+            w_rotation: 0.0,
+            transform_type: TextureTransform::MAYA,
+            center_offset: TexCoord { u: 0.5, v: 0.5 },
+        }
+    }
+
+    /// The 3x3 that takes a uv through this transform, as `matrix * (u, v, 1)`.
+    ///
+    /// The engine ships a closed form per method with the composition it came from commented
+    /// out beside it. This builds the composition, because it says what the
+    /// transform means rather than what it evaluates to, but the two disagree on the sign of
+    /// the rotation for MAX and MAYA. The comments are scaffolding the engine says can be
+    /// removed, so the shipped form decides and a test holds them together.
+    #[cfg(feature = "glam")]
+    pub fn matrix(&self) -> glam::Mat3 {
+        use glam::{Mat3, Vec2};
+
+        let centre = Vec2::new(self.center_offset.u, self.center_offset.v);
+        let to_centre = Mat3::from_translation(centre);
+        let from_centre = Mat3::from_translation(-centre);
+        let scale = Mat3::from_scale(Vec2::new(self.tiling.u, self.tiling.v));
+        let translation = Vec2::new(self.translation.u, self.translation.v);
+
+        match self.transform_type {
+            TextureTransform::MAX => {
+                let translate = Mat3::from_translation(Vec2::new(-translation.x, translation.y));
+                let rotate = Mat3::from_angle(-self.w_rotation);
+                to_centre * scale * rotate * translate * from_centre
+            }
+            TextureTransform::MAYA_DEPRECATED => {
+                let rotate = Mat3::from_angle(self.w_rotation);
+                to_centre * rotate * from_centre * Mat3::from_translation(translation) * scale
+            }
+            _ => {
+                let rotate = Mat3::from_angle(-self.w_rotation);
+                // maya measures v from the opposite edge
+                let from_maya =
+                    Mat3::from_translation(Vec2::Y) * Mat3::from_scale(Vec2::new(1.0, -1.0));
+                to_centre
+                    * rotate
+                    * from_centre
+                    * from_maya
+                    * Mat3::from_translation(translation)
+                    * scale
+            }
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
@@ -299,5 +383,144 @@ impl std::ops::Deref for NiTexturingProperty {
 
     fn deref(&self) -> &Self::Target {
         &self.base
+    }
+}
+
+#[cfg(all(test, feature = "glam"))]
+mod tests {
+    use super::*;
+
+    /// The closed form the engine actually ships, as columns.
+    /// The composition above is derived from the comments beside it, so this is what proves the
+    /// derivation: if the two disagree, the readable version is wrong.
+    fn shipped(t: &TextureTransform) -> glam::Mat3 {
+        let (sin, cos) = t.w_rotation.sin_cos();
+        let (sx, sy) = (t.tiling.u, t.tiling.v);
+        let (tx, ty) = (t.translation.u, t.translation.v);
+        let (cx, cy) = (t.center_offset.u, t.center_offset.v);
+
+        let [c0, c1, c2] = match t.transform_type {
+            TextureTransform::MAX => [
+                [sx * cos, sy * -sin, 0.0],
+                [sx * sin, sy * cos, 0.0],
+                [
+                    cx + sx * (cos * (-cx - tx) + sin * (-cy + ty)),
+                    cy + sy * (-sin * (-cx - tx) + cos * (-cy + ty)),
+                    1.0,
+                ],
+            ],
+            TextureTransform::MAYA_DEPRECATED => [
+                [cos * sx, sin * sx, 0.0],
+                [-sin * sy, cos * sy, 0.0],
+                [
+                    (tx - cx) * cos + (ty - cy) * -sin + cx,
+                    (tx - cx) * sin + (ty - cy) * cos + cy,
+                    1.0,
+                ],
+            ],
+            _ => [
+                [cos * sx, -sin * sx, 0.0],
+                [-sin * sy, -cos * sy, 0.0],
+                [
+                    (tx - cx) * cos + (-ty - cy + 1.0) * sin + cx,
+                    (-tx + cx) * sin + (-ty - cy + 1.0) * cos + cy,
+                    1.0,
+                ],
+            ],
+        };
+        glam::Mat3::from_cols(c0.into(), c1.into(), c2.into())
+    }
+
+    fn cases() -> Vec<TextureTransform> {
+        let mut out = Vec::new();
+        for method in [
+            TextureTransform::MAYA_DEPRECATED,
+            TextureTransform::MAX,
+            TextureTransform::MAYA,
+        ] {
+            for (tx, ty) in [(0.0, 0.0), (0.25, -0.5), (3.0, 1.5)] {
+                for (sx, sy) in [(1.0, 1.0), (3.0, 1.0), (-0.2, 0.75)] {
+                    for rotate in [0.0, 0.7, -std::f32::consts::FRAC_PI_4, 2.5] {
+                        for (cx, cy) in [(0.5, 0.5), (0.0, 0.0), (0.25, 0.75)] {
+                            out.push(TextureTransform {
+                                translation: TexCoord { u: tx, v: ty },
+                                tiling: TexCoord { u: sx, v: sy },
+                                w_rotation: rotate,
+                                transform_type: method,
+                                center_offset: TexCoord { u: cx, v: cy },
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn the_composition_matches_the_engines_closed_form() {
+        for case in cases() {
+            let (ours, theirs) = (case.matrix(), shipped(&case));
+            assert!(
+                ours.abs_diff_eq(theirs, 1e-5),
+                "{case:?}
+  composed {ours:?}
+  shipped  {theirs:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn max_translation_runs_backwards_in_u() {
+        let mut t = TextureTransform {
+            transform_type: TextureTransform::MAX,
+            ..TextureTransform::identity()
+        };
+        t.translation = TexCoord { u: 0.25, v: 0.5 };
+        let uv = t.matrix() * glam::Vec3::new(0.0, 0.0, 1.0);
+
+        assert!((uv.x - -0.25).abs() < 1e-6, "u went {}", uv.x);
+        assert!((uv.y - 0.5).abs() < 1e-6, "v went {}", uv.y);
+    }
+
+    #[test]
+    fn the_centre_is_a_fixed_point_of_a_rotation() {
+        for method in [
+            TextureTransform::MAYA_DEPRECATED,
+            TextureTransform::MAX,
+            TextureTransform::MAYA,
+        ] {
+            let mut t = TextureTransform {
+                transform_type: method,
+                ..TextureTransform::identity()
+            };
+            t.w_rotation = 0.7;
+            t.center_offset = TexCoord { u: 0.25, v: 0.75 };
+
+            // maya measures v from the other edge, so the point it holds still is the flipped one
+            let held = match method {
+                TextureTransform::MAYA => glam::Vec3::new(0.25, 1.0 - 0.75, 1.0),
+                _ => glam::Vec3::new(0.25, 0.75, 1.0),
+            };
+            let turned = t.matrix() * held;
+
+            assert!(
+                (turned.x - 0.25).abs() < 1e-6 && (turned.y - 0.75).abs() < 1e-6,
+                "method {method} moved its own centre to {turned:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_maya_substitute_is_not_neutral() {
+        let m = TextureTransform::identity().matrix();
+        let uv = m * glam::Vec3::new(0.0, 0.25, 1.0);
+
+        assert!((uv.x - 0.0).abs() < 1e-6, "u moved to {}", uv.x);
+        assert!(
+            (uv.y - 0.75).abs() < 1e-6,
+            "v should flip to 0.75, went {}",
+            uv.y
+        );
     }
 }

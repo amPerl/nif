@@ -27,6 +27,14 @@ pub const MSAA_SAMPLES: u32 = 4;
 /// alone and leave the rest of the material behind it.
 const ALPHA_OFFSET: u64 = 19 * 4;
 
+/// Where the two uv transform rows sit, for the same reason.
+const UV_OFFSET: u64 = 32 * 4;
+
+/// The shader's `Model` and `Camera` structs, in floats. Every buffer bound as one has to be
+/// this long, the grid's included.
+const MODEL_FLOATS: u64 = 40;
+const CAMERA_FLOATS: u64 = 24;
+
 /// Lives in `callback_resources`, which is all `paint` can reach.
 pub struct Preview {
     wire: wgpu::RenderPipeline,
@@ -55,6 +63,9 @@ pub struct Mesh {
     local_center: Vec3,
     /// The NiMaterialProperty this shape draws with, which is what an alpha controller targets.
     material_block: Option<usize>,
+    /// The NiTexturingProperty this shape draws with, which is what a texture transform
+    /// controller targets.
+    texturing_block: Option<usize>,
     pub radius: f32,
     /// The NiLODNode this shape sits under, and which of its levels, if any.
     lod: Option<(usize, usize)>,
@@ -134,6 +145,8 @@ pub struct Frame {
     pub hidden: HashSet<usize>,
     /// Material alpha a controller has replaced, by the material's own block.
     pub alpha: HashMap<usize, f32>,
+    /// The base slot's uv transform where a controller drives it, by texturing property block.
+    pub uv: HashMap<usize, [f32; 8]>,
 }
 
 /// Which level of each LOD node to draw.
@@ -292,11 +305,11 @@ impl Gfx {
 
         let camera_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("nifty camera"),
-            entries: &[uniform_entry()],
+            entries: &[uniform_entry(CAMERA_FLOATS)],
         });
         let model_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("nifty model"),
-            entries: &[uniform_entry()],
+            entries: &[uniform_entry(MODEL_FLOATS)],
         });
         let texture_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("nifty texture"),
@@ -731,7 +744,7 @@ impl Gfx {
                 None => white.clone(),
             };
 
-            let mut model_uniform = [0f32; 32];
+            let mut model_uniform = [0f32; MODEL_FLOATS as usize];
             model_uniform[..16].copy_from_slice(&model.to_cols_array());
             model_uniform[16..20].copy_from_slice(&diffuse);
             model_uniform[20..24].copy_from_slice(&emissive);
@@ -742,6 +755,20 @@ impl Gfx {
                 replace * f32::from(texture_key.is_some()),
             ]);
             model_uniform[28..32].copy_from_slice(&[alpha_threshold, alpha_test, 0.0, 0.0]);
+            let texturing_block = geometry.property_refs.iter().find_map(|r| {
+                r.index()
+                    .filter(|i| matches!(nif.blocks.get(*i), Some(Block::NiTexturingProperty(_))))
+            });
+            model_uniform[32..40].copy_from_slice(&uv_rows(
+                texturing_of(nif, &geometry.property_refs).and_then(|property| {
+                    nif::anim::texture_transform_at(
+                        &nif.blocks,
+                        property,
+                        nif::blocks::TextureSlot::Base,
+                        0.0,
+                    )
+                }),
+            ));
 
             let mut indices: Vec<u16> = Vec::with_capacity(triangles.len() * 3);
             let mut edges: Vec<u16> = Vec::with_capacity(triangles.len() * 6);
@@ -766,6 +793,7 @@ impl Gfx {
                 center: (shape_min + shape_max) * 0.5,
                 local_center: (local_min + local_max) * 0.5,
                 material_block: material_index,
+                texturing_block,
                 radius: ((shape_max - shape_min).length() * 0.5).max(0.001),
                 data_block: geometry.data_ref.index().unwrap_or(usize::MAX),
                 texture,
@@ -808,8 +836,9 @@ impl Gfx {
         // the floor has to reach the geometry as well as the origin, which a chunk sitting
         // far out is nowhere near
         let (lines, spacing) = grid_lines(center.length() + radius);
-        let mut identity = [0f32; 32];
+        let mut identity = [0f32; MODEL_FLOATS as usize];
         identity[..16].copy_from_slice(&Mat4::IDENTITY.to_cols_array());
+        identity[32..40].copy_from_slice(&uv_rows(None));
         let grid = Grid {
             count: (lines.len() / 9) as u32,
             vertices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -867,6 +896,18 @@ pub(crate) fn geometry_of<'a>(
         }
         _ => None,
     }
+}
+
+/// A uv transform as the two rows that reach the shader, since the third is always (0, 0, 1).
+/// No transform is the identity, which matters: a map with none must keep its uvs untouched,
+/// because the engine's substitute carries a v flip rather than being neutral.
+pub fn uv_rows(transform: Option<nif::blocks::TextureTransform>) -> [f32; 8] {
+    let Some(transform) = transform else {
+        return [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+    };
+    let m = transform.matrix();
+    let (x, y) = (m.x_axis, m.y_axis);
+    [x.x, y.x, m.z_axis.x, 0.0, x.y, y.y, m.z_axis.y, 0.0]
 }
 
 fn texturing_of<'a>(
@@ -1027,14 +1068,16 @@ fn build_pipeline(
     })
 }
 
-fn uniform_entry() -> wgpu::BindGroupLayoutEntry {
+/// `floats` is what the shader's matching struct holds. Declaring it makes a buffer that has
+/// fallen behind the struct fail when the bind group is built, rather than once per draw call.
+fn uniform_entry(floats: u64) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding: 0,
         visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
         ty: wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Uniform,
             has_dynamic_offset: false,
-            min_binding_size: None,
+            min_binding_size: wgpu::BufferSize::new(floats * 4),
         },
         count: None,
     }
@@ -1108,6 +1151,12 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
                 .and_then(|block| self.frame.alpha.get(&block))
             {
                 queue.write_buffer(&mesh.model_buffer, ALPHA_OFFSET, bytemuck::bytes_of(alpha));
+            }
+            if let Some(rows) = mesh
+                .texturing_block
+                .and_then(|block| self.frame.uv.get(&block))
+            {
+                queue.write_buffer(&mesh.model_buffer, UV_OFFSET, bytemuck::cast_slice(rows));
             }
         }
         Vec::new()
@@ -1205,6 +1254,8 @@ struct Model {
     sources: vec4<f32>,
     // alpha test threshold, alpha test enabled
     alpha: vec4<f32>,
+    uv_row0: vec4<f32>,
+    uv_row1: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: Camera;
@@ -1280,7 +1331,10 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let plain = vec3<f32>(0.78, 0.80, 0.84) * shade;
     let lit = mix(plain, material_lit, camera.flags.x);
 
-    let texel = textureSample(base_texture, base_sampler, in.uv);
+    // the uv transform is a 3x3 applied as matrix * (u, v, 1); the third row is always (0, 0, 1)
+    let uvw = vec3<f32>(in.uv, 1.0);
+    let uv = vec2<f32>(dot(model.uv_row0.xyz, uvw), dot(model.uv_row1.xyz, uvw));
+    let texel = textureSample(base_texture, base_sampler, uv);
     let replace = model.sources.w * camera.flags.x;
     let shaded = mix(lit * texel.rgb, texel.rgb, replace);
 

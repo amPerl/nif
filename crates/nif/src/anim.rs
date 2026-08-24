@@ -1,8 +1,8 @@
 use glam::{Mat3, Quat};
 
 use crate::blocks::{
-    Block, NiAvObject, NiMaterialProperty, NiTimeController, NiTransformData,
-    NiTransformInterpolator,
+    Block, NiAvObject, NiMaterialProperty, NiTexturingProperty, NiTimeController, NiTransformData,
+    NiTransformInterpolator, TextureSlot, TextureTransform,
 };
 use crate::common::{
     BlockRef, Key, KeyGroup, KeyType, NiQuatTransform, NiTransform, Quaternion, Vector3,
@@ -274,6 +274,77 @@ pub fn alpha_at(blocks: &[Block], material: &NiMaterialProperty, time: f32) -> O
     }
     None
 }
+
+/// The uv transform in force on one texture slot at `time`. None when the slot carries no
+/// transform of its own and nothing animates it, so the caller can leave its uvs alone.
+///
+/// Unlike the other channels this accumulates: a property is driven by one controller per member,
+/// so five of them can share a target. Each replaces its member rather than scaling it, and a
+/// slot with no stored transform starts from the identity the engine substitutes.
+pub fn texture_transform_at(
+    blocks: &[Block],
+    property: &NiTexturingProperty,
+    slot: TextureSlot,
+    time: f32,
+) -> Option<TextureTransform> {
+    let stored = property
+        .texture(slot)
+        .and_then(|desc| desc.transform.get())
+        .cloned();
+    let mut animated: Option<TextureTransform> = None;
+
+    for block in controllers(blocks, property.controller_ref) {
+        let Block::NiTextureTransformController(controller) = block else {
+            continue;
+        };
+        let time_controller: &NiTimeController = controller;
+        if !time_controller.is_active() {
+            continue;
+        }
+        let addressed = if controller.shader_map {
+            Some(TextureSlot::Shader(controller.texture_slot))
+        } else {
+            TextureSlot::from_index(controller.texture_slot)
+        };
+        if addressed != Some(slot) {
+            continue;
+        }
+        let Some(Block::NiFloatInterpolator(interpolator)) =
+            controller.base.base.interpolator_ref.get(blocks)
+        else {
+            continue;
+        };
+        let keyed = match interpolator.data_ref.get(blocks) {
+            Some(Block::NiFloatData(data)) => data.data.sample(time_controller.local_time(time)),
+            _ => None,
+        };
+        // with no keys of its own the interpolator supplies a single value instead
+        let value = match keyed {
+            Some(value) => value,
+            None if interpolator.value != INVALID => interpolator.value,
+            None => continue,
+        };
+
+        let transform = animated
+            .get_or_insert_with(|| stored.clone().unwrap_or_else(TextureTransform::identity));
+        match controller.operation {
+            TRANSLATE_U => transform.translation.u = value,
+            TRANSLATE_V => transform.translation.v = value,
+            ROTATE => transform.w_rotation = value,
+            SCALE_U => transform.tiling.u = value,
+            SCALE_V => transform.tiling.v = value,
+            _ => {}
+        }
+    }
+
+    animated.or(stored)
+}
+
+const TRANSLATE_U: u32 = 0;
+const TRANSLATE_V: u32 = 1;
+const ROTATE: u32 = 2;
+const SCALE_U: u32 = 3;
+const SCALE_V: u32 = 4;
 
 /// Whether an object's visibility controller shows it at `time`. None when nothing animates its
 /// visibility, so the caller keeps whatever the object's own flag says.

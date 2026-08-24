@@ -624,6 +624,23 @@ impl Viewer<'_> {
                     frame.alpha.insert(index, alpha.clamp(0.0, 1.0));
                 }
             }
+            // a texture transform controller drives one member of one slot's transform, so a
+            // property can be the target of several at once and they are resolved together
+            for (index, block) in loaded.nif.blocks.iter().enumerate() {
+                let Block::NiTexturingProperty(property) = block else {
+                    continue;
+                };
+                if let Some(transform) = nif::anim::texture_transform_at(
+                    &loaded.nif.blocks,
+                    property,
+                    nif::blocks::TextureSlot::Base,
+                    time,
+                ) {
+                    frame
+                        .uv
+                        .insert(index, crate::scene::uv_rows(Some(transform)));
+                }
+            }
         }
         Arc::new(frame)
     }
