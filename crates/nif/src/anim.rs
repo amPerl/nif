@@ -340,6 +340,53 @@ pub fn texture_transform_at(
     animated.or(stored)
 }
 
+/// The source texture a flip controller has swapped into a slot at `time`. None when nothing
+/// flips that slot, so the caller keeps whatever source the map itself names.
+///
+/// The track holds a frame index rather than a rate. The engine nudges it by 0.01 before
+/// truncating, so a key sitting just under its own frame still selects it, and clamps to the
+/// last source. Only the source is replaced: the map keeps its own transform, clamp and filter
+/// modes.
+pub fn flip_source_at(
+    blocks: &[Block],
+    property: &NiTexturingProperty,
+    slot: TextureSlot,
+    time: f32,
+) -> Option<BlockRef> {
+    for block in controllers(blocks, property.controller_ref) {
+        let Block::NiFlipController(controller) = block else {
+            continue;
+        };
+        let time_controller: &NiTimeController = controller;
+        if !time_controller.is_active()
+            || TextureSlot::from_flip_index(controller.texture_slot) != Some(slot)
+        {
+            continue;
+        }
+        let Some(last) = controller.source_refs.len().checked_sub(1) else {
+            continue;
+        };
+        let Some(Block::NiFloatInterpolator(interpolator)) =
+            controller.base.base.interpolator_ref.get(blocks)
+        else {
+            continue;
+        };
+        let keyed = match interpolator.data_ref.get(blocks) {
+            Some(Block::NiFloatData(data)) => data.data.sample(time_controller.local_time(time)),
+            _ => None,
+        };
+        // with no keys of its own the interpolator supplies a single value instead
+        let value = match keyed {
+            Some(value) => value,
+            None if interpolator.value != INVALID => interpolator.value,
+            None => continue,
+        };
+        let frame = ((value + 0.01) as isize).clamp(0, last as isize) as usize;
+        return controller.source_refs.get(frame).copied();
+    }
+    None
+}
+
 const TRANSLATE_U: u32 = 0;
 const TRANSLATE_V: u32 = 1;
 const ROTATE: u32 = 2;

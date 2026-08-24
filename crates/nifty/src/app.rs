@@ -640,6 +640,15 @@ impl Viewer<'_> {
                         .uv
                         .insert(index, crate::scene::uv_rows(Some(transform)));
                 }
+                let flipped = nif::anim::flip_source_at(
+                    &loaded.nif.blocks,
+                    property,
+                    nif::blocks::TextureSlot::Base,
+                    time,
+                );
+                if let Some(source) = flipped.and_then(|r| r.index()) {
+                    frame.flip.insert(index, source);
+                }
             }
         }
         Arc::new(frame)

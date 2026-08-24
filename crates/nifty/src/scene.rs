@@ -7,7 +7,7 @@ use nif::glam::{Mat4, Vec3};
 use nif::{
     blocks::{
         AlphaFunction, ApplyMode, Block, LightMode, NiGeometry, NiGeometryData, StencilDrawMode,
-        TestFunction, VertMode, ZCompareMode,
+        TestFunction, TextureSlot, VertMode, ZCompareMode,
     },
     common::Triangle,
     Nif,
@@ -66,6 +66,9 @@ pub struct Mesh {
     /// The NiTexturingProperty this shape draws with, which is what a texture transform
     /// controller targets.
     texturing_block: Option<usize>,
+    /// Every source a flip controller can swap into the base slot, by its own block. Empty
+    /// unless one drives this shape.
+    flip_frames: HashMap<usize, wgpu::BindGroup>,
     pub radius: f32,
     /// The NiLODNode this shape sits under, and which of its levels, if any.
     lod: Option<(usize, usize)>,
@@ -147,6 +150,8 @@ pub struct Frame {
     pub alpha: HashMap<usize, f32>,
     /// The base slot's uv transform where a controller drives it, by texturing property block.
     pub uv: HashMap<usize, [f32; 8]>,
+    /// The source a flip controller has swapped into the base slot, by texturing property block.
+    pub flip: HashMap<usize, usize>,
 }
 
 /// Which level of each LOD node to draw.
@@ -512,12 +517,17 @@ impl Gfx {
                 Some(Block::NiTexturingProperty(p)) => Some(p),
                 _ => None,
             })?;
-        let source = texturing
-            .base_texture
-            .as_ref()?
-            .source_ref
-            .get(&nif.blocks)?;
-        let Block::NiSourceTexture(source) = source else {
+        self.source_texture(nif, texturing.base_texture.as_ref()?.source_ref, library)
+    }
+
+    /// One `NiSourceTexture`, embedded or from the library on disk.
+    fn source_texture(
+        &self,
+        nif: &Nif,
+        source_ref: nif::common::BlockRef,
+        library: &TextureLibrary,
+    ) -> Option<wgpu::BindGroup> {
+        let Some(Block::NiSourceTexture(source)) = source_ref.get(&nif.blocks) else {
             return None;
         };
         // most source textures name a file rather than carrying pixels
@@ -744,6 +754,33 @@ impl Gfx {
                 None => white.clone(),
             };
 
+            let texturing_block = texturing_index(nif, &geometry.property_refs);
+            // every frame a flip controller can reach, uploaded once each and shared by block
+            let mut flip_frames = HashMap::new();
+            for block in &nif.blocks {
+                let Block::NiFlipController(flip) = block else {
+                    continue;
+                };
+                if flip.target_ref.index() != texturing_block
+                    || TextureSlot::from_flip_index(flip.texture_slot) != Some(TextureSlot::Base)
+                {
+                    continue;
+                }
+                for source_ref in &flip.source_refs {
+                    let Some(index) = source_ref.index() else {
+                        continue;
+                    };
+                    let group = cache
+                        .entry(index)
+                        .or_insert_with(|| {
+                            self.source_texture(nif, *source_ref, library)
+                                .unwrap_or_else(|| missing.clone())
+                        })
+                        .clone();
+                    flip_frames.insert(index, group);
+                }
+            }
+
             let mut model_uniform = [0f32; MODEL_FLOATS as usize];
             model_uniform[..16].copy_from_slice(&model.to_cols_array());
             model_uniform[16..20].copy_from_slice(&diffuse);
@@ -755,10 +792,6 @@ impl Gfx {
                 replace * f32::from(texture_key.is_some()),
             ]);
             model_uniform[28..32].copy_from_slice(&[alpha_threshold, alpha_test, 0.0, 0.0]);
-            let texturing_block = geometry.property_refs.iter().find_map(|r| {
-                r.index()
-                    .filter(|i| matches!(nif.blocks.get(*i), Some(Block::NiTexturingProperty(_))))
-            });
             model_uniform[32..40].copy_from_slice(&uv_rows(
                 texturing_of(nif, &geometry.property_refs).and_then(|property| {
                     nif::anim::texture_transform_at(
@@ -794,6 +827,7 @@ impl Gfx {
                 local_center: (local_min + local_max) * 0.5,
                 material_block: material_index,
                 texturing_block,
+                flip_frames,
                 radius: ((shape_max - shape_min).length() * 0.5).max(0.001),
                 data_block: geometry.data_ref.index().unwrap_or(usize::MAX),
                 texture,
@@ -908,6 +942,13 @@ pub fn uv_rows(transform: Option<nif::blocks::TextureTransform>) -> [f32; 8] {
     let m = transform.matrix();
     let (x, y) = (m.x_axis, m.y_axis);
     [x.x, y.x, m.z_axis.x, 0.0, x.y, y.y, m.z_axis.y, 0.0]
+}
+
+fn texturing_index(nif: &Nif, properties: &[nif::common::BlockRef]) -> Option<usize> {
+    properties.iter().find_map(|r| {
+        r.index()
+            .filter(|i| matches!(nif.blocks.get(*i), Some(Block::NiTexturingProperty(_))))
+    })
 }
 
 fn texturing_of<'a>(
@@ -1106,6 +1147,14 @@ impl PreviewCall {
         }
     }
 
+    /// The base texture as of this frame, which a flip controller may have swapped.
+    fn texture_of<'a>(&'a self, mesh: &'a Mesh) -> &'a wgpu::BindGroup {
+        mesh.texturing_block
+            .and_then(|block| self.frame.flip.get(&block))
+            .and_then(|source| mesh.flip_frames.get(source))
+            .unwrap_or(&mesh.texture)
+    }
+
     fn visible(&self, mesh: &Mesh) -> bool {
         !self.frame.hidden.contains(&mesh.shape_block)
             && self
@@ -1118,10 +1167,11 @@ fn draw_mesh(
     render_pass: &mut wgpu::RenderPass<'static>,
     mesh: &Mesh,
     pipeline: &wgpu::RenderPipeline,
+    texture: &wgpu::BindGroup,
 ) {
     render_pass.set_pipeline(pipeline);
     render_pass.set_bind_group(1, &mesh.bind_group, &[]);
-    render_pass.set_bind_group(2, &mesh.texture, &[]);
+    render_pass.set_bind_group(2, texture, &[]);
     render_pass.set_vertex_buffer(0, mesh.vertices.slice(..));
     render_pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint16);
     render_pass.draw_indexed(0..mesh.count, 0, 0..1);
@@ -1187,7 +1237,7 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
             render_pass.set_pipeline(&preview.wire);
             for mesh in self.scene.meshes.iter().filter(|m| self.visible(m)) {
                 render_pass.set_bind_group(1, &mesh.bind_group, &[]);
-                render_pass.set_bind_group(2, &mesh.texture, &[]);
+                render_pass.set_bind_group(2, self.texture_of(mesh), &[]);
                 render_pass.set_vertex_buffer(0, mesh.vertices.slice(..));
                 render_pass.set_index_buffer(mesh.edges.slice(..), wgpu::IndexFormat::Uint16);
                 render_pass.draw_indexed(0..mesh.edge_count, 0, 0..1);
@@ -1205,7 +1255,7 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
                 } else {
                     &mesh.pipeline_unculled
                 };
-                draw_mesh(render_pass, mesh, pipeline);
+                draw_mesh(render_pass, mesh, pipeline, self.texture_of(mesh));
             }
             blended.sort_by(|a, b| {
                 self.center(b)
@@ -1218,7 +1268,7 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
                 } else {
                     &mesh.pipeline_unculled
                 };
-                draw_mesh(render_pass, mesh, pipeline);
+                draw_mesh(render_pass, mesh, pipeline, self.texture_of(mesh));
             }
         }
 
@@ -1232,7 +1282,7 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
                 continue;
             }
             render_pass.set_bind_group(1, &mesh.bind_group, &[]);
-            render_pass.set_bind_group(2, &mesh.texture, &[]);
+            render_pass.set_bind_group(2, self.texture_of(mesh), &[]);
             render_pass.set_vertex_buffer(0, mesh.vertices.slice(..));
             render_pass.set_index_buffer(mesh.edges.slice(..), wgpu::IndexFormat::Uint16);
             render_pass.draw_indexed(0..mesh.edge_count, 0, 0..1);

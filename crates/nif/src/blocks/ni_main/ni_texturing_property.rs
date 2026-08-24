@@ -89,9 +89,9 @@ pub enum TextureSlot {
 }
 
 impl TextureSlot {
-    /// The slot a controller names by index. `NiTextureTransformController` and
-    /// `NiFlipController` both address a map this way, and the order is the order the maps are
-    /// stored in.
+    /// The slot a controller names by index, in the order the maps are stored. Shader maps sit
+    /// outside this: a texture transform controller flags them separately, while a flip
+    /// controller offsets the index instead.
     pub fn from_index(index: u32) -> Option<TextureSlot> {
         Some(match index {
             0 => TextureSlot::Base,
@@ -104,6 +104,17 @@ impl TextureSlot {
             _ => return None,
         })
     }
+
+    /// The slot a `NiFlipController` names. It reaches shader maps by offsetting the index past
+    /// the ordinary maps rather than by a separate flag.
+    pub fn from_flip_index(index: u32) -> Option<TextureSlot> {
+        match index.checked_sub(TextureSlot::SHADER_MAP_OFFSET) {
+            Some(shader) => Some(TextureSlot::Shader(shader)),
+            None => TextureSlot::from_index(index),
+        }
+    }
+
+    const SHADER_MAP_OFFSET: u32 = 1024;
 }
 
 impl std::fmt::Display for TextureSlot {
