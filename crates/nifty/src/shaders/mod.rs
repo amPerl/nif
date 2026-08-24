@@ -98,6 +98,10 @@ pub struct Shader {
     pub state: RenderState,
     /// Sampling a shader pins for a slot. `None` leaves the map's own clamp mode and linear.
     pub address: [Option<Sampling>; SLOTS],
+    /// Whatever the shader wants told, reaching it as `model.params`. These are the declared
+    /// defaults of its own attributes: a file supplies its own only through shader extra data,
+    /// which nothing in this game carries.
+    pub params: [f32; 4],
     /// Where it came from, for the UI to say so.
     pub origin: Origin,
 }
@@ -130,6 +134,7 @@ fn fixed() -> Shader {
         absent: [Absent::White, Absent::White, Absent::Black, Absent::White],
         state: RenderState::default(),
         address: [None; SLOTS],
+        params: [0.0; 4],
         origin: Origin::BuiltIn,
     }
 }
@@ -145,6 +150,31 @@ fn built_ins() -> Vec<Shader> {
             // the technique sets no blend or alpha state, so the file's own properties stand
             state: RenderState::default(),
             address: [None; SLOTS],
+            params: [0.0; 4],
+            origin: Origin::BuiltIn,
+        },
+        Shader {
+            name: "OilyFilm".into(),
+            source: include_str!("OilyFilm.wgsl").into(),
+            // the interference ramp and the warp map are the shader's own attributes, at shader
+            // map 0 and 1; a shape that supplies neither falls back to their declared files
+            slots: [
+                Some(Source::Slot(TextureSlot::Base)),
+                Some(Source::Slot(TextureSlot::Shader(0))),
+                Some(Source::Slot(TextureSlot::Shader(1))),
+                None,
+            ],
+            // the base multiplies the diffuse, and the other two are added
+            absent: [Absent::White, Absent::Black, Absent::Black, Absent::White],
+            state: RenderState::default(),
+            address: [
+                None,
+                Some(Sampling::clamped(wgpu::FilterMode::Linear)),
+                Some(Sampling::clamped(wgpu::FilterMode::Linear)),
+                None,
+            ],
+            // WarpAlpha then Exponent, both the values the source declares
+            params: [1.0, 48.0, 0.0, 0.0],
             origin: Origin::BuiltIn,
         },
         Shader {
@@ -168,6 +198,7 @@ fn built_ins() -> Vec<Shader> {
                 None,
                 None,
             ],
+            params: [0.0; 4],
             origin: Origin::BuiltIn,
         },
         Shader {
@@ -193,6 +224,7 @@ fn built_ins() -> Vec<Shader> {
                 None,
                 None,
             ],
+            params: [0.0; 4],
             origin: Origin::BuiltIn,
         },
         Shader {
@@ -205,6 +237,7 @@ fn built_ins() -> Vec<Shader> {
             // the technique sets no blend or alpha state, so the file's own properties stand
             state: RenderState::default(),
             address: [None; SLOTS],
+            params: [0.0; 4],
             origin: Origin::BuiltIn,
         },
         Shader {
@@ -225,6 +258,7 @@ fn built_ins() -> Vec<Shader> {
                 depth_write: None,
             },
             address: [None; SLOTS],
+            params: [0.0; 4],
             origin: Origin::BuiltIn,
         },
     ]
@@ -322,12 +356,13 @@ impl Shaders {
             // a supplied shader inherits the slot mapping of the built in it replaces, since
             // nothing in a WGSL file says which map it wants. An unknown name gets the shader
             // maps, which is what a custom shader reads in every case measured so far.
-            let (slots, absent, state, address) = match self.by_name.get(&name) {
+            let (slots, absent, state, address, params) = match self.by_name.get(&name) {
                 Some(existing) => (
                     existing.slots,
                     existing.absent,
                     existing.state,
                     existing.address,
+                    existing.params,
                 ),
                 None => (
                     [
@@ -339,6 +374,7 @@ impl Shaders {
                     [Absent::White; SLOTS],
                     RenderState::default(),
                     [None; SLOTS],
+                    [0.0; 4],
                 ),
             };
             self.by_name.insert(
@@ -350,6 +386,7 @@ impl Shaders {
                     absent,
                     state,
                     address,
+                    params,
                     origin: Origin::Directory(path),
                 },
             );

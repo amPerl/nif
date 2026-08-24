@@ -1220,6 +1220,7 @@ impl Gfx {
             ]);
             model_uniform[28..32].copy_from_slice(&[alpha_threshold, alpha_test, 0.0, 0.0]);
             model_uniform[32..64].copy_from_slice(&slot_uv_rows(&nif.blocks, property, bound, 0.0));
+            model_uniform[64..68].copy_from_slice(&shader.params);
 
             let mut indices: Vec<u16> = Vec::with_capacity(triangles.len() * 3);
             let mut edges: Vec<u16> = Vec::with_capacity(triangles.len() * 6);
