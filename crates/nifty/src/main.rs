@@ -29,6 +29,7 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         depth_buffer: 32,
+        multisampling: crate::scene::MSAA_SAMPLES as u16,
         ..Default::default()
     };
 

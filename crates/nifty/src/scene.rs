@@ -19,6 +19,10 @@ use crate::texture::decode_texture;
 
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
+/// Fixed when the window is created, since the colour and depth targets are built against it.
+/// Every pipeline here has to agree with it or wgpu rejects the draw.
+pub const MSAA_SAMPLES: u32 = 4;
+
 /// Lives in `callback_resources`, which is all `paint` can reach.
 pub struct Preview {
     wire: wgpu::RenderPipeline,
@@ -1001,7 +1005,10 @@ fn build_pipeline(
             stencil: Default::default(),
             bias: Default::default(),
         }),
-        multisample: wgpu::MultisampleState::default(),
+        multisample: wgpu::MultisampleState {
+            count: MSAA_SAMPLES,
+            ..Default::default()
+        },
         multiview_mask: None,
         cache: None,
     })
@@ -1320,7 +1327,11 @@ mod tests {
         // three axis lines, two vertices each, at the end of the buffer
         let axes = &lines[lines.len() - 6 * STRIDE..];
         for (i, axis) in axes.chunks(2 * STRIDE).enumerate() {
-            assert_eq!(&axis[..3], &[0.0, 0.0, 0.0], "axis {i} starts at the origin");
+            assert_eq!(
+                &axis[..3],
+                &[0.0, 0.0, 0.0],
+                "axis {i} starts at the origin"
+            );
             assert!(axis[STRIDE + i] > 0.0, "axis {i} runs positive");
         }
     }
