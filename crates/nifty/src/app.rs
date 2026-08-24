@@ -1172,8 +1172,8 @@ impl eframe::App for Nifty {
                             ui.end_row();
                         }
                     });
-                    // a shader can name a texture the file never mentions, and two ToonRamp.bmp
-                    // ship per client with different contents, so which one won has to be visible
+                    // a shader can name a texture the file never mentions, and more than one
+                    // file of that name can be installed, so which one won has to be visible
                     let named: Vec<(&str, &str)> = self.shaders.named_textures().collect();
                     if !named.is_empty() {
                         ui.separator();

@@ -7,9 +7,9 @@
 // The pass is additive, `SRCBLEND = ONE, DESTBLEND = ONE`, so this draws on top of whatever
 // already shaded the surface and can only add light.
 //
-// `Reflection` is an `ATTRIBUTE` defaulting to 100, and no corpus shape carries shader extra
-// data, so 100 is what it resolves to: a very tight highlight that sits at the 0.1 floor across
-// most of the body.
+// `Reflection` is an `ATTRIBUTE` defaulting to 100, and a shape supplies one only through shader
+// extra data, which none carries, so 100 is what it resolves to: a very tight highlight that sits
+// at the 0.1 floor across most of the body.
 
 // the exponent the source names Reflection
 const REFLECTION: f32 = 100.0;

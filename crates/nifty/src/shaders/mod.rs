@@ -49,8 +49,8 @@ pub enum Source {
     /// A map the file names in one of its own texture slots.
     Slot(TextureSlot),
     /// A file the shader names itself, resolved through the texture library the way any external
-    /// reference is. `ToonShading` does this, and because a NIF never says which copy it means,
-    /// **root order decides**: two `ToonRamp.bmp` ship per client with different contents.
+    /// reference is. Nothing in the NIF says which file is meant, and more than one of that name
+    /// can be installed, so root order decides which is found.
     Named(&'static str),
 }
 
@@ -139,7 +139,7 @@ fn built_ins() -> Vec<Shader> {
         Shader {
             name: "ActionGameTree".into(),
             source: include_str!("ActionGameTree.wgsl").into(),
-            // reads the base slot alone: 13,657 corpus shapes carry no shader map at all
+            // reads the base slot alone, and carries no shader map
             slots: [Some(Source::Slot(TextureSlot::Base)), None, None, None],
             absent: [Absent::White; SLOTS],
             // the technique sets no blend or alpha state, so the file's own properties stand
@@ -173,7 +173,7 @@ fn built_ins() -> Vec<Shader> {
         Shader {
             name: "ActionSpecularBand".into(),
             source: include_str!("ActionSpecularBand.wgsl").into(),
-            // the gloss map is the base slot: 1,196 corpus shapes carry no shader map
+            // the gloss map is the base slot, and there is no shader map
             slots: [Some(Source::Slot(TextureSlot::Base)), None, None, None],
             absent: [Absent::White; SLOTS],
             // the pass is additive and draws over whatever already shaded the surface. It sets
@@ -198,8 +198,8 @@ fn built_ins() -> Vec<Shader> {
         Shader {
             name: "ActionGameCartoonFX".into(),
             source: include_str!("ActionGameCartoonFX.wgsl").into(),
-            // the decal is the base slot; the toon ramp 5,111 shapes carry in shader map 0 is
-            // left over from the deprecated outline path and is not sampled
+            // the decal is the base slot. A ramp is often left in shader map 0 from the
+            // deprecated outline path, and this technique does not sample it.
             slots: [Some(Source::Slot(TextureSlot::Base)), None, None, None],
             absent: [Absent::White; SLOTS],
             // the technique sets no blend or alpha state, so the file's own properties stand

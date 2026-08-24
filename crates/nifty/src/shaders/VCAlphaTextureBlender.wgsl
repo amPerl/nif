@@ -6,8 +6,8 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let detail = textureSample(slot2_texture, slot2_sampler, slot_uv(2u, in)).rgb;
 
     // TOP_BlendDiffuseAlpha is arg1 * a + arg2 * (1 - a), and arg1 holds the first map, so an
-    // alpha of 1 selects map 0. The weight is a vertex alpha the hardware clamps, and 11 corpus
-    // shapes do exceed 1.
+    // alpha of 1 selects map 0. The weight is a vertex alpha, which the hardware clamps and
+    // which a file can store outside the range.
     let weight = clamp(in.color.a, 0.0, 1.0);
     let blended = mix(map1, map0, weight);
 

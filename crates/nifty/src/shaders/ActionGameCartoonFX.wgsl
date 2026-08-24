@@ -6,12 +6,12 @@
 //     (Decal.rgb * Decal.a) * LightColor + (1 - Decal.a) * MaterialColor * LightColor
 // is just `LightColor * mix(MaterialColor, Decal.rgb, Decal.a)`.
 //
-// `MaterialColor` is an `ATTRIBUTE` defaulting to white, and every corpus shape carries no shader
-// extra data at all, so white is what it resolves to rather than anything read from the file.
+// `MaterialColor` is an `ATTRIBUTE` defaulting to white, and a shape supplies one only through
+// shader extra data, which none carries, so white is what it resolves to.
 //
-// The file also declares a `ToonTex` ramp, but its `NTM` binding is commented out and no
-// technique here samples it: the header says the toon outline path is deprecated. 5,111 of the
-// 5,500 shapes still carry `ToonRamp.bmp` in a shader slot, left over from when it was read.
+// The source also declares a toon ramp, but its `NTM` binding is commented out and no technique
+// here samples it: the header says the toon outline path is deprecated. A shape may still carry
+// that ramp in a shader slot, left over from when it was read.
 
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {

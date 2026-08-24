@@ -71,9 +71,9 @@ const DEFAULT_SLOTS: [Option<shaders::Source>; BOUND_SLOTS] = [
     None,
 ];
 
-/// The one light the viewer invents, since a NIF does not carry the scene's lighting. Only 55 of
-/// the 18,569 files whose shapes name a custom shader contain a light block at all, so a faithful
-/// reading of the file would leave almost everything black.
+/// The one light the viewer invents, since a NIF does not carry the scene's lighting. Almost no
+/// file that names a custom shader contains a light block, so a faithful reading of the file
+/// would leave nearly everything black.
 ///
 /// Every path reads this: the fixed function stand in and each custom shader, so moving it moves
 /// the whole scene consistently. The defaults reproduce the shading nifty had when these were
@@ -743,8 +743,8 @@ impl Gfx {
             let model = Mat4::from(&visit.transform);
             let colors = data.vertex_colors.as_ref();
             let normals = data.normals.as_ref();
-            // the dark slot reads uv set 1 in all but 10 of the corpus's 1,871 dark maps, so
-            // two sets go up and each slot picks the one its own TexDesc names
+            // the dark slot almost always reads uv set 1, so more than one set goes up and
+            // each slot picks the one its own TexDesc names
             let uvs = data.uv_sets.first().map(|set| &set.uvs);
             let uvs1 = data.uv_sets.get(1).map(|set| &set.uvs).or(uvs);
             let uvs2 = data.uv_sets.get(2).map(|set| &set.uvs).or(uvs);
