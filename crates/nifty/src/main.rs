@@ -12,6 +12,7 @@ mod details;
 mod library;
 mod pick;
 mod scene;
+mod shaders;
 mod texture;
 
 use std::path::PathBuf;
@@ -42,9 +43,9 @@ fn main() -> eframe::Result {
             cc.egui_ctx.set_fonts(fonts);
 
             let mut app = Nifty::new(cc);
-            // roots first, so the scenes resolve their textures as they are built
+            // roots first, so the scenes resolve textures and shaders as they are built
             for root in roots {
-                app.add_texture_root(root);
+                app.add_root(root);
             }
             for file in files {
                 app.open(file);

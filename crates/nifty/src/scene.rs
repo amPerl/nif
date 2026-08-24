@@ -15,6 +15,7 @@ use nif::{
 use wgpu::util::DeviceExt as _;
 
 use crate::library::{self, TextureLibrary};
+use crate::shaders::{self, Shader, Shaders};
 use crate::texture::decode_texture;
 
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -32,14 +33,43 @@ const UV_OFFSET: u64 = 32 * 4;
 
 /// The shader's `Model` and `Camera` structs, in floats. Every buffer bound as one has to be
 /// this long, the grid's included.
-const MODEL_FLOATS: u64 = 56;
+const MODEL_FLOATS: u64 = 72;
 const CAMERA_FLOATS: u64 = 40;
 
-/// Position, colour and two uv sets. The second exists because the dark slot reads uv set 1.
-const VERTEX_FLOATS: usize = 3 + 4 + 2 + 2;
+/// Every addressing a map or a shader can ask for. A sampler is built per pair.
+const ADDRESS_MODES: [wgpu::AddressMode; 3] = [
+    wgpu::AddressMode::Repeat,
+    wgpu::AddressMode::ClampToEdge,
+    wgpu::AddressMode::MirrorRepeat,
+];
 
-/// The slots the renderer draws, in the order their uv transforms sit in the model uniform.
-const DRAWN_SLOTS: [TextureSlot; 3] = [TextureSlot::Base, TextureSlot::Dark, TextureSlot::Glow];
+/// The `TexClampMode` a map carries, as an addressing pair.
+fn address_of(clamp: &nif::blocks::TexClampMode) -> (wgpu::AddressMode, wgpu::AddressMode) {
+    let mode = |wraps| {
+        if wraps {
+            wgpu::AddressMode::Repeat
+        } else {
+            wgpu::AddressMode::ClampToEdge
+        }
+    };
+    (mode(clamp.wraps_u()), mode(clamp.wraps_v()))
+}
+
+/// Position, normal, colour and three uv sets. Dark reads set 1, and `VCAlphaTextureBlender`
+/// reads a different set per shader map, up to set 2. The normal is zero when the geometry
+/// stores none, which the shader takes as "derive one".
+const VERTEX_FLOATS: usize = 3 + 3 + 4 + 2 + 2 + 2;
+
+/// How many texture slots one shape binds. Which maps those are is the shader's choice.
+const BOUND_SLOTS: usize = shaders::SLOTS;
+
+/// What the fixed function path binds, in the order their uv transforms sit in the uniform.
+const DEFAULT_SLOTS: [Option<TextureSlot>; BOUND_SLOTS] = [
+    Some(TextureSlot::Base),
+    Some(TextureSlot::Dark),
+    Some(TextureSlot::Glow),
+    None,
+];
 
 /// The one light the viewer invents, since a NIF does not carry the scene's lighting. Only 55 of
 /// the 18,569 files whose shapes name a custom shader contain a light block at all, so a faithful
@@ -129,8 +159,7 @@ pub struct Gfx {
     pub render_state: egui_wgpu::RenderState,
     model_layout: wgpu::BindGroupLayout,
     texture_layout: wgpu::BindGroupLayout,
-    samplers: [wgpu::Sampler; 4],
-    shader: wgpu::ShaderModule,
+    samplers: [wgpu::Sampler; ADDRESS_MODES.len() * ADDRESS_MODES.len()],
     pipeline_layout: wgpu::PipelineLayout,
     pub camera_buffer: wgpu::Buffer,
 }
@@ -146,10 +175,12 @@ pub struct Mesh {
     material_block: Option<usize>,
     /// The NiTexturingProperty this shape draws with, which is what a texture transform
     /// controller targets.
-    texturing_block: Option<usize>,
+    pub texturing_block: Option<usize>,
     /// Every source a flip controller can swap into the base slot, by its own block. Empty
     /// unless one drives this shape.
     flip_frames: HashMap<usize, wgpu::BindGroup>,
+    /// Which texture slots this shape's three bindings hold, which its shader decides.
+    pub bound: [Option<TextureSlot>; BOUND_SLOTS],
     pub radius: f32,
     /// The NiLODNode this shape sits under, and which of its levels, if any.
     lod: Option<(usize, usize)>,
@@ -232,10 +263,11 @@ pub struct Frame {
     pub hidden: HashSet<usize>,
     /// Material alpha a controller has replaced, by the material's own block.
     pub alpha: HashMap<usize, f32>,
-    /// Every drawn slot's uv transform where a controller drives one, by texturing property
-    /// block. All three slots ride together, since one controller per member means several can
-    /// target one property at once.
-    pub uv: HashMap<usize, [f32; 24]>,
+    /// Every bound slot's uv transform where a controller drives one, by shape block. All
+    /// three ride together, since one controller per member means several can target one
+    /// property at once. Keyed by shape rather than property because which slots a shape binds
+    /// is its shader's choice, so two shapes sharing a property can want different rows.
+    pub uv: HashMap<usize, [f32; BOUND_SLOTS * 8]>,
     /// The source a flip controller has swapped into the base slot, by texturing property block.
     pub flip: HashMap<usize, usize>,
 }
@@ -406,20 +438,13 @@ impl Gfx {
             label: Some("nifty texture"),
             entries: &slot_layout_entries(),
         });
-        // one per address mode combination, since TexClampMode is per map and glow maps are
-        // clamped about as often as they wrap
+        // one per address mode pair. TexClampMode is per map and glow maps clamp about as
+        // often as they wrap, and a shader can pin its own: ActionSpecularBand mirrors in u.
         let samplers = std::array::from_fn(|i| {
-            let mode = |wraps| {
-                if wraps {
-                    wgpu::AddressMode::Repeat
-                } else {
-                    wgpu::AddressMode::ClampToEdge
-                }
-            };
             device.create_sampler(&wgpu::SamplerDescriptor {
                 label: Some("nifty sampler"),
-                address_mode_u: mode(i & 1 != 0),
-                address_mode_v: mode(i & 2 != 0),
+                address_mode_u: ADDRESS_MODES[i / ADDRESS_MODES.len()],
+                address_mode_v: ADDRESS_MODES[i % ADDRESS_MODES.len()],
                 mag_filter: wgpu::FilterMode::Linear,
                 min_filter: wgpu::FilterMode::Linear,
                 ..Default::default()
@@ -441,10 +466,10 @@ impl Gfx {
             }],
         });
 
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("nifty"),
-            source: wgpu::ShaderSource::Wgsl(SHADER.into()),
-        });
+        // the wire, highlight and grid passes are the contract's own entry points, so they
+        // come from the fixed function module rather than from whichever shader a shape names
+        let shader = compile(device, Shaders::default().fixed())
+            .expect("the built in fixed function shader has to compile");
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("nifty"),
             bind_group_layouts: &[
@@ -518,17 +543,18 @@ impl Gfx {
             model_layout,
             texture_layout,
             samplers,
-            shader,
             pipeline_layout: layout,
             camera_buffer,
         }
     }
 
-    fn pipeline(&self, state: DrawState) -> wgpu::RenderPipeline {
+    /// One pipeline per shader and draw state combination, so a shader that overrides its own
+    /// blending gets its own rather than sharing whatever the file's properties asked for.
+    fn pipeline(&self, state: DrawState, module: &wgpu::ShaderModule) -> wgpu::RenderPipeline {
         build_pipeline(
             &self.render_state.device,
             &self.pipeline_layout,
-            &self.shader,
+            module,
             self.render_state.target_format,
             state,
             wgpu::PrimitiveTopology::TriangleList,
@@ -536,8 +562,9 @@ impl Gfx {
         )
     }
 
-    fn sampler(&self, wraps_u: bool, wraps_v: bool) -> wgpu::Sampler {
-        self.samplers[usize::from(wraps_u) | usize::from(wraps_v) << 1].clone()
+    fn sampler(&self, u: wgpu::AddressMode, v: wgpu::AddressMode) -> wgpu::Sampler {
+        let at = |mode| ADDRESS_MODES.iter().position(|m| *m == mode).unwrap_or(0);
+        self.samplers[at(u) * ADDRESS_MODES.len() + at(v)].clone()
     }
 
     fn upload_texture(&self, width: u32, height: u32, rgba: &[u8]) -> wgpu::TextureView {
@@ -577,7 +604,10 @@ impl Gfx {
     /// One bind group per shape, carrying the base, dark and glow slots with the address mode
     /// each `TexDesc` asked for. A slot the shape does not use gets a default that changes
     /// nothing: white for dark, since it multiplies, and black for glow, since it adds.
-    fn slot_group(&self, slots: [(&wgpu::TextureView, &wgpu::Sampler); 3]) -> wgpu::BindGroup {
+    fn slot_group(
+        &self,
+        slots: [(&wgpu::TextureView, &wgpu::Sampler); BOUND_SLOTS],
+    ) -> wgpu::BindGroup {
         let entries: Vec<wgpu::BindGroupEntry> = slots
             .iter()
             .enumerate()
@@ -632,18 +662,38 @@ impl Gfx {
     }
 
     /// A draw per shape, each carrying its own transform, not one merged mesh.
-    pub fn build_scene(&self, nif: &Nif, library: &TextureLibrary) -> Scene {
+    /// Returns the scene and the technique names it asked for that nothing could draw, so the
+    /// caller can report them rather than let a wrong render pass as a right one.
+    pub fn build_scene(
+        &self,
+        nif: &Nif,
+        library: &TextureLibrary,
+        shaders: &Shaders,
+    ) -> (Scene, Vec<String>) {
         let lod_of = lod_ancestry(nif);
         let device = &self.render_state.device;
-        let white = self.upload_texture(1, 1, &[255, 255, 255, 255]);
-        let black = self.upload_texture(1, 1, &[0, 0, 0, 255]);
+        // one per Absent variant, since what an unread slot stands in with depends on how the
+        // slot combines: white where it multiplies, black where it adds, half where it doubles
+        let neutral: [wgpu::TextureView; 3] = std::array::from_fn(|i| {
+            let texel = match i {
+                0 => shaders::Absent::White,
+                1 => shaders::Absent::Black,
+                _ => shaders::Absent::Half,
+            };
+            self.upload_texture(1, 1, &texel.texel())
+        });
+        let white = neutral[shaders::Absent::White as usize].clone();
         // shapes whose texture could not be loaded get a checker rather than white
         let missing = {
             let (width, height, rgba) = library::placeholder();
             self.upload_texture(width, height, &rgba)
         };
         let mut cache: HashMap<usize, wgpu::TextureView> = HashMap::new();
-        let mut pipelines: HashMap<DrawState, wgpu::RenderPipeline> = HashMap::new();
+        let mut pipelines: HashMap<(String, DrawState), wgpu::RenderPipeline> = HashMap::new();
+        let mut modules: HashMap<String, Result<wgpu::ShaderModule, String>> = HashMap::new();
+        let fixed_module = compile(device, shaders.fixed())
+            .expect("the built in fixed function shader has to compile");
+        let mut unhandled: Vec<String> = Vec::new();
         let mut meshes = Vec::new();
         let mut lods: HashMap<usize, Lod> = HashMap::new();
         let mut min = Vec3::splat(f32::MAX);
@@ -681,10 +731,12 @@ impl Gfx {
 
             let model = Mat4::from(&visit.transform);
             let colors = data.vertex_colors.as_ref();
+            let normals = data.normals.as_ref();
             // the dark slot reads uv set 1 in all but 10 of the corpus's 1,871 dark maps, so
             // two sets go up and each slot picks the one its own TexDesc names
             let uvs = data.uv_sets.first().map(|set| &set.uvs);
             let uvs1 = data.uv_sets.get(1).map(|set| &set.uvs).or(uvs);
+            let uvs2 = data.uv_sets.get(2).map(|set| &set.uvs).or(uvs);
             let mut attributes: Vec<f32> = Vec::with_capacity(vertices.len() * VERTEX_FLOATS);
             let mut shape_min = Vec3::splat(f32::MAX);
             let mut shape_max = Vec3::splat(f32::MIN);
@@ -712,19 +764,30 @@ impl Gfx {
                     .and_then(|set| set.get(i))
                     .map(|t| [t.u, t.v])
                     .unwrap_or(uv);
+                let uv2 = uvs2
+                    .and_then(|set| set.get(i))
+                    .map(|t| [t.u, t.v])
+                    .unwrap_or(uv);
+                let normal = normals
+                    .and_then(|n| n.get(i))
+                    .map(|n| [n.x, n.y, n.z])
+                    .unwrap_or([0.0, 0.0, 0.0]);
                 attributes.extend_from_slice(&[v.x, v.y, v.z]);
+                attributes.extend_from_slice(&normal);
                 attributes.extend_from_slice(&color);
                 attributes.extend_from_slice(&uv);
                 attributes.extend_from_slice(&uv1);
+                attributes.extend_from_slice(&uv2);
             }
 
             // NiMaterialProperty is a D3DMATERIAL9 verbatim. There is no ambient term: the
             // engine multiplies material ambient by the global ambient, which is black unless
             // the scene carries an NiAmbientLight.
             // the block index as well as the material, since that is what a controller targets
-            let material_index = geometry.property_refs.iter().find(|r| {
-                matches!(r.get(&nif.blocks), Some(Block::NiMaterialProperty(_)))
-            });
+            let material_index = geometry
+                .property_refs
+                .iter()
+                .find(|r| matches!(r.get(&nif.blocks), Some(Block::NiMaterialProperty(_))));
             let material_index = material_index.and_then(|r| r.index());
             let material = material_index
                 .and_then(|index| nif.blocks.get(index))
@@ -801,14 +864,34 @@ impl Gfx {
                     _ => None,
                 });
 
-            let blend = alpha.filter(|a| a.alpha_blend()).map(|a| {
+            // a technique nothing can draw is recorded rather than approximated, and falls
+            // back to the fixed function path so the geometry is still inspectable
+            let technique = geometry
+                .material_data
+                .shader()
+                .map(|s| s.name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let shader = match shaders.get(&technique) {
+                Some(shader) => shader,
+                None => {
+                    unhandled.push(technique);
+                    shaders.fixed()
+                }
+            };
+            // A shader's own pass state beats what the file's properties ask for, and the two
+            // are separate: turning the alpha test off must not also decide the blending, and a
+            // shader that forces blending on has to be sorted as blended even when the file
+            // asks for none.
+            let from_file = alpha.filter(|a| a.alpha_blend()).map(|a| {
                 (
                     blend_factor(&a.source_blend_mode(), false),
                     blend_factor(&a.destination_blend_mode(), true),
                 )
             });
+            let blend = shader.state.blend.unwrap_or(from_file);
+            let tested = alpha.filter(|_| shader.state.alpha_test != Some(false));
             // the shader implements TestGreater only. TestAlways never discards.
-            let (alpha_test, alpha_threshold) = match alpha {
+            let (alpha_test, alpha_threshold) = match tested {
                 Some(a) if a.alpha_test() && a.test_func() != TestFunction::TestAlways => {
                     (1.0, f32::from(a.threshold) / 255.0)
                 }
@@ -816,21 +899,32 @@ impl Gfx {
             };
             let state = DrawState {
                 cull: cull_of(stencil.map(|p| &p.draw_mode)),
-                depth_write: zbuffer.is_none_or(|z| z.depth_write()),
+                depth_write: shader
+                    .state
+                    .depth_write
+                    .unwrap_or_else(|| zbuffer.is_none_or(|z| z.depth_write())),
                 depth: depth_of(zbuffer),
                 blend,
             };
+            let module = modules
+                .entry(shader.name.clone())
+                .or_insert_with(|| compile(device, shader));
+            // a shader that failed to compile falls back rather than taking the viewer down
+            let module = match module {
+                Ok(module) => module,
+                Err(_) => &fixed_module,
+            };
             let pipeline = pipelines
-                .entry(state)
-                .or_insert_with(|| self.pipeline(state))
+                .entry((shader.name.clone(), state))
+                .or_insert_with(|| self.pipeline(state, module))
                 .clone();
             let unculled = DrawState {
                 cull: None,
                 ..state
             };
             let pipeline_unculled = pipelines
-                .entry(unculled)
-                .or_insert_with(|| self.pipeline(unculled))
+                .entry((shader.name.clone(), unculled))
+                .or_insert_with(|| self.pipeline(unculled, module))
                 .clone();
 
             // one upload per source texture, not per shape that uses it
@@ -838,17 +932,20 @@ impl Gfx {
             let property = texturing_of(nif, &geometry.property_refs);
             let texturing_block = texturing_index(nif, &geometry.property_refs);
 
-            // a slot the shape does not use has to change nothing: dark multiplies so it
-            // defaults to white, glow adds so it defaults to black
-            let mut views = [white.clone(), white.clone(), black.clone()];
-            let mut samplers = [
-                self.sampler(true, true),
-                self.sampler(true, true),
-                self.sampler(true, true),
-            ];
+            let bound = shader.slots;
+            // a slot the shape does not use has to change nothing, and what that means depends
+            // on how the slot is combined
+            let mut views: [wgpu::TextureView; BOUND_SLOTS] =
+                std::array::from_fn(|position| neutral[shader.absent[position] as usize].clone());
+            let mut samplers: [wgpu::Sampler; BOUND_SLOTS] = std::array::from_fn(|position| {
+                let (u, v) = shader.address[position]
+                    .unwrap_or((wgpu::AddressMode::Repeat, wgpu::AddressMode::Repeat));
+                self.sampler(u, v)
+            });
 
-            for (position, slot) in DRAWN_SLOTS.iter().enumerate() {
-                let Some(desc) = property.and_then(|p| p.texture(*slot)) else {
+            for (position, slot) in bound.iter().enumerate() {
+                let Some(desc) = slot.and_then(|slot| property.and_then(|p| p.texture(slot)))
+                else {
                     continue;
                 };
                 if let Some(key) = desc.source_ref.index() {
@@ -860,17 +957,15 @@ impl Gfx {
                         })
                         .clone();
                 }
-                samplers[position] =
-                    self.sampler(desc.clamp_mode.wraps_u(), desc.clamp_mode.wraps_v());
+                // the shader's own sampler state beats the map's clamp mode
+                let (u, v) = shader.address[position].unwrap_or(address_of(&desc.clamp_mode));
+                samplers[position] = self.sampler(u, v);
             }
-            let texture = self.slot_group([
-                (&views[0], &samplers[0]),
-                (&views[1], &samplers[1]),
-                (&views[2], &samplers[2]),
-            ]);
+            let texture = self.slot_group(std::array::from_fn(|i| (&views[i], &samplers[i])));
             // every frame a flip controller can reach, uploaded once each and shared by block
             let mut flip_frames = HashMap::new();
-            for block in &nif.blocks {
+            let base_slot_flips = bound.first() == Some(&Some(TextureSlot::Base));
+            for block in nif.blocks.iter().filter(|_| base_slot_flips) {
                 let Block::NiFlipController(flip) = block else {
                     continue;
                 };
@@ -891,11 +986,11 @@ impl Gfx {
                         })
                         .clone();
                     // the other two slots keep whatever the shape itself carries
-                    let group = self.slot_group([
-                        (&view, &samplers[0]),
-                        (&views[1], &samplers[1]),
-                        (&views[2], &samplers[2]),
-                    ]);
+                    let group = self.slot_group(std::array::from_fn(|i| {
+                        // only the first binding is swapped; the rest stay as the shape's own
+                        let view = if i == 0 { &view } else { &views[i] };
+                        (view, &samplers[i])
+                    }));
                     flip_frames.insert(index, group);
                 }
             }
@@ -911,7 +1006,7 @@ impl Gfx {
                 replace * f32::from(texture_key.is_some()),
             ]);
             model_uniform[28..32].copy_from_slice(&[alpha_threshold, alpha_test, 0.0, 0.0]);
-            model_uniform[32..56].copy_from_slice(&slot_uv_rows(&nif.blocks, property, 0.0));
+            model_uniform[32..64].copy_from_slice(&slot_uv_rows(&nif.blocks, property, bound, 0.0));
 
             let mut indices: Vec<u16> = Vec::with_capacity(triangles.len() * 3);
             let mut edges: Vec<u16> = Vec::with_capacity(triangles.len() * 6);
@@ -938,6 +1033,7 @@ impl Gfx {
                 material_block: material_index,
                 texturing_block,
                 flip_frames,
+                bound,
                 radius: ((shape_max - shape_min).length() * 0.5).max(0.001),
                 data_block: geometry.data_ref.index().unwrap_or(usize::MAX),
                 texture,
@@ -977,13 +1073,13 @@ impl Gfx {
             ((min + max) * 0.5, (max - min).length() * 0.5)
         };
 
-        let samplers_for_grid = self.sampler(true, true);
+        let samplers_for_grid = self.sampler(wgpu::AddressMode::Repeat, wgpu::AddressMode::Repeat);
         // the floor has to reach the geometry as well as the origin, which a chunk sitting
         // far out is nowhere near
         let (lines, spacing, half) = grid_lines(center.length() + radius);
         let mut identity = [0f32; MODEL_FLOATS as usize];
         identity[..16].copy_from_slice(&Mat4::IDENTITY.to_cols_array());
-        identity[32..56].copy_from_slice(&slot_uv_rows(&[], None, 0.0));
+        identity[32..64].copy_from_slice(&slot_uv_rows(&[], None, DEFAULT_SLOTS, 0.0));
         let grid = Grid {
             half,
             count: (lines.len() / VERTEX_FLOATS) as u32,
@@ -1007,21 +1103,22 @@ impl Gfx {
                 }],
             }),
             // the layout carries a texture group whether the shader samples it or not
-            texture: self.slot_group([
-                (&white, &samplers_for_grid),
-                (&white, &samplers_for_grid),
-                (&black, &samplers_for_grid),
-            ]),
+            texture: self.slot_group(std::array::from_fn(|_| (&white, &samplers_for_grid))),
             spacing,
         };
 
-        Scene {
-            meshes,
-            center,
-            radius: radius.max(0.001),
-            lods,
-            grid,
-        }
+        unhandled.sort();
+        unhandled.dedup();
+        (
+            Scene {
+                meshes,
+                center,
+                radius: radius.max(0.001),
+                lods,
+                grid,
+            },
+            unhandled,
+        )
     }
 }
 
@@ -1063,18 +1160,20 @@ pub fn uv_rows(transform: Option<nif::blocks::TextureTransform>, uv_set: u32) ->
     [x.x, y.x, m.z_axis.x, set, x.y, y.y, m.z_axis.y, 0.0]
 }
 
-/// Every drawn slot's uv rows at `time`, in `DRAWN_SLOTS` order. Both the scene build and the
+/// Every drawn slot's uv rows at `time`, in `DEFAULT_SLOTS` order. Both the scene build and the
 /// per frame update go through this, so an animated slot cannot be one the build forgot.
 pub fn slot_uv_rows(
     blocks: &[Block],
     property: Option<&nif::blocks::NiTexturingProperty>,
+    bound: [Option<TextureSlot>; BOUND_SLOTS],
     time: f32,
-) -> [f32; 24] {
-    let mut out = [0.0; 24];
-    for (position, slot) in DRAWN_SLOTS.iter().enumerate() {
-        let desc = property.and_then(|p| p.texture(*slot));
+) -> [f32; BOUND_SLOTS * 8] {
+    let mut out = [0.0; BOUND_SLOTS * 8];
+    for (position, slot) in bound.iter().enumerate() {
+        let Some(slot) = *slot else { continue };
+        let desc = property.and_then(|p| p.texture(slot));
         let transform =
-            property.and_then(|p| nif::anim::texture_transform_at(blocks, p, *slot, time));
+            property.and_then(|p| nif::anim::texture_transform_at(blocks, p, slot, time));
         let rows = uv_rows(transform, desc.map_or(0, |d| d.uv_set));
         out[position * 8..(position + 1) * 8].copy_from_slice(&rows);
     }
@@ -1120,8 +1219,9 @@ fn grid_lines(reach: f32) -> (Vec<f32>, f32, f32) {
     let mut line = |from: Vec3, to: Vec3, color: [f32; 4]| {
         for point in [from, to] {
             out.extend_from_slice(&[point.x, point.y, point.z]);
+            out.extend_from_slice(&[0.0, 0.0, 0.0]);
             out.extend_from_slice(&color);
-            out.extend_from_slice(&[0.0, 0.0, 0.0, 0.0]);
+            out.extend_from_slice(&[0.0; 6]);
         }
     };
 
@@ -1208,7 +1308,8 @@ fn build_pipeline(
                 array_stride: (VERTEX_FLOATS * 4) as u64,
                 step_mode: wgpu::VertexStepMode::Vertex,
                 attributes: &wgpu::vertex_attr_array![
-                    0 => Float32x3, 1 => Float32x4, 2 => Float32x2, 3 => Float32x2
+                    0 => Float32x3, 1 => Float32x3, 2 => Float32x4,
+                    3 => Float32x2, 4 => Float32x2, 5 => Float32x2
                 ],
             }],
             compilation_options: Default::default(),
@@ -1250,8 +1351,22 @@ fn build_pipeline(
 
 /// `floats` is what the shader's matching struct holds. Declaring it makes a buffer that has
 /// fallen behind the struct fail when the bind group is built, rather than once per draw call.
-/// A texture and sampler pair per drawn slot, in `DRAWN_SLOTS` order.
-fn slot_layout_entries() -> [wgpu::BindGroupLayoutEntry; 6] {
+/// Compiles one shader against the contract. A shader out of a user's directory can fail to
+/// compile and a panic is not an option, so the error comes back for the UI to report.
+fn compile(device: &wgpu::Device, shader: &Shader) -> Result<wgpu::ShaderModule, String> {
+    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some(&shader.name),
+        source: wgpu::ShaderSource::Wgsl(shader.module_source().into()),
+    });
+    match pollster::block_on(scope.pop()) {
+        Some(error) => Err(error.to_string()),
+        None => Ok(module),
+    }
+}
+
+/// A texture and sampler pair per bound slot, in binding order.
+fn slot_layout_entries() -> [wgpu::BindGroupLayoutEntry; BOUND_SLOTS * 2] {
     std::array::from_fn(|i| wgpu::BindGroupLayoutEntry {
         binding: i as u32,
         visibility: wgpu::ShaderStages::FRAGMENT,
@@ -1359,10 +1474,7 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
             {
                 queue.write_buffer(&mesh.model_buffer, ALPHA_OFFSET, bytemuck::bytes_of(alpha));
             }
-            if let Some(rows) = mesh
-                .texturing_block
-                .and_then(|block| self.frame.uv.get(&block))
-            {
+            if let Some(rows) = self.frame.uv.get(&mesh.shape_block) {
                 queue.write_buffer(&mesh.model_buffer, UV_OFFSET, bytemuck::cast_slice(rows));
             }
         }
@@ -1446,143 +1558,6 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
         }
     }
 }
-
-const SHADER: &str = r#"
-struct Camera {
-    view_proj: mat4x4<f32>,
-    eye: vec4<f32>,
-    flags: vec4<f32>,
-    // the direction the light travels, with the rim strength in w
-    light_dir: vec4<f32>,
-    light_ambient: vec4<f32>,
-    light_diffuse: vec4<f32>,
-    light_specular: vec4<f32>,
-};
-struct Model {
-    model: mat4x4<f32>,
-    diffuse: vec4<f32>,
-    emissive: vec4<f32>,
-    // emissive from vertex colour, diffuse from vertex colour, lighting enabled, apply replace
-    sources: vec4<f32>,
-    // alpha test threshold, alpha test enabled
-    alpha: vec4<f32>,
-    // two rows per drawn slot, base then dark then glow. The third row is always (0, 0, 1),
-    // and row0.w names which of the two uv sets the slot reads.
-    uv: array<vec4<f32>, 6>,
-};
-
-@group(0) @binding(0) var<uniform> camera: Camera;
-@group(1) @binding(0) var<uniform> model: Model;
-@group(2) @binding(0) var base_texture: texture_2d<f32>;
-@group(2) @binding(1) var base_sampler: sampler;
-@group(2) @binding(2) var dark_texture: texture_2d<f32>;
-@group(2) @binding(3) var dark_sampler: sampler;
-@group(2) @binding(4) var glow_texture: texture_2d<f32>;
-@group(2) @binding(5) var glow_sampler: sampler;
-
-struct VertexOut {
-    @builtin(position) clip: vec4<f32>,
-    @location(0) world: vec3<f32>,
-    @location(1) color: vec4<f32>,
-    @location(2) uv: vec2<f32>,
-    @location(3) uv1: vec2<f32>,
-};
-
-@vertex
-fn vs_main(
-    @location(0) position: vec3<f32>,
-    @location(1) color: vec4<f32>,
-    @location(2) uv: vec2<f32>,
-    @location(3) uv1: vec2<f32>,
-) -> VertexOut {
-    let world = model.model * vec4<f32>(position, 1.0);
-    var out: VertexOut;
-    out.clip = camera.view_proj * world;
-    out.world = world.xyz;
-    out.color = color;
-    out.uv = uv;
-    out.uv1 = uv1;
-    return out;
-}
-
-/// The uv a slot samples at, after its own set choice and its own transform.
-fn slot_uv(slot: u32, in: VertexOut) -> vec2<f32> {
-    let row0 = model.uv[slot * 2u];
-    let row1 = model.uv[slot * 2u + 1u];
-    var source = in.uv;
-    if (row0.w > 0.5) {
-        source = in.uv1;
-    }
-    let uvw = vec3<f32>(source, 1.0);
-    return vec2<f32>(dot(row0.xyz, uvw), dot(row1.xyz, uvw));
-}
-
-@fragment
-fn fs_line(in: VertexOut) -> @location(0) vec4<f32> {
-    return in.color;
-}
-
-@fragment
-fn fs_wire(in: VertexOut) -> @location(0) vec4<f32> {
-    return vec4<f32>(0.35, 0.95, 0.55, 1.0);
-}
-
-@fragment
-fn fs_highlight(in: VertexOut) -> @location(0) vec4<f32> {
-    return vec4<f32>(1.0, 0.65, 0.15, 1.0);
-}
-
-@fragment
-fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
-    // the sign of a derivative normal depends on framebuffer handedness, so orient it
-    // toward the eye rather than trusting it, which holds with culling off too
-    var normal = normalize(cross(dpdx(in.world), dpdy(in.world)));
-    let to_eye = normalize(camera.eye.xyz - in.world);
-    if (dot(normal, to_eye) < 0.0) {
-        normal = -normal;
-    }
-
-    // the light travels away from its source, so the direction back to it is negated
-    let to_light = -camera.light_dir.xyz;
-    let lambert = clamp(dot(normal, to_light), 0.0, 1.0);
-    let fill = camera.light_dir.w * clamp(dot(normal, to_eye), 0.0, 1.0);
-
-    let shade = camera.light_ambient.rgb + camera.light_diffuse.rgb * lambert + vec3<f32>(fill);
-
-    // the texture modulates the lit colour, so emissive is inside the multiply, not over it:
-    // emissive 1,1,1 is a full brightness texture, not white. shade replaces the light sum.
-    let vertex = in.color.rgb;
-    let emissive_src = mix(model.emissive.rgb, vertex, model.sources.x);
-    let diffuse_src = mix(model.diffuse.rgb, vertex, model.sources.y);
-    let material_lit = clamp(
-        emissive_src + diffuse_src * shade * model.sources.z,
-        vec3<f32>(0.0),
-        vec3<f32>(1.0)
-    );
-
-    let plain = vec3<f32>(0.78, 0.80, 0.84) * shade;
-    let lit = mix(plain, material_lit, camera.flags.x);
-
-    let texel = textureSample(base_texture, base_sampler, slot_uv(0u, in));
-    // the dark map accumulates before the base map, which then modulates onto it, so it
-    // multiplies. An absent slot is white and changes nothing.
-    let dark = textureSample(dark_texture, dark_sampler, slot_uv(1u, in)).rgb;
-    // the glow map is added in a ONE,ONE pass after everything, so it is unlit. Absent is black.
-    let glow = textureSample(glow_texture, glow_sampler, slot_uv(2u, in)).rgb;
-
-    let replace = model.sources.w * camera.flags.x;
-    let base = texel.rgb * dark;
-    let shaded = mix(lit * base, base, replace) + glow;
-
-    // alpha follows the same source as diffuse, and the texture modulates it like the colour
-    let alpha_src = mix(model.diffuse.a, in.color.a, model.sources.y);
-    let alpha = mix(alpha_src, alpha_src * texel.a, camera.flags.y);
-    if (model.alpha.y > 0.5 && alpha <= model.alpha.x) {
-        discard;
-    }
-    return vec4<f32>(mix(lit, shaded, camera.flags.y), alpha);
-}
-"#;
 
 #[cfg(test)]
 mod tests {

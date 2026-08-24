@@ -13,6 +13,7 @@ use crate::details::{self, Details};
 use crate::library::TextureLibrary;
 use crate::pick;
 use crate::scene::{Camera, Frame, Gfx, Light, LodMode, PreviewCall, Scene, Viewpoint};
+use crate::shaders::Shaders;
 
 struct Loaded {
     path: PathBuf,
@@ -55,6 +56,9 @@ struct State {
     openness: Vec<(usize, bool)>,
     /// Decoded images for the details pane, keyed by block.
     previews: Details,
+    /// Technique names this file asked for that no shader could draw, so the viewer can say the
+    /// render is wrong rather than quietly showing the fixed function stand in.
+    unhandled: Vec<String>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -131,6 +135,9 @@ pub struct Nifty {
     /// The viewer's own light. A NIF carries no scene lighting, so every shading path reads this.
     light: Light,
     show_light: bool,
+    /// Built in shaders, plus any a user supplied from a directory.
+    shaders: Shaders,
+    show_shaders: bool,
 }
 
 impl Default for State {
@@ -154,6 +161,7 @@ impl Default for State {
             sync_tree: false,
             openness: Vec::new(),
             previews: Details::default(),
+            unhandled: Vec::new(),
         }
     }
 }
@@ -170,6 +178,8 @@ impl Nifty {
             root_input: String::new(),
             light: Light::default(),
             show_light: false,
+            shaders: Shaders::default(),
+            show_shaders: false,
         }
     }
 
@@ -178,9 +188,14 @@ impl Nifty {
         self.active = 0;
     }
 
-    /// Adds a directory to search for the textures NIFs name.
-    pub fn add_texture_root(&mut self, root: PathBuf) {
-        if self.library.add_root(root) {
+    /// Adds a directory to search. One root serves both purposes: the texture library indexes
+    /// the images in it and the shader registry indexes any `<TechniqueName>.wgsl`, so a folder
+    /// of shaders and a folder of textures are told apart by what is in them rather than by a
+    /// flag.
+    pub fn add_root(&mut self, root: PathBuf) {
+        let shaders = self.shaders.add_root(root.clone());
+        let textures = self.library.add_root(root);
+        if shaders || textures {
             self.rebuild_scenes();
         }
     }
@@ -194,7 +209,9 @@ impl Nifty {
             let Some(loaded) = &document.state.loaded else {
                 continue;
             };
-            document.state.scene = Some(Arc::new(gfx.build_scene(&loaded.nif, &self.library)));
+            let (scene, unhandled) = gfx.build_scene(&loaded.nif, &self.library, &self.shaders);
+            document.state.scene = Some(Arc::new(scene));
+            document.state.unhandled = unhandled;
             document.state.previews.clear();
         }
     }
@@ -223,9 +240,10 @@ impl Nifty {
         let mut state = State::default();
         state.status = Some(match &self.gfx {
             Some(gfx) => {
-                let scene = gfx.build_scene(&nif, &self.library);
+                let (scene, unhandled) = gfx.build_scene(&nif, &self.library, &self.shaders);
                 let shapes = scene.meshes.len();
                 state.scene = Some(Arc::new(scene));
+                state.unhandled = unhandled;
                 format!("{} blocks, {} shapes", nif.blocks.len(), shapes)
             }
             None => format!("{} blocks", nif.blocks.len()),
@@ -612,7 +630,9 @@ impl Viewer<'_> {
             if visit.block.geometry().is_none() {
                 continue;
             }
-            frame.poses.insert(visit.index, Mat4::from(&visit.transform));
+            frame
+                .poses
+                .insert(visit.index, Mat4::from(&visit.transform));
             if visit.hidden {
                 frame.hidden.insert(visit.index);
             }
@@ -631,14 +651,23 @@ impl Viewer<'_> {
                 }
             }
             // a texture transform controller drives one member of one slot's transform, so a
-            // property can be the target of several at once and they are resolved together
-            for (index, block) in loaded.nif.blocks.iter().enumerate() {
-                let Block::NiTexturingProperty(property) = block else {
-                    continue;
+            // property can be the target of several at once and they are resolved together.
+            // Walked per shape rather than per property, since which slots a shape binds is its
+            // shader's choice.
+            let scene = self.state.scene.iter();
+            for mesh in scene.flat_map(|scene| scene.meshes.iter()) {
+                let property = match mesh.texturing_block.and_then(|i| loaded.nif.blocks.get(i)) {
+                    Some(Block::NiTexturingProperty(property)) => property,
+                    _ => continue,
                 };
                 frame.uv.insert(
-                    index,
-                    crate::scene::slot_uv_rows(&loaded.nif.blocks, Some(property), time),
+                    mesh.shape_block,
+                    crate::scene::slot_uv_rows(
+                        &loaded.nif.blocks,
+                        Some(property),
+                        mesh.bound,
+                        time,
+                    ),
                 );
                 let flipped = nif::anim::flip_source_at(
                     &loaded.nif.blocks,
@@ -646,8 +675,10 @@ impl Viewer<'_> {
                     nif::blocks::TextureSlot::Base,
                     time,
                 );
-                if let Some(source) = flipped.and_then(|r| r.index()) {
-                    frame.flip.insert(index, source);
+                if let (Some(source), Some(block)) =
+                    (flipped.and_then(|r| r.index()), mesh.texturing_block)
+                {
+                    frame.flip.insert(block, source);
                 }
             }
         }
@@ -1106,9 +1137,7 @@ impl eframe::App for Nifty {
                 .collect::<Vec<_>>()
         }) {
             if path.is_dir() {
-                if self.library.add_root(path) {
-                    self.rebuild_scenes();
-                }
+                self.add_root(path);
             } else {
                 self.open(path);
             }
@@ -1117,6 +1146,42 @@ impl eframe::App for Nifty {
             if let Some(document) = self.documents.get_mut(self.active) {
                 document.focus_selected();
             }
+        }
+
+        if self.show_shaders {
+            let mut open = true;
+            egui::Window::new("shaders")
+                .open(&mut open)
+                .default_width(460.0)
+                .show(ui.ctx(), |ui| {
+                    ui.label(
+                        "Shaders are WGSL fragments written against the contract in prelude.wgsl.                          Drop a directory on the window and any <TechniqueName>.wgsl in it is                          picked up, overriding a built in of the same name.",
+                    );
+                    ui.separator();
+                    egui::Grid::new("shader list").striped(true).show(ui, |ui| {
+                        for (name, origin) in self.shaders.names() {
+                            ui.label(name);
+                            match origin {
+                                crate::shaders::Origin::BuiltIn => {
+                                    ui.weak("built in");
+                                }
+                                crate::shaders::Origin::Directory(path) => {
+                                    ui.label(path.display().to_string());
+                                }
+                            }
+                            ui.end_row();
+                        }
+                    });
+                    if self.shaders.roots().is_empty() {
+                        ui.weak("no shader directories added");
+                    } else {
+                        ui.separator();
+                        for root in self.shaders.roots() {
+                            ui.weak(root.display().to_string());
+                        }
+                    }
+                });
+            self.show_shaders = open;
         }
 
         if self.show_light {
@@ -1264,6 +1329,8 @@ impl eframe::App for Nifty {
             root_input: _,
             light,
             show_light,
+            shaders,
+            show_shaders,
         } = self;
 
         egui::Panel::top("bar").show(ui, |ui| {
@@ -1296,6 +1363,21 @@ impl eframe::App for Nifty {
                 if let Some(error) = error {
                     ui.colored_label(egui::Color32::from_rgb(220, 120, 90), error.as_str());
                 }
+                // a technique nothing can draw renders as the fixed function stand in, which
+                // looks like an answer. Say so rather than let it pass for one.
+                let unhandled = documents
+                    .get(*active)
+                    .map(|d| d.state.unhandled.as_slice())
+                    .unwrap_or_default();
+                if !unhandled.is_empty() {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(230, 170, 70),
+                        format!("unhandled shader: {}", unhandled.join(", ")),
+                    )
+                    .on_hover_text(
+                        "drawn with the fixed function stand in, which is wrong for these",
+                    );
+                }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let label = match library.roots().len() {
@@ -1307,6 +1389,9 @@ impl eframe::App for Nifty {
                     }
                     if ui.button("light").clicked() {
                         *show_light = true;
+                    }
+                    if ui.button(format!("shaders: {}", shaders.count())).clicked() {
+                        *show_shaders = true;
                     }
                 });
             });
