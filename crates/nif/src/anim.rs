@@ -1,4 +1,4 @@
-use glam::{EulerRot, Mat3, Quat};
+use glam::{Mat3, Quat};
 
 use crate::blocks::{
     Block, NiAvObject, NiTimeController, NiTransformData, NiTransformInterpolator,
@@ -348,9 +348,13 @@ impl NiTransformData {
                     any = true;
                 }
             }
-            // the three angles compose as Rx * (Ry * Rz), which is glam's intrinsic XYZ
-            return any
-                .then(|| Quat::from_euler(EulerRot::XYZ, angles[0], angles[1], angles[2]).into());
+            // z is the outermost turn, so the x angle is the one applied to a vector first
+            return any.then(|| {
+                (Quat::from_rotation_z(angles[2])
+                    * Quat::from_rotation_y(angles[1])
+                    * Quat::from_rotation_x(angles[0]))
+                .into()
+            });
         }
 
         let keys = &self.quaternion_keys;
@@ -475,6 +479,53 @@ mod tests {
         );
         assert_eq!(keys.sample(-5.0), Some(3.0));
         assert_eq!(keys.sample(500.0), Some(4.0));
+    }
+
+    fn angle_group(value: f32) -> KeyGroup<f32> {
+        KeyGroup {
+            interpolation: Some(KeyType::Linear),
+            keys: vec![Key {
+                time: 0.0,
+                value,
+                in_tangent: None,
+                out_tangent: None,
+                tbc: None,
+            }],
+        }
+    }
+
+    /// Three angles compose with z outermost. Reverse them and a rotation on two axes lands
+    /// somewhere else entirely, which is the failure this pins down.
+    #[test]
+    fn xyz_angles_compose_with_z_outermost() {
+        let data = NiTransformData {
+            num_rotation_keys: 1,
+            rotation_type: Some(KeyType::XyzRotation),
+            quaternion_keys: Vec::new(),
+            xyz_rotations: Some(vec![angle_group(0.3), angle_group(1.1), angle_group(-0.7)]),
+            translations: KeyGroup {
+                interpolation: None,
+                keys: Vec::new(),
+            },
+            scales: KeyGroup {
+                interpolation: None,
+                keys: Vec::new(),
+            },
+        };
+        let sampled = Quat::from(data.rotation_at(0.0).unwrap());
+        let expected =
+            Quat::from_rotation_z(-0.7) * Quat::from_rotation_y(1.1) * Quat::from_rotation_x(0.3);
+        assert!(
+            sampled.dot(expected).abs() > 0.9999,
+            "{sampled} vs {expected}"
+        );
+
+        let reversed =
+            Quat::from_rotation_x(0.3) * Quat::from_rotation_y(1.1) * Quat::from_rotation_z(-0.7);
+        assert!(
+            sampled.dot(reversed).abs() < 0.99,
+            "the two orders have to differ, or the test proves nothing"
+        );
     }
 
     #[test]
