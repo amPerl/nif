@@ -64,10 +64,10 @@ const VERTEX_FLOATS: usize = 3 + 3 + 4 + 2 + 2 + 2;
 const BOUND_SLOTS: usize = shaders::SLOTS;
 
 /// What the fixed function path binds, in the order their uv transforms sit in the uniform.
-const DEFAULT_SLOTS: [Option<TextureSlot>; BOUND_SLOTS] = [
-    Some(TextureSlot::Base),
-    Some(TextureSlot::Dark),
-    Some(TextureSlot::Glow),
+const DEFAULT_SLOTS: [Option<shaders::Source>; BOUND_SLOTS] = [
+    Some(shaders::Source::Slot(TextureSlot::Base)),
+    Some(shaders::Source::Slot(TextureSlot::Dark)),
+    Some(shaders::Source::Slot(TextureSlot::Glow)),
     None,
 ];
 
@@ -159,7 +159,7 @@ pub struct Gfx {
     pub render_state: egui_wgpu::RenderState,
     model_layout: wgpu::BindGroupLayout,
     texture_layout: wgpu::BindGroupLayout,
-    samplers: [wgpu::Sampler; ADDRESS_MODES.len() * ADDRESS_MODES.len()],
+    samplers: [wgpu::Sampler; ADDRESS_MODES.len() * ADDRESS_MODES.len() * 2],
     pipeline_layout: wgpu::PipelineLayout,
     pub camera_buffer: wgpu::Buffer,
 }
@@ -180,7 +180,7 @@ pub struct Mesh {
     /// unless one drives this shape.
     flip_frames: HashMap<usize, wgpu::BindGroup>,
     /// Which texture slots this shape's three bindings hold, which its shader decides.
-    pub bound: [Option<TextureSlot>; BOUND_SLOTS],
+    pub bound: [Option<shaders::Source>; BOUND_SLOTS],
     pub radius: f32,
     /// The NiLODNode this shape sits under, and which of its levels, if any.
     lod: Option<(usize, usize)>,
@@ -441,12 +441,19 @@ impl Gfx {
         // one per address mode pair. TexClampMode is per map and glow maps clamp about as
         // often as they wrap, and a shader can pin its own: ActionSpecularBand mirrors in u.
         let samplers = std::array::from_fn(|i| {
+            let modes = ADDRESS_MODES.len();
+            // a toon ramp asks for point sampling, which is what gives it hard bands
+            let filter = if i / (modes * modes) == 0 {
+                wgpu::FilterMode::Linear
+            } else {
+                wgpu::FilterMode::Nearest
+            };
             device.create_sampler(&wgpu::SamplerDescriptor {
                 label: Some("nifty sampler"),
-                address_mode_u: ADDRESS_MODES[i / ADDRESS_MODES.len()],
-                address_mode_v: ADDRESS_MODES[i % ADDRESS_MODES.len()],
-                mag_filter: wgpu::FilterMode::Linear,
-                min_filter: wgpu::FilterMode::Linear,
+                address_mode_u: ADDRESS_MODES[(i / modes) % modes],
+                address_mode_v: ADDRESS_MODES[i % modes],
+                mag_filter: filter,
+                min_filter: filter,
                 ..Default::default()
             })
         });
@@ -562,9 +569,12 @@ impl Gfx {
         )
     }
 
-    fn sampler(&self, u: wgpu::AddressMode, v: wgpu::AddressMode) -> wgpu::Sampler {
+    fn sampler(&self, sampling: shaders::Sampling) -> wgpu::Sampler {
         let at = |mode| ADDRESS_MODES.iter().position(|m| *m == mode).unwrap_or(0);
-        self.samplers[at(u) * ADDRESS_MODES.len() + at(v)].clone()
+        let (u, v) = sampling.address;
+        let filter = usize::from(sampling.filter == wgpu::FilterMode::Nearest);
+        let modes = ADDRESS_MODES.len();
+        self.samplers[filter * modes * modes + at(u) * modes + at(v)].clone()
     }
 
     fn upload_texture(&self, width: u32, height: u32, rgba: &[u8]) -> wgpu::TextureView {
@@ -689,6 +699,7 @@ impl Gfx {
             self.upload_texture(width, height, &rgba)
         };
         let mut cache: HashMap<usize, wgpu::TextureView> = HashMap::new();
+        let mut named_textures: HashMap<&'static str, wgpu::TextureView> = HashMap::new();
         let mut pipelines: HashMap<(String, DrawState), wgpu::RenderPipeline> = HashMap::new();
         let mut modules: HashMap<String, Result<wgpu::ShaderModule, String>> = HashMap::new();
         let fixed_module = compile(device, shaders.fixed())
@@ -937,34 +948,54 @@ impl Gfx {
             // on how the slot is combined
             let mut views: [wgpu::TextureView; BOUND_SLOTS] =
                 std::array::from_fn(|position| neutral[shader.absent[position] as usize].clone());
+            let default_sampling = shaders::Sampling {
+                address: (wgpu::AddressMode::Repeat, wgpu::AddressMode::Repeat),
+                filter: wgpu::FilterMode::Linear,
+            };
             let mut samplers: [wgpu::Sampler; BOUND_SLOTS] = std::array::from_fn(|position| {
-                let (u, v) = shader.address[position]
-                    .unwrap_or((wgpu::AddressMode::Repeat, wgpu::AddressMode::Repeat));
-                self.sampler(u, v)
+                self.sampler(shader.address[position].unwrap_or(default_sampling))
             });
 
             for (position, slot) in bound.iter().enumerate() {
-                let Some(desc) = slot.and_then(|slot| property.and_then(|p| p.texture(slot)))
-                else {
-                    continue;
-                };
-                if let Some(key) = desc.source_ref.index() {
-                    views[position] = cache
-                        .entry(key)
-                        .or_insert_with(|| {
-                            self.source_texture(nif, desc.source_ref, library)
-                                .unwrap_or_else(|| missing.clone())
-                        })
-                        .clone();
+                let Some(slot) = slot else { continue };
+                match slot {
+                    // a texture the shader names itself rather than one the file points at, so
+                    // it resolves by name through the library and root order picks the copy
+                    shaders::Source::Named(name) => {
+                        if let Some((width, height, rgba)) = library.load(name) {
+                            views[position] = named_textures
+                                .entry(*name)
+                                .or_insert_with(|| self.upload_texture(width, height, &rgba))
+                                .clone();
+                        }
+                    }
+                    shaders::Source::Slot(slot) => {
+                        let Some(desc) = property.and_then(|p| p.texture(*slot)) else {
+                            continue;
+                        };
+                        if let Some(key) = desc.source_ref.index() {
+                            views[position] = cache
+                                .entry(key)
+                                .or_insert_with(|| {
+                                    self.source_texture(nif, desc.source_ref, library)
+                                        .unwrap_or_else(|| missing.clone())
+                                })
+                                .clone();
+                        }
+                        // the shader's own sampler state beats the map's clamp mode
+                        samplers[position] =
+                            self.sampler(shader.address[position].unwrap_or(shaders::Sampling {
+                                address: address_of(&desc.clamp_mode),
+                                filter: wgpu::FilterMode::Linear,
+                            }));
+                    }
                 }
-                // the shader's own sampler state beats the map's clamp mode
-                let (u, v) = shader.address[position].unwrap_or(address_of(&desc.clamp_mode));
-                samplers[position] = self.sampler(u, v);
             }
             let texture = self.slot_group(std::array::from_fn(|i| (&views[i], &samplers[i])));
             // every frame a flip controller can reach, uploaded once each and shared by block
             let mut flip_frames = HashMap::new();
-            let base_slot_flips = bound.first() == Some(&Some(TextureSlot::Base));
+            let base_slot_flips =
+                bound.first() == Some(&Some(shaders::Source::Slot(TextureSlot::Base)));
             for block in nif.blocks.iter().filter(|_| base_slot_flips) {
                 let Block::NiFlipController(flip) = block else {
                     continue;
@@ -1073,7 +1104,10 @@ impl Gfx {
             ((min + max) * 0.5, (max - min).length() * 0.5)
         };
 
-        let samplers_for_grid = self.sampler(wgpu::AddressMode::Repeat, wgpu::AddressMode::Repeat);
+        let samplers_for_grid = self.sampler(shaders::Sampling {
+            address: (wgpu::AddressMode::Repeat, wgpu::AddressMode::Repeat),
+            filter: wgpu::FilterMode::Linear,
+        });
         // the floor has to reach the geometry as well as the origin, which a chunk sitting
         // far out is nowhere near
         let (lines, spacing, half) = grid_lines(center.length() + radius);
@@ -1165,12 +1199,16 @@ pub fn uv_rows(transform: Option<nif::blocks::TextureTransform>, uv_set: u32) ->
 pub fn slot_uv_rows(
     blocks: &[Block],
     property: Option<&nif::blocks::NiTexturingProperty>,
-    bound: [Option<TextureSlot>; BOUND_SLOTS],
+    bound: [Option<shaders::Source>; BOUND_SLOTS],
     time: f32,
 ) -> [f32; BOUND_SLOTS * 8] {
     let mut out = [0.0; BOUND_SLOTS * 8];
     for (position, slot) in bound.iter().enumerate() {
-        let Some(slot) = *slot else { continue };
+        // a texture the shader names itself carries no TexDesc, so it has no transform either
+        let Some(shaders::Source::Slot(slot)) = *slot else {
+            out[position * 8..position * 8 + 8].copy_from_slice(&uv_rows(None, 0));
+            continue;
+        };
         let desc = property.and_then(|p| p.texture(slot));
         let transform =
             property.and_then(|p| nif::anim::texture_transform_at(blocks, p, slot, time));

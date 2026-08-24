@@ -1172,6 +1172,32 @@ impl eframe::App for Nifty {
                             ui.end_row();
                         }
                     });
+                    // a shader can name a texture the file never mentions, and two ToonRamp.bmp
+                    // ship per client with different contents, so which one won has to be visible
+                    let named: Vec<(&str, &str)> = self.shaders.named_textures().collect();
+                    if !named.is_empty() {
+                        ui.separator();
+                        ui.label("textures named by a shader rather than by the file:");
+                        egui::Grid::new("named textures").striped(true).show(ui, |ui| {
+                            for (shader, file) in named {
+                                ui.label(shader);
+                                ui.label(file);
+                                match self.library.resolve(file) {
+                                    Some(path) => {
+                                        ui.label(path.display().to_string());
+                                    }
+                                    None => {
+                                        ui.colored_label(
+                                            egui::Color32::from_rgb(230, 170, 70),
+                                            "not found in any texture directory",
+                                        );
+                                    }
+                                }
+                                ui.end_row();
+                            }
+                        });
+                    }
+
                     if self.shaders.roots().is_empty() {
                         ui.weak("no shader directories added");
                     } else {
