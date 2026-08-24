@@ -744,13 +744,10 @@ impl Gfx {
             })
             .fold(0.0f32, f32::max);
 
-        let alpha = geometry
-            .property_refs
-            .iter()
-            .find_map(|r| match r.get(&nif.blocks) {
-                Some(Block::NiAlphaProperty(p)) => Some(p),
-                _ => None,
-            });
+        let alpha = match visit.properties.alpha.get(&nif.blocks) {
+            Some(Block::NiAlphaProperty(p)) => Some(p),
+            _ => None,
+        };
         let blend = alpha.filter(|a| a.alpha_blend()).map(|a| {
             (
                 blend_factor(&a.source_blend_mode(), false),
@@ -787,9 +784,12 @@ impl Gfx {
         uniform[24..28].copy_from_slice(&[1.0, 0.0, 0.0, 0.0]);
         uniform[32..64].copy_from_slice(&slot_uv_rows(&nif.blocks, None, DEFAULT_SLOTS, 0.0));
 
-        let view = texturing_of(nif, &geometry.property_refs)
-            .and_then(|property| property.texture(TextureSlot::Base))
-            .and_then(|desc| self.source_texture(nif, desc.source_ref, library));
+        let view = match visit.properties.texturing.get(&nif.blocks) {
+            Some(Block::NiTexturingProperty(p)) => Some(p),
+            _ => None,
+        }
+        .and_then(|property| property.texture(TextureSlot::Base))
+        .and_then(|desc| self.source_texture(nif, desc.source_ref, library));
         let white = self.upload_texture(1, 1, &[255, 255, 255, 255]);
         let sampler = self.sampler(shaders::Sampling {
             address: (
@@ -977,11 +977,8 @@ impl Gfx {
             // engine multiplies material ambient by the global ambient, which is black unless
             // the scene carries an NiAmbientLight.
             // the block index as well as the material, since that is what a controller targets
-            let material_index = geometry
-                .property_refs
-                .iter()
-                .find(|r| matches!(r.get(&nif.blocks), Some(Block::NiMaterialProperty(_))));
-            let material_index = material_index.and_then(|r| r.index());
+            let in_force = visit.properties;
+            let material_index = in_force.material.index();
             let material = material_index
                 .and_then(|index| nif.blocks.get(index))
                 .and_then(|block| match block {
@@ -1009,14 +1006,10 @@ impl Gfx {
             // NiVertexColorProperty selects which source supplies each D3D material channel
             // rather than tinting. LightMode::Emissive uploads no lights, and with SourceEmissive
             // it disables lighting so the vertex colour is used directly.
-            let vertex_color =
-                geometry
-                    .property_refs
-                    .iter()
-                    .find_map(|r| match r.get(&nif.blocks) {
-                        Some(Block::NiVertexColorProperty(p)) => Some(p),
-                        _ => None,
-                    });
+            let vertex_color = match in_force.vertex_color.get(&nif.blocks) {
+                Some(Block::NiVertexColorProperty(p)) => Some(p),
+                _ => None,
+            };
             let (emissive_from_vertex, diffuse_from_vertex, lighting) = match vertex_color {
                 Some(p) => match (&p.lighting_mode, &p.vertex_mode) {
                     (LightMode::Emissive, VertMode::SourceEmissive) => (1.0, 0.0, 0.0),
@@ -1030,32 +1023,27 @@ impl Gfx {
 
             // a base texture under APPLY_REPLACE disables lighting entirely and the stage
             // selects the texel alone
-            let replace = match texturing_of(nif, &geometry.property_refs) {
+            let texturing = match in_force.texturing.get(&nif.blocks) {
+                Some(Block::NiTexturingProperty(p)) => Some(p),
+                _ => None,
+            };
+            let replace = match texturing {
                 Some(p) => f32::from(p.apply_mode == ApplyMode::Replace),
                 None => 0.0,
             };
 
-            let stencil = geometry
-                .property_refs
-                .iter()
-                .find_map(|r| match r.get(&nif.blocks) {
-                    Some(Block::NiStencilProperty(p)) => Some(p),
-                    _ => None,
-                });
-            let zbuffer = geometry
-                .property_refs
-                .iter()
-                .find_map(|r| match r.get(&nif.blocks) {
-                    Some(Block::NiZBufferProperty(p)) => Some(p),
-                    _ => None,
-                });
-            let alpha = geometry
-                .property_refs
-                .iter()
-                .find_map(|r| match r.get(&nif.blocks) {
-                    Some(Block::NiAlphaProperty(p)) => Some(p),
-                    _ => None,
-                });
+            let stencil = match in_force.stencil.get(&nif.blocks) {
+                Some(Block::NiStencilProperty(p)) => Some(p),
+                _ => None,
+            };
+            let zbuffer = match in_force.z_buffer.get(&nif.blocks) {
+                Some(Block::NiZBufferProperty(p)) => Some(p),
+                _ => None,
+            };
+            let alpha = match in_force.alpha.get(&nif.blocks) {
+                Some(Block::NiAlphaProperty(p)) => Some(p),
+                _ => None,
+            };
 
             // a technique nothing can draw is recorded rather than approximated, and falls
             // back to the fixed function path so the geometry is still inspectable
@@ -1121,9 +1109,9 @@ impl Gfx {
                 .clone();
 
             // one upload per source texture, not per shape that uses it
-            let texture_key = texturing_key(nif, &geometry.property_refs);
-            let property = texturing_of(nif, &geometry.property_refs);
-            let texturing_block = texturing_index(nif, &geometry.property_refs);
+            let texture_key = texturing.and_then(|p| p.base_texture.as_ref()?.source_ref.index());
+            let property = texturing;
+            let texturing_block = in_force.texturing.index();
 
             let bound = shader.slots;
             // a slot the shape does not use has to change nothing, and what that means depends
@@ -1401,31 +1389,6 @@ pub fn slot_uv_rows(
         out[position * 8..(position + 1) * 8].copy_from_slice(&rows);
     }
     out
-}
-
-fn texturing_index(nif: &Nif, properties: &[nif::common::BlockRef]) -> Option<usize> {
-    properties.iter().find_map(|r| {
-        r.index()
-            .filter(|i| matches!(nif.blocks.get(*i), Some(Block::NiTexturingProperty(_))))
-    })
-}
-
-fn texturing_of<'a>(
-    nif: &'a Nif,
-    properties: &[nif::common::BlockRef],
-) -> Option<&'a nif::blocks::NiTexturingProperty> {
-    properties.iter().find_map(|r| match r.get(&nif.blocks) {
-        Some(Block::NiTexturingProperty(p)) => Some(p),
-        _ => None,
-    })
-}
-
-fn texturing_key(nif: &Nif, properties: &[nif::common::BlockRef]) -> Option<usize> {
-    texturing_of(nif, properties)?
-        .base_texture
-        .as_ref()?
-        .source_ref
-        .index()
 }
 
 /// A grid on the XY plane through the origin, plus the positive axes over it, as a line list.

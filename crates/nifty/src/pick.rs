@@ -105,13 +105,15 @@ pub fn hits(
         if !visible.contains(&visit.index) {
             continue;
         }
-        let Some((geometry, data, triangles)) = geometry_of(nif, visit.block) else {
+        let Some((_geometry, data, triangles)) = geometry_of(nif, visit.block) else {
             continue;
         };
         let Some(vertices) = &data.vertices else {
             continue;
         };
-        if invisible(nif, &geometry.property_refs) {
+        // the properties in force, a parent node's included, so what can be clicked matches
+        // what is drawn
+        if invisible(nif, visit.properties) {
             continue;
         }
 
@@ -124,7 +126,7 @@ pub fn hits(
         let origin = inverse.transform_point3(ray.origin);
         let direction = inverse.transform_vector3(ray.direction);
 
-        let cull = cull_of(stencil_draw_mode(nif, &geometry.property_refs));
+        let cull = cull_of(stencil_draw_mode(nif, visit.properties));
         let mut nearest: Option<f32> = None;
         for triangle in &triangles {
             let (Some(a), Some(b), Some(c)) = (
@@ -157,27 +159,27 @@ pub fn hits(
     out
 }
 
-fn stencil_draw_mode<'a>(
-    nif: &'a Nif,
-    properties: &[nif::common::BlockRef],
-) -> Option<&'a nif::blocks::StencilDrawMode> {
-    properties.iter().find_map(|r| match r.get(&nif.blocks) {
+fn stencil_draw_mode(
+    nif: &Nif,
+    properties: nif::walk::Properties,
+) -> Option<&nif::blocks::StencilDrawMode> {
+    match properties.stencil.get(&nif.blocks) {
         Some(Block::NiStencilProperty(p)) => Some(&p.draw_mode),
         _ => None,
-    })
+    }
 }
 
 /// A blended shape whose material alpha is zero contributes nothing to the image.
-fn invisible(nif: &Nif, properties: &[nif::common::BlockRef]) -> bool {
-    let blends = properties.iter().any(|r| match r.get(&nif.blocks) {
-        Some(Block::NiAlphaProperty(a)) => a.alpha_blend(),
-        _ => false,
-    });
-    blends
-        && properties.iter().any(|r| match r.get(&nif.blocks) {
-            Some(Block::NiMaterialProperty(m)) => m.alpha == 0.0,
-            _ => false,
-        })
+fn invisible(nif: &Nif, properties: nif::walk::Properties) -> bool {
+    let blends = matches!(
+        properties.alpha.get(&nif.blocks),
+        Some(Block::NiAlphaProperty(a)) if a.alpha_blend()
+    );
+    let clear = matches!(
+        properties.material.get(&nif.blocks),
+        Some(Block::NiMaterialProperty(m)) if m.alpha == 0.0
+    );
+    blends && clear
 }
 
 /// Moller-Trumbore. The sign of the determinant gives the facing, which drives culling.

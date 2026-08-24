@@ -1,5 +1,5 @@
 use crate::blocks::{Block, NiLODNode};
-use crate::common::NiTransform;
+use crate::common::{BlockRef, NiTransform};
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum LodPolicy {
@@ -12,6 +12,49 @@ pub enum LodPolicy {
     Distance(f32),
 }
 
+/// The properties in force on an object, gathered down the graph. A property attached to a node
+/// applies to everything under it, and one of the same kind nearer the object replaces it, so at
+/// most one of each kind is ever in force.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Properties {
+    pub alpha: BlockRef,
+    pub dither: BlockRef,
+    pub material: BlockRef,
+    pub shade: BlockRef,
+    pub specular: BlockRef,
+    pub stencil: BlockRef,
+    pub texturing: BlockRef,
+    pub vertex_color: BlockRef,
+    pub wireframe: BlockRef,
+    pub z_buffer: BlockRef,
+}
+
+impl Properties {
+    /// `refs` are an object's own, which replace whatever came from above it.
+    fn with(mut self, blocks: &[Block], refs: &[BlockRef]) -> Properties {
+        for r in refs {
+            let Some(block) = r.get(blocks) else {
+                continue;
+            };
+            let slot = match block {
+                Block::NiAlphaProperty(_) => &mut self.alpha,
+                Block::NiDitherProperty(_) => &mut self.dither,
+                Block::NiMaterialProperty(_) => &mut self.material,
+                Block::NiShadeProperty(_) => &mut self.shade,
+                Block::NiSpecularProperty(_) => &mut self.specular,
+                Block::NiStencilProperty(_) => &mut self.stencil,
+                Block::NiTexturingProperty(_) => &mut self.texturing,
+                Block::NiVertexColorProperty(_) => &mut self.vertex_color,
+                Block::NiWireframeProperty(_) => &mut self.wireframe,
+                Block::NiZBufferProperty(_) => &mut self.z_buffer,
+                _ => continue,
+            };
+            *slot = *r;
+        }
+        self
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Visit<'a> {
     pub index: usize,
@@ -21,6 +64,8 @@ pub struct Visit<'a> {
     /// Culled, along with everything under it. Either the object's own flag or, when the walk
     /// is at a time, whatever its visibility controller says instead.
     pub hidden: bool,
+    /// What applies here, including whatever was attached further up the graph.
+    pub properties: Properties,
 }
 
 struct Frame {
@@ -28,6 +73,7 @@ struct Frame {
     parent: NiTransform,
     depth: usize,
     hidden: bool,
+    properties: Properties,
 }
 
 pub struct Walk<'a> {
@@ -54,6 +100,7 @@ impl<'a> Walk<'a> {
                 index: root,
                 parent: NiTransform::IDENTITY,
                 depth: 0,
+                properties: Properties::default(),
                 hidden: false,
             }],
             path: Vec::new(),
@@ -70,6 +117,7 @@ impl<'a> Walk<'a> {
             .into_iter()
             .map(|index| Frame {
                 index,
+                properties: Properties::default(),
                 parent: NiTransform::IDENTITY,
                 depth: 0,
                 hidden: false,
@@ -191,6 +239,12 @@ impl<'a> Iterator for Walk<'a> {
                     None => false,
                 };
 
+            // an object's own replace what came from above, and the result is what its
+            // children start from
+            let properties = frame
+                .properties
+                .with(self.blocks, block.property_refs().unwrap_or(&[]));
+
             let children = block.child_refs().unwrap_or(&[]);
             if !children.is_empty() {
                 let selection = match block {
@@ -204,6 +258,7 @@ impl<'a> Iterator for Walk<'a> {
                             parent: transform,
                             depth: frame.depth + 1,
                             hidden,
+                            properties,
                         });
                     }
                 };
@@ -226,6 +281,7 @@ impl<'a> Iterator for Walk<'a> {
                 transform,
                 depth: frame.depth,
                 hidden,
+                properties,
             });
         }
         None
@@ -236,6 +292,54 @@ impl<'a> Iterator for Walk<'a> {
 mod tests {
     use super::*;
     use crate::Nif;
+
+    /// A property attached to a node applies to everything under it. Reading only an object's own
+    /// list leaves a shape with the wrong depth, blending or material, and most of the shapes in
+    /// this game inherit at least one.
+    #[test]
+    fn a_property_on_a_node_reaches_the_shapes_under_it() {
+        let bytes = std::fs::read("tests/11.nif").expect("fixture");
+        let nif = Nif::parse(&mut std::io::Cursor::new(&bytes)).expect("parse");
+
+        let mut inherited = 0;
+        for visit in nif.walk() {
+            let Some(geometry) = visit.block.geometry() else {
+                continue;
+            };
+            let own = &geometry.property_refs;
+            for slot in [visit.properties.z_buffer, visit.properties.vertex_color] {
+                if slot.index().is_some() && !own.contains(&slot) {
+                    inherited += 1;
+                }
+            }
+        }
+        assert!(
+            inherited > 0,
+            "no shape inherited a property, so the fixture cannot show the accumulation"
+        );
+    }
+
+    #[test]
+    fn an_objects_own_property_replaces_the_one_above_it() {
+        let bytes = std::fs::read("tests/11.nif").expect("fixture");
+        let nif = Nif::parse(&mut std::io::Cursor::new(&bytes)).expect("parse");
+
+        for visit in nif.walk() {
+            let Some(geometry) = visit.block.geometry() else {
+                continue;
+            };
+            // whatever a shape carries has to be what is in force, never an ancestor's
+            for r in &geometry.property_refs {
+                let Some(Block::NiZBufferProperty(_)) = r.get(&nif.blocks) else {
+                    continue;
+                };
+                assert_eq!(
+                    visit.properties.z_buffer, *r,
+                    "an ancestor's z buffer property won over the shape's own"
+                );
+            }
+        }
+    }
     use std::io::Cursor;
 
     fn load(n: u32) -> Nif {
