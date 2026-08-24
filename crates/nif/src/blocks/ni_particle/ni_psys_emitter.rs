@@ -19,3 +19,11 @@ pub struct NiPSysEmitter {
     pub life_span: f32,
     pub life_span_variation: f32,
 }
+
+impl std::ops::Deref for NiPSysEmitter {
+    type Target = NiPSysModifier;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}

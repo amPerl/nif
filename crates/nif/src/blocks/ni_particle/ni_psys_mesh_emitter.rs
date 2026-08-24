@@ -47,3 +47,11 @@ pub enum EmitFrom {
     EdgeSurface,
     Unknown(u32),
 }
+
+impl std::ops::Deref for NiPSysMeshEmitter {
+    type Target = NiPSysEmitter;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}

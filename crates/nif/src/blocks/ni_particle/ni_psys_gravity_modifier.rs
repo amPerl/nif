@@ -26,3 +26,11 @@ pub enum ForceType {
     Spherical,
     Unknown(u32),
 }
+
+impl std::ops::Deref for NiPSysGravityModifier {
+    type Target = NiPSysModifier;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}

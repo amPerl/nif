@@ -10,3 +10,11 @@ pub struct NiPSysVolumeEmitter {
     pub base: NiPSysEmitter,
     pub emitter_object_ref: BlockRef,
 }
+
+impl std::ops::Deref for NiPSysVolumeEmitter {
+    type Target = NiPSysEmitter;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}

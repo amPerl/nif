@@ -19,3 +19,11 @@ pub struct NiPSysRotationModifier {
     pub random_initial_axis: bool,
     pub initial_axis: Vector3,
 }
+
+impl std::ops::Deref for NiPSysRotationModifier {
+    type Target = NiPSysModifier;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}

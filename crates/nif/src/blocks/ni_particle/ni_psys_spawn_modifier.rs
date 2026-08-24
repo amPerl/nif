@@ -15,3 +15,11 @@ pub struct NiPSysSpawnModifier {
     pub life_span: f32,
     pub life_span_variation: f32,
 }
+
+impl std::ops::Deref for NiPSysSpawnModifier {
+    type Target = NiPSysModifier;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}

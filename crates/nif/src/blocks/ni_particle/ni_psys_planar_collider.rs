@@ -12,3 +12,11 @@ pub struct NiPSysPlanarCollider {
     pub x_axis: Vector3,
     pub y_axis: Vector3,
 }
+
+impl std::ops::Deref for NiPSysPlanarCollider {
+    type Target = NiPSysCollider;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}

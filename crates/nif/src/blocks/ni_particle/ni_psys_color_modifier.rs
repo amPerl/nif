@@ -10,3 +10,11 @@ pub struct NiPSysColorModifier {
     pub base: NiPSysModifier,
     pub data_ref: BlockRef,
 }
+
+impl std::ops::Deref for NiPSysColorModifier {
+    type Target = NiPSysModifier;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}

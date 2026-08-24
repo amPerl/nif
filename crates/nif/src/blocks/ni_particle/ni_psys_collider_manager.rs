@@ -10,3 +10,11 @@ pub struct NiPSysColliderManager {
     pub base: NiPSysModifier,
     pub collider_ref: BlockRef,
 }
+
+impl std::ops::Deref for NiPSysColliderManager {
+    type Target = NiPSysModifier;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}

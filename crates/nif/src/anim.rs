@@ -549,6 +549,30 @@ mod tests {
     use super::*;
     use crate::common::{KeyType, Matrix33};
 
+    /// A file whose only animation is a particle system still has a span, which needs its
+    /// controllers to report themselves as time controllers.
+    #[test]
+    fn a_particle_system_has_a_timeline() {
+        let bytes = std::fs::read("tests/20.nif").expect("fixture");
+        let nif = crate::Nif::parse(&mut std::io::Cursor::new(&bytes)).expect("parse");
+
+        let particle_controllers = nif
+            .blocks
+            .iter()
+            .filter(|block| block.name().starts_with("NiPSys"))
+            .filter(|block| block.as_time_controller().is_some())
+            .count();
+
+        assert!(
+            particle_controllers > 0,
+            "no particle controller reports itself as a time controller"
+        );
+        assert!(
+            span(&nif.blocks).is_some(),
+            "a file with particle controllers has no span"
+        );
+    }
+
     fn key(time: f32, value: f32, in_tangent: f32, out_tangent: f32) -> Key<f32> {
         Key {
             time,

@@ -279,9 +279,40 @@ impl Block {
             Block::NiFloatExtraDataController(b) => b,
             Block::NiLightDimmerController(b) => b,
             Block::NiBoneLODController(b) => b,
+            Block::NiPSysUpdateCtlr(b) => b,
+            Block::NiPSysResetOnLoopCtlr(b) => b,
+            Block::NiPSysEmitterCtlr(b) => b,
+            Block::NiPSysModifierBoolCtlr(b) => b,
+            Block::NiPSysModifierFloatCtlr(b) => b,
+            Block::NiPSysModifierActiveCtlr(b) => b,
+            Block::NiPSysInitialRotAngleCtlr(b) => b,
             _ => return None,
         };
         Some(controller)
+    }
+
+    /// The modifier a particle system runs, for the ones that are modifiers. `order` decides
+    /// when it runs, and the engine sorts a system's list ascending on it.
+    pub fn as_psys_modifier(&self) -> Option<&NiPSysModifier> {
+        let modifier: &NiPSysModifier = match self {
+            Block::NiPSysAgeDeathModifier(b) => b,
+            Block::NiPSysBoundUpdateModifier(b) => b,
+            Block::NiPSysPositionModifier(b) => b,
+            Block::NiPSysSpawnModifier(b) => b,
+            Block::NiPSysRotationModifier(b) => b,
+            Block::NiPSysColorModifier(b) => b,
+            Block::NiPSysGrowFadeModifier(b) => b,
+            Block::NiPSysGravityModifier(b) => b,
+            Block::NiPSysDragModifier(b) => b,
+            Block::NiPSysColliderManager(b) => b,
+            Block::NiPSysMeshUpdateModifier(b) => b,
+            Block::NiPSysBoxEmitter(b) => b,
+            Block::NiPSysCylinderEmitter(b) => b,
+            Block::NiPSysSphereEmitter(b) => b,
+            Block::NiPSysMeshEmitter(b) => b,
+            _ => return None,
+        };
+        Some(modifier)
     }
 
     pub fn geometry(&self) -> Option<&NiGeometry> {

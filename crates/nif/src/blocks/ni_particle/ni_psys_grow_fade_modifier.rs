@@ -11,3 +11,11 @@ pub struct NiPSysGrowFadeModifier {
     pub fade_time: f32,
     pub fade_generation: u16,
 }
+
+impl std::ops::Deref for NiPSysGrowFadeModifier {
+    type Target = NiPSysModifier;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}

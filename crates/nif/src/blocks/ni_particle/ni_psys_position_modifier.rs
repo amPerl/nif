@@ -7,3 +7,11 @@ use super::NiPSysModifier;
 pub struct NiPSysPositionModifier {
     pub base: NiPSysModifier,
 }
+
+impl std::ops::Deref for NiPSysPositionModifier {
+    type Target = NiPSysModifier;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}

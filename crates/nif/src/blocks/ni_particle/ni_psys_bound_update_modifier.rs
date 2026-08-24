@@ -8,3 +8,11 @@ pub struct NiPSysBoundUpdateModifier {
     pub base: NiPSysModifier,
     pub update_skip: u16,
 }
+
+impl std::ops::Deref for NiPSysBoundUpdateModifier {
+    type Target = NiPSysModifier;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}

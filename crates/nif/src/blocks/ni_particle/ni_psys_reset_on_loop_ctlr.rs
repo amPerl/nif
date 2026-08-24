@@ -7,3 +7,11 @@ use crate::blocks::NiTimeController;
 pub struct NiPSysResetOnLoopCtlr {
     pub base: NiTimeController,
 }
+
+impl std::ops::Deref for NiPSysResetOnLoopCtlr {
+    type Target = NiTimeController;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}

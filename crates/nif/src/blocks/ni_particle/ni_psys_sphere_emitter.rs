@@ -8,3 +8,11 @@ pub struct NiPSysSphereEmitter {
     pub base: NiPSysVolumeEmitter,
     pub radius: f32,
 }
+
+impl std::ops::Deref for NiPSysSphereEmitter {
+    type Target = NiPSysVolumeEmitter;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}

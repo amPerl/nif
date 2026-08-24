@@ -10,3 +10,11 @@ pub struct NiPSysEmitterCtlr {
     pub base: NiPSysModifierCtlr,
     pub visibility_interpolator_ref: BlockRef,
 }
+
+impl std::ops::Deref for NiPSysEmitterCtlr {
+    type Target = NiPSysModifierCtlr;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}

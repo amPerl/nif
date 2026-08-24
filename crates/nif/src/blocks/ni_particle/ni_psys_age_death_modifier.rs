@@ -13,3 +13,11 @@ pub struct NiPSysAgeDeathModifier {
     pub spawn_on_death: bool,
     pub spawn_modifier_ref: BlockRef,
 }
+
+impl std::ops::Deref for NiPSysAgeDeathModifier {
+    type Target = NiPSysModifier;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}

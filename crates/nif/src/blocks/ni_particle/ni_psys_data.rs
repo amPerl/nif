@@ -31,3 +31,11 @@ pub struct NiParticleInfo {
     pub spawn_generation: u16,
     pub code: u16,
 }
+
+impl std::ops::Deref for NiPSysData {
+    type Target = NiParticlesData;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}
