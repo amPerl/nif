@@ -22,7 +22,8 @@ use crate::common::{Color4, Vector3};
 pub const STEP: f32 = 1.0 / 60.0;
 
 /// A particle never scales quite to nothing, so one that is still alive still covers something.
-const SIZE_FLOOR: f32 = 1e-6;
+/// The engine shares this floor across its modifiers rather than picking one per effect.
+const SIZE_FLOOR: f32 = 0.0001;
 
 /// How far a seek simulates before giving up, so a controller with an absurd span cannot hang
 /// the caller.
