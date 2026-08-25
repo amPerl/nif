@@ -20,9 +20,6 @@
 // the YUV luminance weights the technique declares
 const LUMA: vec3<f32> = vec3<f32>(0.299, 0.587, 0.114);
 
-// outlineColor is a colour attribute, and nothing binds those yet, so this is what it declares
-const OUTLINE_COLOR: vec3<f32> = vec3<f32>(0.0, 0.0, 0.0);
-
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let normal = surface_normal(in);
@@ -38,7 +35,8 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
 
     let shaded = base.rgb * model.diffuse.rgb * ramp;
     let facing = dot(normal, to_eye);
-    let colour = select(shaded, OUTLINE_COLOR, facing <= model.params.x);
+    // outlineColor, which the shape supplies and the technique declares as black
+    let colour = select(shaded, model.attribute_color.rgb, facing <= model.params.x);
 
     // the pixel shader writes alpha 1 outright
     return vec4<f32>(mix(lit_colour(in), colour, camera.flags.y), 1.0);

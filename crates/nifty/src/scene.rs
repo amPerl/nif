@@ -397,6 +397,28 @@ impl DrawState {
     }
 }
 
+/// The colour attribute a shader declares, as the shape supplies it. Same rule as a float: the
+/// name does the binding, an `NiColorExtraData` on the shape wins, and the shader's declared
+/// colour is what a shape carrying none falls back to. A colour takes a whole vec4 where a float
+/// takes one lane of `params`, which is why it is its own field rather than four more names.
+pub fn shader_color(blocks: &[Block], extra_data_refs: &[BlockRef], shader: &Shader) -> [f32; 4] {
+    if shader.color_name.is_empty() {
+        return shader.color;
+    }
+    let supplied = extra_data_refs
+        .iter()
+        .filter_map(|reference| reference.get(blocks))
+        .find_map(|block| match block {
+            Block::NiColorExtraData(color)
+                if color.name.as_bytes() == shader.color_name.as_bytes() =>
+            {
+                Some([color.data.r, color.data.g, color.data.b, color.data.a])
+            }
+            _ => None,
+        });
+    supplied.unwrap_or(shader.color)
+}
+
 /// Which texture each of a pass's bindings actually reads, for one shape. A shader declares a
 /// texture attribute with a file name, and a shape redirects it to one of its own shader maps by
 /// carrying an integer extra data named after it. So the map in the file wins, exactly as a float
@@ -1343,6 +1365,11 @@ impl Gfx {
                 &geometry.extra_data_refs,
                 shader,
             ));
+            model_uniform[68..72].copy_from_slice(&shader_color(
+                &nif.blocks,
+                &geometry.extra_data_refs,
+                shader,
+            ));
 
             let mut indices: Vec<u16> = Vec::with_capacity(triangles.len() * 3);
             let mut edges: Vec<u16> = Vec::with_capacity(triangles.len() * 6);
@@ -2135,6 +2162,50 @@ mod tests {
         assert_eq!(bound[0], shader.params[0]);
         assert_eq!(bound[1], 8.0);
         assert_eq!(bound[2..], shader.params[2..]);
+    }
+
+    /// A colour attribute takes a whole vec4 rather than a lane, and it binds by name the same
+    /// way a float does. Leaving it at the declared white painted every car body white.
+    #[test]
+    fn a_colour_attribute_binds_by_name_and_falls_back_to_the_declared_one() {
+        let shaders = Shaders::default();
+        let shader = shaders.get("ActionGameCartoonFX").expect("built in");
+        assert_eq!(shader.color_name, "MaterialColor");
+        assert_eq!(shader.color, [1.0; 4]);
+
+        let blocks = vec![
+            Block::NiColorExtraData(nif::blocks::NiColorExtraData {
+                name: NiString::from("Unrelated"),
+                data: nif::common::Color4 {
+                    r: 1.0,
+                    g: 0.0,
+                    b: 0.0,
+                    a: 1.0,
+                },
+            }),
+            Block::NiColorExtraData(nif::blocks::NiColorExtraData {
+                name: NiString::from("MaterialColor"),
+                data: nif::common::Color4 {
+                    r: 0.1,
+                    g: 0.3,
+                    b: 0.6,
+                    a: 1.0,
+                },
+            }),
+        ];
+        let refs = [BlockRef::Index(0), BlockRef::Index(1)];
+        assert_eq!(
+            super::shader_color(&blocks, &refs, shader),
+            [0.1, 0.3, 0.6, 1.0]
+        );
+
+        // a shape carrying none keeps what the technique declares
+        assert_eq!(super::shader_color(&[], &[], shader), shader.color);
+
+        // and a shader declaring no colour is left alone whatever the shape carries
+        let plain = shaders.get("ActionGameTree").expect("built in");
+        assert_eq!(plain.color_name, "");
+        assert_eq!(super::shader_color(&blocks, &refs, plain), plain.color);
     }
 
     /// A shader declares its toon ramp with a file name, and nearly every shape redirects it to

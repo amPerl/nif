@@ -5,11 +5,8 @@
 // diffuse and the fixed function stage passes it straight through. Its own comment says why,
 // that an NSF cannot set a material for a pixel shader constant map.
 //
-// outlineColor is a colour attribute rather than a float, and nothing binds those yet, so this
-// is the value the source declares.
-const OUTLINE_COLOR: vec3<f32> = vec3<f32>(0.0, 0.0, 0.0);
-
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
-    return vec4<f32>(OUTLINE_COLOR, 1.0);
+    // outlineColor, which the shape supplies and the technique declares as black
+    return vec4<f32>(model.attribute_color.rgb, 1.0);
 }

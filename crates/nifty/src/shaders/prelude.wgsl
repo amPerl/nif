@@ -22,6 +22,8 @@ struct Model {
     // whatever the shape's shader wants to be told, which is its own attributes at the values
     // the shape supplies. Unread by the shaders that only combine textures.
     params: vec4<f32>,
+    // the one colour attribute a shader can declare, at the value the shape supplies
+    attribute_color: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: Camera;

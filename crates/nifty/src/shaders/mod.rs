@@ -148,6 +148,11 @@ pub struct Shader {
     /// carrying an extra data block of that name, so the name is what does the binding. An
     /// empty name is a lane no attribute reaches.
     pub param_names: [&'static str; 4],
+    /// A colour attribute, reaching the shader as `model.attribute_color`. It takes a whole vec4
+    /// where a float takes a lane, and no technique here declares more than one that it reads.
+    pub color: [f32; 4],
+    /// The extra data name that overrides it, empty where the shader declares no colour.
+    pub color_name: &'static str,
     /// Where it came from, for the UI to say so.
     pub origin: Origin,
 }
@@ -178,6 +183,8 @@ impl Shader {
             passes: vec![pass],
             params: [0.0; 4],
             param_names: [""; 4],
+            color: [1.0; 4],
+            color_name: "",
             origin: Origin::BuiltIn,
         }
     }
@@ -270,6 +277,9 @@ fn outlined_toon(name: &str) -> Shader {
         // attribute, which nothing binds yet, and black is what it declares.
         params: [0.1, 0.0, 0.0, 0.0],
         param_names: ["outlineThickness", "", "", ""],
+        // the rim, at the colour the technique declares
+        color: [0.0, 0.0, 0.0, 1.0],
+        color_name: "outlineColor",
         origin: Origin::BuiltIn,
     }
 }
@@ -318,6 +328,8 @@ fn built_ins() -> Vec<Shader> {
             // float of either name overrides it, and a low WarpAlpha is what fades the surface.
             params: [1.0, 48.0, 0.0, 0.0],
             param_names: ["WarpAlpha", "Exponent", "", ""],
+            color: [1.0; 4],
+            color_name: "",
             origin: Origin::BuiltIn,
         },
         Shader::single("ToonShading", toon_shading_pass()),
@@ -333,6 +345,8 @@ fn built_ins() -> Vec<Shader> {
             // attribute, which nothing binds yet, and black is what it declares.
             params: [0.1, 0.0, 0.0, 0.0],
             param_names: ["outlineThickness", "", "", ""],
+            color: [0.0, 0.0, 0.0, 1.0],
+            color_name: "outlineColor",
             origin: Origin::BuiltIn,
         },
         outlined_toon("ActionGameCartoon"),
@@ -367,18 +381,26 @@ fn built_ins() -> Vec<Shader> {
             // smaller one spreads the band across the panel rather than pinning it to a point.
             params: [100.0, 0.0, 0.0, 0.0],
             param_names: ["Reflection", "", "", ""],
+            color: [1.0; 4],
+            color_name: "",
             origin: Origin::BuiltIn,
         },
-        Shader::single(
-            "ActionGameCartoonFX",
-            Pass {
+        Shader {
+            name: "ActionGameCartoonFX".into(),
+            passes: vec![Pass {
                 source: include_str!("ActionGameCartoonFX.wgsl").into(),
                 // the decal is the base slot. A ramp is often left in shader map 0 from the
                 // deprecated outline path, and this technique does not sample it.
                 slots: [Some(Source::Slot(TextureSlot::Base)), None, None, None],
                 ..Pass::default()
-            },
-        ),
+            }],
+            params: [0.0; 4],
+            param_names: [""; 4],
+            // the body colour the decal is composited over, at the source's declared white
+            color: [1.0; 4],
+            color_name: "MaterialColor",
+            origin: Origin::BuiltIn,
+        },
         Shader::single(
             "VCAlphaTextureBlender",
             Pass {
@@ -538,9 +560,14 @@ impl Shaders {
                     [None; SLOTS],
                 ),
             };
-            let (params, param_names) = match existing {
-                Some(existing) => (existing.params, existing.param_names),
-                None => ([0.0; 4], [""; 4]),
+            let (params, param_names, color, color_name) = match existing {
+                Some(existing) => (
+                    existing.params,
+                    existing.param_names,
+                    existing.color,
+                    existing.color_name,
+                ),
+                None => ([0.0; 4], [""; 4], [1.0; 4], ""),
             };
             self.by_name.insert(
                 name.clone(),
@@ -556,6 +583,8 @@ impl Shaders {
                     }],
                     params,
                     param_names,
+                    color,
+                    color_name,
                     origin: Origin::Directory(path),
                 },
             );

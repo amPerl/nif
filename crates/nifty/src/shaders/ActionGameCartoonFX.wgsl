@@ -6,8 +6,9 @@
 //     (Decal.rgb * Decal.a) * LightColor + (1 - Decal.a) * MaterialColor * LightColor
 // is just `LightColor * mix(MaterialColor, Decal.rgb, Decal.a)`.
 //
-// `MaterialColor` is an `ATTRIBUTE` defaulting to white, and a shape supplies one only through
-// shader extra data, which none carries, so white is what it resolves to.
+// `MaterialColor` is an `ATTRIBUTE` defaulting to white, and a shape supplies its own by
+// carrying a colour of that name. Most do, and it is the car's paint: reading the default
+// instead paints every body white.
 //
 // The source also declares a toon ramp, but its `NTM` binding is commented out and no technique
 // here samples it: the header says the toon outline path is deprecated. A shape may still carry
@@ -21,7 +22,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let intensity = max(0.0, dot(surface_normal(in), -camera.light_dir.xyz));
     let light = camera.light_ambient.rgb + intensity * camera.light_diffuse.rgb;
 
-    let body = vec3<f32>(1.0, 1.0, 1.0);
+    let body = model.attribute_color.rgb;
     let shaded = light * mix(body, decal.rgb, decal.a);
 
     // the pixel shader returns alpha 1 outright, so the decal's alpha places it and never
