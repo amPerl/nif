@@ -128,6 +128,13 @@ pub struct Pass {
     pub state: RenderState,
     /// Sampling a shader pins for a slot. `None` leaves the map's own clamp mode and linear.
     pub address: [Option<Sampling>; SLOTS],
+    /// The uv set a slot reads, where the technique decides it rather than the map.
+    ///
+    /// A `TexDesc` naming its own set is a fixed function notion: the stage asks for whichever
+    /// set the map points at. A technique with its own vertex shader has no such stage, and
+    /// reads whatever `TEXCOORD` its source declares, so the map's answer is not consulted at
+    /// all. `None` leaves it to the map, which is right for every technique built on stages.
+    pub uv_set: [Option<u32>; SLOTS],
 }
 
 impl Default for Pass {
@@ -139,6 +146,7 @@ impl Default for Pass {
             absent: [Absent::White; SLOTS],
             state: RenderState::default(),
             address: [None; SLOTS],
+            uv_set: [None; SLOTS],
         }
     }
 }
@@ -260,6 +268,7 @@ fn toon_outline_pass() -> Pass {
             cull: Some(Some(wgpu::Face::Front)),
         },
         address: [None; SLOTS],
+        uv_set: [None; SLOTS],
     }
 }
 
@@ -429,6 +438,9 @@ fn built_ins() -> Vec<Shader> {
                 // a shape with no mask is all body, which the red and green being zero would
                 // otherwise turn entirely into glass
                 absent: [Absent::White, Absent::White, Absent::White, Absent::White],
+                // its vertex shader wires TEXCOORD0 to the decal and TEXCOORD1 to both the mask
+                // and the window decal, whatever set the maps themselves name
+                uv_set: [Some(0), Some(1), Some(1), None],
                 ..Pass::default()
             },
         ),
@@ -574,10 +586,16 @@ impl Shaders {
             // outlining technique draws once rather than twice. Nothing in a `.wgsl` can say
             // otherwise yet, and a manifest is what that would take.
             let existing = self.by_name.get(&name);
-            let (slots, absent, state, address) = match existing {
+            let (slots, absent, state, address, uv_set) = match existing {
                 Some(existing) => {
                     let pass = &existing.passes[0];
-                    (pass.slots, pass.absent, pass.state, pass.address)
+                    (
+                        pass.slots,
+                        pass.absent,
+                        pass.state,
+                        pass.address,
+                        pass.uv_set,
+                    )
                 }
                 None => (
                     [
@@ -588,6 +606,7 @@ impl Shaders {
                     ],
                     [Absent::White; SLOTS],
                     RenderState::default(),
+                    [None; SLOTS],
                     [None; SLOTS],
                 ),
             };
@@ -611,6 +630,7 @@ impl Shaders {
                         absent,
                         state,
                         address,
+                        uv_set,
                     }],
                     params,
                     param_names,

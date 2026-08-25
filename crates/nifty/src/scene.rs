@@ -183,6 +183,8 @@ pub struct Mesh {
     /// The attributes this shape's shader declares and what they resolved to when the scene was
     /// built, so a controller driving one only has to replace that lane.
     pub attributes: ([&'static str; 4], [f32; 4]),
+    /// The uv set each binding reads where its shader pins one, parallel to `bound`.
+    pub uv_pins: [Option<u32>; BOUND_SLOTS],
     /// Which texture slots this shape's bindings hold, which its shader decides. The uv rows
     /// in the model uniform belong to these, so where a shader draws more than one pass, they
     /// are the bindings of the first pass that samples anything.
@@ -1006,7 +1008,13 @@ impl Gfx {
         // the particle's own colour drives emissive with lighting off, which is what makes a
         // particle glow at its own brightness rather than take the scene's
         uniform[24..28].copy_from_slice(&[1.0, 0.0, 0.0, 0.0]);
-        uniform[32..64].copy_from_slice(&slot_uv_rows(&nif.blocks, None, DEFAULT_SLOTS, 0.0));
+        uniform[32..64].copy_from_slice(&slot_uv_rows(
+            &nif.blocks,
+            None,
+            DEFAULT_SLOTS,
+            [None; BOUND_SLOTS],
+            0.0,
+        ));
 
         let view = match visit.properties.texturing.get(&nif.blocks) {
             Some(Block::NiTexturingProperty(p)) => Some(p),
@@ -1352,11 +1360,11 @@ impl Gfx {
                 .iter()
                 .map(|pass| shader_slots(&nif.blocks, &geometry.extra_data_refs, pass.slots))
                 .collect();
-            let bound = resolved
+            let bound_at = resolved
                 .iter()
-                .copied()
-                .find(|slots| slots.iter().any(Option::is_some))
-                .unwrap_or([None; BOUND_SLOTS]);
+                .position(|slots| slots.iter().any(Option::is_some));
+            let bound = bound_at.map_or([None; BOUND_SLOTS], |at| resolved[at]);
+            let uv_pins = bound_at.map_or([None; BOUND_SLOTS], |at| shader.passes[at].uv_set);
 
             let mut mesh_passes: Vec<MeshPass> = Vec::with_capacity(shader.passes.len());
             for (index, pass) in shader.passes.iter().enumerate() {
@@ -1425,7 +1433,13 @@ impl Gfx {
                 replace * f32::from(texture_key.is_some()),
             ]);
             model_uniform[28..32].copy_from_slice(&[alpha_threshold, alpha_test, 0.0, 0.0]);
-            model_uniform[32..64].copy_from_slice(&slot_uv_rows(&nif.blocks, property, bound, 0.0));
+            model_uniform[32..64].copy_from_slice(&slot_uv_rows(
+                &nif.blocks,
+                property,
+                bound,
+                uv_pins,
+                0.0,
+            ));
             model_uniform[64..68].copy_from_slice(&shader_params(
                 &nif.blocks,
                 &geometry.extra_data_refs,
@@ -1457,6 +1471,7 @@ impl Gfx {
                 shape_block: visit.index,
                 lod: lod_of.get(&visit.index).copied(),
                 sorted: sorts(blend.is_some(), alpha),
+                uv_pins,
                 attributes: (
                     shader.param_names,
                     shader_params(&nif.blocks, &geometry.extra_data_refs, shader),
@@ -1519,7 +1534,13 @@ impl Gfx {
         let mut identity = [0f32; MODEL_FLOATS as usize];
         identity[..16]
             .copy_from_slice(&drawn_at(origin, Mat4::from_translation(ground)).to_cols_array());
-        identity[32..64].copy_from_slice(&slot_uv_rows(&[], None, DEFAULT_SLOTS, 0.0));
+        identity[32..64].copy_from_slice(&slot_uv_rows(
+            &[],
+            None,
+            DEFAULT_SLOTS,
+            [None; BOUND_SLOTS],
+            0.0,
+        ));
         let grid = Grid {
             half,
             center: ground,
@@ -1635,19 +1656,25 @@ pub fn slot_uv_rows(
     blocks: &[Block],
     property: Option<&nif::blocks::NiTexturingProperty>,
     bound: [Option<shaders::Source>; BOUND_SLOTS],
+    pinned: [Option<u32>; BOUND_SLOTS],
     time: f32,
 ) -> [f32; BOUND_SLOTS * 8] {
     let mut out = [0.0; BOUND_SLOTS * 8];
     for (position, slot) in bound.iter().enumerate() {
-        // a texture the shader names itself carries no TexDesc, so it has no transform either
-        let Some(shaders::Source::Slot(slot)) = *slot else {
-            out[position * 8..position * 8 + 8].copy_from_slice(&uv_rows(None, 0));
-            continue;
+        // A texture the shader names itself carries no TexDesc, so it has no transform and no
+        // set of its own. A technique that pins one still applies to it, since the pin comes
+        // from that technique's vertex shader rather than from any map.
+        let (transform, own_set) = match *slot {
+            Some(shaders::Source::Slot(slot)) => (
+                property.and_then(|p| nif::anim::texture_transform_at(blocks, p, slot, time)),
+                property
+                    .and_then(|p| p.texture(slot))
+                    .map_or(0, |d| d.uv_set),
+            ),
+            _ => (None, 0),
         };
-        let desc = property.and_then(|p| p.texture(slot));
-        let transform =
-            property.and_then(|p| nif::anim::texture_transform_at(blocks, p, slot, time));
-        let rows = uv_rows(transform, desc.map_or(0, |d| d.uv_set));
+        // a technique that names the set beats the map, since its vertex shader is what runs
+        let rows = uv_rows(transform, pinned[position].unwrap_or(own_set));
         out[position * 8..(position + 1) * 8].copy_from_slice(&rows);
     }
     out
@@ -2248,6 +2275,33 @@ mod tests {
         assert_eq!(bound[0], shader.params[0]);
         assert_eq!(bound[1], 8.0);
         assert_eq!(bound[2..], shader.params[2..]);
+    }
+
+    /// A `TexDesc` naming its own uv set is a fixed function notion, and a technique with its
+    /// own vertex shader reads whatever `TEXCOORD` its source declares instead. `AGCar2` wires
+    /// the decal to the first and both the mask and the window decal to the second, and a
+    /// shape's own maps may name a set that disagrees.
+    #[test]
+    fn a_technique_can_pin_the_uv_set_a_slot_reads() {
+        let shaders = Shaders::default();
+        let pass = &shaders.get("AGCar2").expect("built in").passes[0];
+        assert_eq!(pass.uv_set, [Some(0), Some(1), Some(1), None]);
+
+        // a property whose maps all name set 0, which is the case the pin exists for
+        let pinned = super::slot_uv_rows(&[], None, pass.slots, pass.uv_set, 0.0);
+        let plain = super::slot_uv_rows(&[], None, pass.slots, [None; super::BOUND_SLOTS], 0.0);
+        // the set rides in the first row's spare lane, so that is what changes
+        assert_eq!([pinned[3], pinned[11], pinned[19]], [0.0, 1.0, 1.0]);
+        assert_eq!([plain[3], plain[11], plain[19]], [0.0, 0.0, 0.0]);
+
+        // and every technique built on stages leaves it to the map, as it always did
+        for name in ["VCAlphaTextureBlender", "ToonShading", "ActionGameTree"] {
+            let shader = shaders.get(name).unwrap_or_else(|| panic!("{name}"));
+            assert!(
+                shader.passes.iter().all(|p| p.uv_set == [None; 4]),
+                "{name} should leave the uv set to its maps"
+            );
+        }
     }
 
     /// A technique can bind a texture to a shader map by index rather than by naming a file, and

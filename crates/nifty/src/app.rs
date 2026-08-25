@@ -711,6 +711,7 @@ impl Viewer<'_> {
                         &loaded.nif.blocks,
                         Some(property),
                         mesh.bound,
+                        mesh.uv_pins,
                         time,
                     ),
                 );
