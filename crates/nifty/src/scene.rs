@@ -1862,6 +1862,9 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
                 // scale comes from the same matrix as the position so the two cannot disagree
                 // a grow and fade modifier scales the radius rather than replacing it
                 let half = particle.drawn_radius().max(0.0) * scale;
+                // A rotation modifier turns the sprite in the plane facing the camera rather
+                // than about an axis of its own, so the corners rotate and the axes do not.
+                let (sin, cos) = particle.rotation.sin_cos();
                 // a quad facing the camera, wound so the shared corners meet the index pattern
                 for (corner, uv) in [
                     ((-1.0, -1.0), (0.0, 1.0)),
@@ -1869,7 +1872,11 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
                     ((1.0, 1.0), (1.0, 0.0)),
                     ((-1.0, 1.0), (0.0, 0.0)),
                 ] {
-                    let at = centre + right * (corner.0 * half) + up * (corner.1 * half);
+                    let (x, y) = (
+                        corner.0 * cos - corner.1 * sin,
+                        corner.0 * sin + corner.1 * cos,
+                    );
+                    let at = centre + right * (x * half) + up * (y * half);
                     vertices.extend_from_slice(&[at.x, at.y, at.z]);
                     // the normal faces the camera, so anything lighting it sees the quad flat on
                     let normal = right.cross(up);

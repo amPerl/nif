@@ -14,12 +14,17 @@
 
 use glam::Vec3;
 
-use crate::blocks::{Block, NiPSysColorModifier, NiPSysEmitter, NiPSysGrowFadeModifier};
+use crate::blocks::{
+    Block, NiPSysColorModifier, NiPSysEmitter, NiPSysGrowFadeModifier, NiPSysRotationModifier,
+};
 use crate::common::{BlockRef, Color4, Vector3};
 
 /// The interval the simulation advances by. Forces apply before movement within a step, so how
 /// far a particle travels depends on how coarse the step is and only a fixed one repeats.
 pub const STEP: f32 = 1.0 / 60.0;
+
+/// Where the engine gives up unwinding a rotation and starts the turn again.
+const TEN_PI: f32 = 10.0 * std::f32::consts::PI;
 
 /// A particle never scales quite to nothing, so one that is still alive still covers something.
 /// The engine shares this floor across its modifiers rather than picking one per effect.
@@ -47,6 +52,11 @@ pub struct Particle {
     /// What the radius is scaled by, which is what a grow and fade modifier drives. 1 where
     /// nothing does, and never quite 0, so a particle always has some extent.
     pub size: f32,
+    /// How far the sprite is turned, in radians. The engine spins a particle in the plane facing
+    /// the camera rather than about its axis, and only a mesh particle uses the axis at all.
+    pub rotation: f32,
+    /// How fast that turn advances, which is fixed for a particle's whole life.
+    pub rotation_speed: f32,
     pub color: Color4,
     /// When it was last advanced. Everything in a step measures against this, and only the
     /// move at the end of the step carries it forward.
@@ -155,6 +165,7 @@ impl System {
         for (order, index) in modifiers {
             match blocks.get(index) {
                 Some(Block::NiPSysGrowFadeModifier(m)) => self.grow_and_fade(m),
+                Some(Block::NiPSysRotationModifier(_)) => self.spin(now),
                 Some(Block::NiPSysColorModifier(m)) => self.tint(blocks, m),
                 _ => match order {
                     order::AGE_DEATH => self.age_and_die(now),
@@ -187,6 +198,23 @@ impl System {
                 1.0
             };
             particle.size = grow.min(fade).max(SIZE_FLOOR);
+        }
+    }
+
+    /// Advance each particle's turn by the delta it last saw. The speed is its own, set when it
+    /// was born, so this only integrates. The engine keeps the angle inside a turn and drops it
+    /// to zero rather than looping forever if it ever runs away.
+    fn spin(&mut self, now: f32) {
+        for particle in &mut self.particles {
+            let delta = now - particle.last_update;
+            particle.rotation += delta * particle.rotation_speed;
+            if particle.rotation > TEN_PI {
+                particle.rotation = 0.0;
+            } else {
+                while particle.rotation > std::f32::consts::TAU {
+                    particle.rotation -= std::f32::consts::TAU;
+                }
+            }
         }
     }
 
@@ -248,6 +276,13 @@ impl System {
         let current_count = (rate.per_second * current_delta) as u32;
         let last_count = (rate.per_second * last_delta) as u32;
         let interval = 1.0 / rate.per_second;
+        // a particle's turn is set when it is born rather than each step, so the modifier that
+        // decides it is found once
+        let spinner =
+            system_modifiers(blocks, self.block).find_map(|index| match blocks.get(index) {
+                Some(Block::NiPSysRotationModifier(m)) => Some(m),
+                _ => None,
+            });
 
         for born in last_count..current_count {
             if self.particles.len() >= self.capacity {
@@ -261,6 +296,9 @@ impl System {
                 continue;
             };
             place(blocks, index, &mut particle, &mut self.rng);
+            if let Some(spin) = spinner {
+                seed_rotation(spin, &mut particle, &mut self.rng);
+            }
             // back dated, so the particle catches up to now within its first step
             particle.last_update = now - particle.age;
             self.particles.push(particle);
@@ -429,11 +467,34 @@ fn emit(emitter: &NiPSysEmitter, age: f32, rng: &mut Rng) -> Option<Particle> {
         age,
         life_span,
         radius: emitter.initial_radius + emitter.radius_variation * rng.symmetric(),
-        // full size until something scales it
         size: 1.0,
+        rotation: 0.0,
+        rotation_speed: 0.0,
         color: emitter.initial_color,
         last_update: 0.0,
     })
+}
+
+/// How far and how fast a newly born particle turns. The variation is applied whole here rather
+/// than halved, unlike the emitter's speed and life span.
+fn seed_rotation(modifier: &NiPSysRotationModifier, particle: &mut Particle, rng: &mut Rng) {
+    particle.rotation = modifier.initial_rotation_angle
+        + modifier.initial_rotation_angle_variation * rng.symmetric();
+    let mut speed = modifier.initial_rotation_speed
+        + modifier.initial_rotation_speed_variation * rng.symmetric();
+    if modifier.random_rot_speed_sign && rng.unit() <= 0.5 {
+        speed = -speed;
+    }
+    particle.rotation_speed = speed;
+}
+
+/// The modifiers one system carries, by block index.
+fn system_modifiers(blocks: &[Block], system: usize) -> impl Iterator<Item = usize> + '_ {
+    let refs = match blocks.get(system) {
+        Some(Block::NiParticleSystem(psys)) => psys.modifiers_refs.as_slice(),
+        _ => &[],
+    };
+    refs.iter().filter_map(|r| r.index())
 }
 
 /// Where in its volume an emitter starts a particle. Only the box is placed for now; the others
@@ -559,6 +620,54 @@ mod tests {
         }
         assert!(alive > 0, "no system emitted anything");
         assert!(moved > 0, "nothing moved away from where it was born");
+    }
+
+    /// A rotation is a scalar turn in the plane facing the camera, and only its speed varies per
+    /// particle. The engine keeps the angle inside one turn rather than letting it grow without
+    /// bound, since a long lived particle would otherwise lose precision in it.
+    #[test]
+    fn a_turn_advances_by_its_own_speed_and_stays_inside_one_revolution() {
+        let make = |rotation: f32, speed: f32| Particle {
+            position: Vector3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            velocity: Vector3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            age: 0.0,
+            life_span: 100.0,
+            radius: 1.0,
+            size: 1.0,
+            rotation,
+            rotation_speed: speed,
+            color: Color4::default(),
+            last_update: 0.0,
+        };
+        let mut system = System {
+            block: 0,
+            // one turning forwards, one backwards, one already near a full turn
+            particles: vec![
+                make(0.0, 1.0),
+                make(0.0, -1.0),
+                make(std::f32::consts::TAU - 0.1, 1.0),
+            ],
+            capacity: 8,
+            time: 0.0,
+            rng: Rng::new(1),
+            seed: 1,
+        };
+        system.spin(0.5);
+
+        assert!((system.particles[0].rotation - 0.5).abs() < 1e-6);
+        // a negative speed is left alone rather than wrapped, which is what the engine does
+        assert!((system.particles[1].rotation + 0.5).abs() < 1e-6);
+        // and one that passes a full turn comes back inside it
+        assert!(system.particles[2].rotation < std::f32::consts::TAU);
+        assert!((system.particles[2].rotation - 0.4).abs() < 1e-5);
     }
 
     /// An emitter is switched on and off by a track of its own, and emission counts against how
@@ -725,6 +834,8 @@ mod tests {
             life_span: 1.0,
             radius: 1.0,
             size: 1.0,
+            rotation: 0.0,
+            rotation_speed: 0.0,
             color: Color4::default(),
             last_update: 0.0,
         };
@@ -769,6 +880,8 @@ mod tests {
             life_span: 10.0,
             radius: 2.0,
             size: 1.0,
+            rotation: 0.0,
+            rotation_speed: 0.0,
             color: Color4::default(),
             last_update: 0.0,
         };
