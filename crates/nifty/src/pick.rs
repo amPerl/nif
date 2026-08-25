@@ -91,7 +91,7 @@ pub fn hits(
                 .iter()
                 .filter_map(|particle| {
                     let centre = model.transform_point3(Vec3::from(&particle.position));
-                    sphere_hit(ray, centre, particle.radius.max(0.0) * scale)
+                    sphere_hit(ray, centre, particle.drawn_radius().max(0.0) * scale)
                 })
                 .fold(f32::MAX, f32::min);
             if nearest < f32::MAX {

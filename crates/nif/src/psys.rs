@@ -14,12 +14,15 @@
 
 use glam::Vec3;
 
-use crate::blocks::{Block, NiPSysEmitter};
+use crate::blocks::{Block, NiPSysColorModifier, NiPSysEmitter, NiPSysGrowFadeModifier};
 use crate::common::{Color4, Vector3};
 
 /// The interval the simulation advances by. Forces apply before movement within a step, so how
 /// far a particle travels depends on how coarse the step is and only a fixed one repeats.
 pub const STEP: f32 = 1.0 / 60.0;
+
+/// A particle never scales quite to nothing, so one that is still alive still covers something.
+const SIZE_FLOOR: f32 = 1e-6;
 
 /// How far a seek simulates before giving up, so a controller with an absurd span cannot hang
 /// the caller.
@@ -40,6 +43,9 @@ pub struct Particle {
     pub age: f32,
     pub life_span: f32,
     pub radius: f32,
+    /// What the radius is scaled by, which is what a grow and fade modifier drives. 1 where
+    /// nothing does, and never quite 0, so a particle always has some extent.
+    pub size: f32,
     pub color: Color4,
     /// When it was last advanced. Everything in a step measures against this, and only the
     /// move at the end of the step carries it forward.
@@ -47,6 +53,11 @@ pub struct Particle {
 }
 
 impl Particle {
+    /// The radius it actually draws at, its own scaled by whatever drives its size.
+    pub fn drawn_radius(&self) -> f32 {
+        self.radius * self.size
+    }
+
     /// Where it is through its life, 0 at birth and 1 at death.
     pub fn through_life(&self) -> f32 {
         if self.life_span > 0.0 {
@@ -138,15 +149,62 @@ impl System {
             .collect();
         modifiers.sort_by_key(|(order, _)| *order);
 
+        // several modifiers share one order, so the block decides the behaviour and the order
+        // only decides the sequence
         for (order, index) in modifiers {
-            match order {
-                order::AGE_DEATH => self.age_and_die(now),
-                order::EMIT => self.emit_from(blocks, index, last, now),
-                order::POSITION => self.integrate(now),
-                _ => {}
+            match blocks.get(index) {
+                Some(Block::NiPSysGrowFadeModifier(m)) => self.grow_and_fade(m),
+                Some(Block::NiPSysColorModifier(m)) => self.tint(blocks, m),
+                _ => match order {
+                    order::AGE_DEATH => self.age_and_die(now),
+                    order::EMIT => self.emit_from(blocks, index, last, now),
+                    order::POSITION => self.integrate(now),
+                    _ => {}
+                },
             }
         }
         self.time = now;
+    }
+
+    /// Scale each particle up over its first moments and down over its last. The two are
+    /// separate spans and the smaller of them wins where they overlap, so a particle whose grow
+    /// and fade together outlast it never reaches full size. A zero time turns its half off.
+    ///
+    /// Generation is what spawning on death increments, and nothing spawns here, so every
+    /// particle is of the first generation and a modifier aimed at a later one does nothing.
+    fn grow_and_fade(&mut self, modifier: &NiPSysGrowFadeModifier) {
+        for particle in &mut self.particles {
+            let grow = if modifier.grow_generation == 0 && modifier.grow_time > 0.0 {
+                (particle.age / modifier.grow_time).min(1.0)
+            } else {
+                1.0
+            };
+            let left = particle.life_span - particle.age;
+            let fade = if modifier.fade_generation == 0 && modifier.fade_time > 0.0 {
+                (left / modifier.fade_time).min(1.0)
+            } else {
+                1.0
+            };
+            particle.size = grow.min(fade).max(SIZE_FLOOR);
+        }
+    }
+
+    /// Take each particle's colour from a track read at how far through its life it is. The
+    /// track replaces the colour rather than tinting it, and outside its own key range the
+    /// nearest key holds, which is what clamping to the range does.
+    fn tint(&mut self, blocks: &[Block], modifier: &NiPSysColorModifier) {
+        let Some(Block::NiColorData(data)) = modifier.data_ref.get(blocks) else {
+            return;
+        };
+        let (Some(first), Some(last)) = (data.data.keys.first(), data.data.keys.last()) else {
+            return;
+        };
+        for particle in &mut self.particles {
+            let at = particle.through_life().clamp(first.time, last.time);
+            if let Some(color) = data.data.sample(at) {
+                particle.color = color;
+            }
+        }
     }
 
     /// Age each particle by the delta it last saw, then drop the ones past their span.
@@ -283,6 +341,8 @@ fn emit(emitter: &NiPSysEmitter, age: f32, rng: &mut Rng) -> Option<Particle> {
         age,
         life_span,
         radius: emitter.initial_radius + emitter.radius_variation * rng.symmetric(),
+        // full size until something scales it
+        size: 1.0,
         color: emitter.initial_color,
         last_update: 0.0,
     })
@@ -339,6 +399,8 @@ pub fn systems(blocks: &[Block]) -> Vec<System> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::blocks::{NiColorData, NiPSysModifier, NiString};
+    use crate::common::{BlockRef, Key, KeyGroup, KeyType};
 
     fn parse(path: &str) -> crate::Nif {
         let bytes = std::fs::read(path).expect("fixture");
@@ -406,6 +468,167 @@ mod tests {
         }
         assert!(alive > 0, "no system emitted anything");
         assert!(moved > 0, "nothing moved away from where it was born");
+    }
+
+    /// A colour track is read at how far through its life a particle is, not at the clock, and
+    /// outside the track's own range the nearest key holds. A track that starts after birth or
+    /// ends before death must not leave a particle uncoloured at either end.
+    #[test]
+    fn a_colour_track_is_read_across_a_life_and_holds_outside_it() {
+        let keys = vec![
+            Key {
+                time: 0.25,
+                value: Color4 {
+                    r: 1.0,
+                    g: 0.0,
+                    b: 0.0,
+                    a: 1.0,
+                },
+                in_tangent: None,
+                out_tangent: None,
+                tbc: None,
+            },
+            Key {
+                time: 0.75,
+                value: Color4 {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 1.0,
+                    a: 0.0,
+                },
+                in_tangent: None,
+                out_tangent: None,
+                tbc: None,
+            },
+        ];
+        let data = NiColorData {
+            data: KeyGroup {
+                keys,
+                interpolation: Some(KeyType::Linear),
+            },
+        };
+        let blocks = vec![Block::NiColorData(data)];
+        let modifier = NiPSysColorModifier {
+            base: NiPSysModifier {
+                name: NiString::from("colour"),
+                order: 3000,
+                target_ref: BlockRef::None,
+                active: true,
+            },
+            data_ref: BlockRef::Index(0),
+        };
+
+        let make = |age: f32| Particle {
+            position: Vector3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            velocity: Vector3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            age,
+            life_span: 1.0,
+            radius: 1.0,
+            size: 1.0,
+            color: Color4::default(),
+            last_update: 0.0,
+        };
+        let mut system = System {
+            block: 0,
+            particles: vec![make(0.0), make(0.5), make(1.0)],
+            capacity: 4,
+            time: 0.0,
+            rng: Rng::new(1),
+            seed: 1,
+        };
+        system.tint(&blocks, &modifier);
+
+        // before the first key, that key holds
+        assert_eq!(system.particles[0].color.r, 1.0);
+        assert_eq!(system.particles[0].color.a, 1.0);
+        // half way between the two
+        assert!((system.particles[1].color.r - 0.5).abs() < 1e-6);
+        assert!((system.particles[1].color.a - 0.5).abs() < 1e-6);
+        // past the last key, that key holds
+        assert_eq!(system.particles[2].color.b, 1.0);
+        assert_eq!(system.particles[2].color.a, 0.0);
+    }
+
+    /// A grow and fade modifier drives the size rather than the radius, and the two ends are
+    /// separate spans. A particle in neither is at full size, so a file that only grows must not
+    /// leave everything shrinking.
+    #[test]
+    fn growing_and_fading_scale_the_ends_of_a_life_and_nothing_between() {
+        let mut particle = Particle {
+            position: Vector3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            velocity: Vector3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            age: 0.0,
+            life_span: 10.0,
+            radius: 2.0,
+            size: 1.0,
+            color: Color4::default(),
+            last_update: 0.0,
+        };
+        let modifier = |grow: f32, fade: f32| NiPSysGrowFadeModifier {
+            base: NiPSysModifier {
+                name: NiString::from("grow"),
+                order: 3000,
+                target_ref: BlockRef::None,
+                active: true,
+            },
+            grow_time: grow,
+            grow_generation: 0,
+            fade_time: fade,
+            fade_generation: 0,
+        };
+
+        let mut system = System {
+            block: 0,
+            particles: Vec::new(),
+            capacity: 4,
+            time: 0.0,
+            rng: Rng::new(1),
+            seed: 1,
+        };
+
+        // half way into a two second grow
+        particle.age = 1.0;
+        system.particles = vec![particle];
+        system.grow_and_fade(&modifier(2.0, 2.0));
+        assert!((system.particles[0].size - 0.5).abs() < 1e-6);
+        // the radius itself is untouched; only what it draws at changes
+        assert_eq!(system.particles[0].radius, 2.0);
+        assert!((system.particles[0].drawn_radius() - 1.0).abs() < 1e-6);
+
+        // the middle of a life is in neither span
+        particle.age = 5.0;
+        system.particles = vec![particle];
+        system.grow_and_fade(&modifier(2.0, 2.0));
+        assert_eq!(system.particles[0].size, 1.0);
+
+        // one second left of a two second fade
+        particle.age = 9.0;
+        system.particles = vec![particle];
+        system.grow_and_fade(&modifier(2.0, 2.0));
+        assert!((system.particles[0].size - 0.5).abs() < 1e-6);
+
+        // a zero time turns that half off rather than dividing by it
+        particle.age = 9.5;
+        system.particles = vec![particle];
+        system.grow_and_fade(&modifier(2.0, 0.0));
+        assert_eq!(system.particles[0].size, 1.0);
+        assert!(system.particles[0].size.is_finite());
     }
 
     #[test]

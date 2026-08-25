@@ -1860,7 +1860,8 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
                 let colour = &particle.color;
                 // the radius is in the system's space, like the position it sits at, and the
                 // scale comes from the same matrix as the position so the two cannot disagree
-                let half = particle.radius.max(0.0) * scale;
+                // a grow and fade modifier scales the radius rather than replacing it
+                let half = particle.drawn_radius().max(0.0) * scale;
                 // a quad facing the camera, wound so the shared corners meet the index pattern
                 for (corner, uv) in [
                     ((-1.0, -1.0), (0.0, 1.0)),

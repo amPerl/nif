@@ -5,7 +5,7 @@ use crate::blocks::{
     NiTransformInterpolator, TextureSlot, TextureTransform,
 };
 use crate::common::{
-    BlockRef, Key, KeyGroup, KeyType, NiQuatTransform, NiTransform, Quaternion, Vector3,
+    BlockRef, Color4, Key, KeyGroup, KeyType, NiQuatTransform, NiTransform, Quaternion, Vector3,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -183,6 +183,26 @@ impl Interpolate for f32 {
             + (t3 - 2.0 * t2 + t) * out_of_from
             + (-2.0 * t3 + 3.0 * t2) * to
             + (t3 - t2) * into_to
+    }
+}
+
+impl Interpolate for Color4 {
+    fn lerp(from: Self, to: Self, t: f32) -> Self {
+        Color4 {
+            r: f32::lerp(from.r, to.r, t),
+            g: f32::lerp(from.g, to.g, t),
+            b: f32::lerp(from.b, to.b, t),
+            a: f32::lerp(from.a, to.a, t),
+        }
+    }
+
+    fn hermite(from: Self, out_of_from: Self, to: Self, into_to: Self, t: f32) -> Self {
+        Color4 {
+            r: f32::hermite(from.r, out_of_from.r, to.r, into_to.r, t),
+            g: f32::hermite(from.g, out_of_from.g, to.g, into_to.g, t),
+            b: f32::hermite(from.b, out_of_from.b, to.b, into_to.b, t),
+            a: f32::hermite(from.a, out_of_from.a, to.a, into_to.a, t),
+        }
     }
 }
 
