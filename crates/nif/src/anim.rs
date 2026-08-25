@@ -253,6 +253,47 @@ impl KeyGroup<u8> {
     }
 }
 
+/// The value a controller drives one of an object's float extra data to at `time`. None where
+/// nothing animates that attribute, so the caller keeps whatever the extra data block stores.
+///
+/// A shader attribute is bound from extra data by name, and a `NiFloatExtraDataController` names
+/// the same attribute and replaces its value over time. So a shape whose attribute animates has
+/// to be read per frame rather than once when it is loaded.
+pub fn float_extra_data_at(
+    blocks: &[Block],
+    object: &NiAvObject,
+    attribute: &str,
+    time: f32,
+) -> Option<f32> {
+    for block in blocks {
+        let Block::NiFloatExtraDataController(controller) = block else {
+            continue;
+        };
+        if controller.extra_data_name.as_bytes() != attribute.as_bytes() {
+            continue;
+        }
+        // a controller names its target, and one file can drive the same attribute on several
+        let names_object = controller
+            .target_ref
+            .get(blocks)
+            .and_then(Block::av_object)
+            .is_some_and(|target| std::ptr::eq(target, object));
+        if !names_object {
+            continue;
+        }
+        let Some(Block::NiFloatInterpolator(interpolator)) =
+            controller.interpolator_ref.get(blocks)
+        else {
+            continue;
+        };
+        return match interpolator.data_ref.get(blocks) {
+            Some(Block::NiFloatData(data)) => data.data.sample(time),
+            _ => Some(interpolator.value),
+        };
+    }
+    None
+}
+
 /// Whether anything in the file repeats. When nothing does, every controller holds its final
 /// value once its span is over, so a player should stop at the end rather than start again.
 pub fn repeats(blocks: &[Block]) -> bool {

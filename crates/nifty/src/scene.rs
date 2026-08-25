@@ -31,6 +31,10 @@ const ALPHA_OFFSET: u64 = 19 * 4;
 /// Where the two uv transform rows sit, for the same reason.
 const UV_OFFSET: u64 = 32 * 4;
 
+/// Where the shader's own attributes sit, so a controller driving one rewrites those four floats
+/// and leaves the uv rows and the material alone.
+const PARAMS_OFFSET: u64 = 64 * 4;
+
 /// The shader's `Model` and `Camera` structs, in floats. Every buffer bound as one has to be
 /// this long, the grid's included.
 const MODEL_FLOATS: u64 = 72;
@@ -176,6 +180,9 @@ pub struct Mesh {
     /// The NiTexturingProperty this shape draws with, which is what a texture transform
     /// controller targets.
     pub texturing_block: Option<usize>,
+    /// The attributes this shape's shader declares and what they resolved to when the scene was
+    /// built, so a controller driving one only has to replace that lane.
+    pub attributes: ([&'static str; 4], [f32; 4]),
     /// Which texture slots this shape's bindings hold, which its shader decides. The uv rows
     /// in the model uniform belong to these, so where a shader draws more than one pass, they
     /// are the bindings of the first pass that samples anything.
@@ -311,6 +318,9 @@ pub struct Frame {
     /// property at once. Keyed by shape rather than property because which slots a shape binds
     /// is its shader's choice, so two shapes sharing a property can want different rows.
     pub uv: HashMap<usize, [f32; BOUND_SLOTS * 8]>,
+    /// A shape's shader attributes where a controller drives one of them, by shape block. Empty
+    /// unless a file animates an attribute, which is rare and was easy to miss.
+    pub params: HashMap<usize, [f32; 4]>,
     /// The source a flip controller has swapped into the base slot, by texturing property block.
     pub flip: HashMap<usize, usize>,
     /// Where each particle system's particles are, by the system's own block. Simulated by the
@@ -1389,6 +1399,10 @@ impl Gfx {
                 shape_block: visit.index,
                 lod: lod_of.get(&visit.index).copied(),
                 sorted: sorts(blend.is_some(), alpha),
+                attributes: (
+                    shader.param_names,
+                    shader_params(&nif.blocks, &geometry.extra_data_refs, shader),
+                ),
                 passes: mesh_passes,
                 center: (shape_min + shape_max) * 0.5,
                 local_center: (local_min + local_max) * 0.5,
@@ -1863,6 +1877,13 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
             }
             if let Some(rows) = self.frame.uv.get(&mesh.shape_block) {
                 queue.write_buffer(&mesh.model_buffer, UV_OFFSET, bytemuck::cast_slice(rows));
+            }
+            if let Some(params) = self.frame.params.get(&mesh.shape_block) {
+                queue.write_buffer(
+                    &mesh.model_buffer,
+                    PARAMS_OFFSET,
+                    bytemuck::cast_slice(params),
+                );
             }
         }
         // the quads are generated here rather than stored, since a particle moves every frame

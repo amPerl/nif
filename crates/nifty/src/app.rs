@@ -662,6 +662,39 @@ impl Viewer<'_> {
                     frame.alpha.insert(index, alpha.clamp(0.0, 1.0));
                 }
             }
+            // an attribute can be driven over time, and a shader reads it from the same model
+            // uniform either way, so only the lane the controller names is replaced
+            let scene = self.state.scene.iter();
+            for mesh in scene.flat_map(|scene| scene.meshes.iter()) {
+                let (names, resolved) = mesh.attributes;
+                if names.iter().all(|name| name.is_empty()) {
+                    continue;
+                }
+                let Some(geometry) = loaded
+                    .nif
+                    .blocks
+                    .get(mesh.shape_block)
+                    .and_then(Block::av_object)
+                else {
+                    continue;
+                };
+                let mut params = resolved;
+                let mut driven = false;
+                for (lane, name) in names.iter().enumerate() {
+                    if name.is_empty() {
+                        continue;
+                    }
+                    if let Some(value) =
+                        nif::anim::float_extra_data_at(&loaded.nif.blocks, geometry, name, time)
+                    {
+                        params[lane] = value;
+                        driven = true;
+                    }
+                }
+                if driven {
+                    frame.params.insert(mesh.shape_block, params);
+                }
+            }
             // a texture transform controller drives one member of one slot's transform, so a
             // property can be the target of several at once and they are resolved together.
             // Walked per shape rather than per property, since which slots a shape binds is its
