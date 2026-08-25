@@ -245,8 +245,8 @@ mod tests {
         let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(100.0, 100.0));
         let centre = egui::pos2(50.0, 50.0);
         let eye = Vec3::new(0.0, -4.0, 0.0);
-        let view = Mat4::look_at_rh(eye, Vec3::ZERO, Vec3::Z);
-        let projection = Mat4::perspective_rh(1.0, 1.0, 0.1, 100.0);
+        let view = nif::glam::camera::rh::view::look_at_mat4(eye, Vec3::ZERO, Vec3::Z);
+        let projection = nif::glam::camera::rh::proj::directx::perspective(1.0, 1.0, 0.1, 100.0);
         let view_proj = projection * view;
 
         // drawn at zero and picked at zero: the ray starts near the eye
