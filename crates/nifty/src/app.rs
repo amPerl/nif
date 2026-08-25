@@ -27,6 +27,9 @@ struct Loaded {
     billboards: bool,
     /// Something in the file can be culled, so the walk has to run even when nothing moves.
     hideable: bool,
+    /// Whether anything in the file is skinned, since a skinned shape is placed by its bones
+    /// every frame rather than by the transform the scene was built with.
+    skinned: bool,
     /// Whether playback should start over at the end, or hold what the file settles on.
     repeats: bool,
     /// Particle state, which has to outlive a scene rebuild and so cannot live in the scene.
@@ -281,6 +284,10 @@ impl Nifty {
                 matches!(block, Block::NiVisController(_))
                     || block.av_object().is_some_and(|av| av.is_hidden())
             }),
+            skinned: nif
+                .blocks
+                .iter()
+                .any(|block| matches!(block, Block::NiSkinInstance(_))),
             nif,
             consumed: reader.position() as usize,
             size: bytes.len(),
@@ -642,19 +649,47 @@ impl Viewer<'_> {
             return Arc::default();
         };
         // a particle system is animation even when nothing else in the file moves
-        if viewpoint.is_static() && !loaded.hideable && loaded.systems.is_empty() {
+        if viewpoint.is_static() && !loaded.hideable && !loaded.skinned && loaded.systems.is_empty()
+        {
             return Arc::default();
         }
         let mut frame = Frame::default();
         for visit in viewpoint.walk(&loaded.nif) {
-            if visit.block.geometry().is_none() {
-                continue;
-            }
+            // every block, not only the shapes: a bone is a node the skinned shape does not
+            // own, and placing one means reaching it here
             frame
                 .poses
                 .insert(visit.index, Mat4::from(&visit.transform));
+            if visit.block.geometry().is_none() {
+                continue;
+            }
             if visit.hidden {
                 frame.hidden.insert(visit.index);
+            }
+        }
+        // A skinned shape is placed by its bones whether or not anything animates, so its
+        // geometry is resolved every frame rather than only when the clock runs. The scene
+        // built the resting pose into the buffer, and this replaces it once bones move.
+        let scene = self.state.scene.iter();
+        for mesh in scene.flat_map(|scene| scene.meshes.iter()) {
+            if !mesh.skinned {
+                continue;
+            }
+            let Some(geometry) = loaded.nif.blocks.get(mesh.shape_block).and_then(Block::geometry)
+            else {
+                continue;
+            };
+            let skinned = nif::skin::deform(&loaded.nif.blocks, geometry, |index| {
+                frame.poses.get(&index).copied()
+            });
+            if let Some(skinned) = skinned {
+                frame.deformed.insert(
+                    mesh.shape_block,
+                    crate::scene::Deformed {
+                        positions: skinned.positions,
+                        normals: skinned.normals,
+                    },
+                );
             }
         }
         // an alpha controller hangs off the material rather than the shape, and one material
@@ -687,9 +722,9 @@ impl Viewer<'_> {
                     // rebuilt from the moved vertices wherever the morpher asks for it
                     let normals =
                         nif::anim::morph_normals(&loaded.nif.blocks, geometry, &positions);
-                    frame.morph.insert(
+                    frame.deformed.insert(
                         mesh.shape_block,
-                        crate::scene::Morphed { positions, normals },
+                        crate::scene::Deformed { positions, normals },
                     );
                 }
             }

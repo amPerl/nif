@@ -899,7 +899,7 @@ impl NiTransformInterpolator {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use crate::common::Tbc;
 
     fn tbc_key(time: f32, value: f32, tension: f32, bias: f32, continuity: f32) -> Key<f32> {
@@ -1052,6 +1052,14 @@ mod tests {
         }
     }
 
+    pub(crate) fn shape_with_skin(skin: BlockRef, data: BlockRef) -> Block {
+        let Block::NiTriShape(mut built) = shape(BlockRef::None, data) else {
+            unreachable!()
+        };
+        built.base.skin_instance_ref = skin;
+        Block::NiTriShape(built)
+    }
+
     fn shape(controller: BlockRef, data: BlockRef) -> Block {
         Block::NiTriShape(crate::blocks::NiTriShape {
             base: NiGeometry {
@@ -1075,7 +1083,11 @@ mod tests {
         })
     }
 
-    fn shape_data(vertices: Vec<Vector3>, normals: Option<Vec<Vector3>>, tris: Vec<Triangle>) -> Block {
+    pub(crate) fn shape_data(
+        vertices: Vec<Vector3>,
+        normals: Option<Vec<Vector3>>,
+        tris: Vec<Triangle>,
+    ) -> Block {
         Block::NiTriShapeData(crate::blocks::NiTriShapeData {
             base: crate::blocks::NiTriBasedGeomData {
                 base: crate::blocks::NiGeometryData {

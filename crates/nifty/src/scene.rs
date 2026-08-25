@@ -183,10 +183,14 @@ pub struct Mesh {
     /// The attributes this shape's shader declares and what they resolved to when the scene was
     /// built, so a controller driving one only has to replace that lane.
     pub attributes: ([&'static str; 4], [f32; 4]),
-    /// The vertex buffer's contents as built, kept only for a shape a morpher rewrites. Morphing
-    /// replaces positions and leaves everything interleaved with them alone, so the rest has to
-    /// still be here to write back.
-    morph_source: Option<Vec<f32>>,
+    /// The vertex buffer's contents as built, kept only for a shape whose geometry is rewritten
+    /// per frame. Positions and normals are replaced and everything interleaved with them is
+    /// left alone, so the rest has to still be here to write back.
+    deform_source: Option<Vec<f32>>,
+    /// Whether the bones place this shape rather than its own transform. A skinned shape's
+    /// vertices reach the buffer already in world space, so its model matrix carries only the
+    /// move that puts the scene near zero.
+    pub skinned: bool,
     /// The uv set each binding reads where its shader pins one, parallel to `bound`.
     pub uv_pins: [Option<u32>; BOUND_SLOTS],
     /// Which texture slots this shape's bindings hold, which its shader decides. The uv rows
@@ -354,13 +358,14 @@ pub struct Frame {
     /// property at once. Keyed by shape rather than property because which slots a shape binds
     /// is its shader's choice, so two shapes sharing a property can want different rows.
     pub uv: HashMap<usize, [f32; BOUND_SLOTS * 8]>,
-    /// Where a morphing shape's vertices have moved to, by shape block. Empty unless a file
-    /// carries a geometry morpher, which is the only thing that rewrites stored geometry.
+    /// Where a shape whose vertices the file does not fix have moved to, by shape block. A
+    /// geometry morpher and a skin are the two things that rewrite stored geometry, and no
+    /// shape in this game does both, so one map holds either.
     ///
     /// The renderer and the picker both read this. They have to read the same value: a shape
     /// tested against the vertices the file stores is clickable where it rested rather than
     /// where it has been carried to.
-    pub morph: HashMap<usize, Morphed>,
+    pub deformed: HashMap<usize, Deformed>,
     /// A shape's shader attributes where a controller drives one of them, by shape block. Empty
     /// unless a file animates an attribute, which is rare and was easy to miss.
     pub params: HashMap<usize, [f32; 4]>,
@@ -371,13 +376,35 @@ pub struct Frame {
     pub particles: HashMap<usize, Vec<nif::psys::Particle>>,
 }
 
-/// A morphing shape's geometry for one frame. The normals travel with the positions because
-/// the two are recalculated together or not at all, and keeping them apart is how they would
-/// come to disagree.
-pub struct Morphed {
+impl Frame {
+    /// Where a deformed shape's geometry sits this frame, for a shape whose own node pose does
+    /// not place it. Its resting centre stands until something has moved it.
+    pub fn deformed_center(&self, at: usize, resting: Vec3) -> Vec3 {
+        let Some(deformed) = self.deformed.get(&at) else {
+            return resting;
+        };
+        let (low, high) = deformed.positions.iter().fold(
+            (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)),
+            |(low, high), v| (low.min(Vec3::from(v)), high.max(Vec3::from(v))),
+        );
+        match low.x <= high.x {
+            true => (low + high) * 0.5,
+            false => resting,
+        }
+    }
+}
+
+/// A shape's geometry for one frame, where the file's own vertices are not where it draws.
+/// The normals travel with the positions because the two are rebuilt together or not at all,
+/// and keeping them apart is how they would come to disagree.
+///
+/// A morph leaves its positions in the shape's own space, so the shape still draws with its
+/// model transform. A skin puts them in world space and the shape draws with none, which is
+/// what `Mesh::skinned` decides.
+pub struct Deformed {
     pub positions: Vec<nif::common::Vector3>,
-    /// Recalculated normals, where the morpher asks for them and the shape stores some of its
-    /// own. `None` leaves the shape shaded as it rests, which is what the engine does.
+    /// Rebuilt normals. `None` leaves the shape shaded as it rests, which is what the engine
+    /// does for a morph that does not ask and for a shape storing none.
     pub normals: Option<Vec<nif::common::Vector3>>,
 }
 
@@ -590,6 +617,35 @@ fn morph_reach(nif: &Nif, geometry: &NiGeometry, span: Option<(f32, f32)>) -> Op
         let time = start + (end - start) * step as f32 / STEPS as f32;
         let moved = nif::anim::morph_at(&nif.blocks, geometry, time)?;
         for at in &moved {
+            low = low.min(Vec3::from(at));
+            high = high.max(Vec3::from(at));
+            reached = true;
+        }
+    }
+    reached.then_some((low, high))
+}
+
+/// The world box a skinned shape reaches over the whole animation, or `None` where nothing
+/// skins it. Already in world space, since that is where its bones put it.
+///
+/// The transform sweep cannot stand in for this. A skinned shape's own node is usually still
+/// while its bones move, so sweeping the node finds nothing at all.
+fn skin_reach(nif: &Nif, geometry: &NiGeometry, span: Option<(f32, f32)>) -> Option<(Vec3, Vec3)> {
+    const STEPS: u32 = 12;
+    let (start, end) = span.unwrap_or((0.0, 0.0));
+
+    let mut low = Vec3::splat(f32::MAX);
+    let mut high = Vec3::splat(f32::MIN);
+    let mut reached = false;
+    for step in 0..=STEPS {
+        let time = start + (end - start) * step as f32 / STEPS as f32;
+        let pose: HashMap<usize, Mat4> = nif
+            .walk()
+            .at_time(time)
+            .map(|visit| (visit.index, Mat4::from(&visit.transform)))
+            .collect();
+        let skinned = nif::skin::deform(&nif.blocks, geometry, |index| pose.get(&index).copied())?;
+        for at in &skinned.positions {
             low = low.min(Vec3::from(at));
             high = high.max(Vec3::from(at));
             reached = true;
@@ -1283,6 +1339,12 @@ impl Gfx {
 
         // one span for the whole file, since every shape's sweep runs over the same one
         let span = nif::anim::span(&nif.blocks);
+        // every block's resting world transform, since a bone is a node the shape does not own
+        // and placing a skinned shape means reaching one
+        let rest_pose: HashMap<usize, Mat4> = nif
+            .walk()
+            .map(|visit| (visit.index, Mat4::from(&visit.transform)))
+            .collect();
         for visit in nif.walk() {
             // the walk is the only place the node's world transform is known
             if let Block::NiLODNode(node) = visit.block {
@@ -1328,9 +1390,22 @@ impl Gfx {
                 continue;
             }
 
-            let model = Mat4::from(&visit.transform);
+            // A skinned shape's own transform does not place it: the bones do, and its stored
+            // vertices are in skin space. So it is deformed once here for the resting pose and
+            // drawn with no model transform, and the frame replaces this whenever bones move.
+            let rest =
+                nif::skin::deform(&nif.blocks, geometry, |index| rest_pose.get(&index).copied());
+            let skinned = rest.is_some();
+            let model = match skinned {
+                true => Mat4::IDENTITY,
+                false => Mat4::from(&visit.transform),
+            };
             let colors = data.vertex_colors.as_ref();
-            let normals = data.normals.as_ref();
+            let vertices = rest.as_ref().map_or(vertices, |skin| &skin.positions);
+            let normals = rest
+                .as_ref()
+                .and_then(|skin| skin.normals.as_ref())
+                .or(data.normals.as_ref());
             // the dark slot almost always reads uv set 1, so more than one set goes up and
             // each slot picks the one its own TexDesc names
             let uvs = data.uv_sets.first().map(|set| &set.uvs);
@@ -1379,10 +1454,13 @@ impl Gfx {
                 attributes.extend_from_slice(&uv2);
             }
 
-            // A morphing shape is drawn from vertices the file does not store, so every box
-            // taken from those vertices has to grow to cover where the morph carries it. The
-            // far plane, the camera's framing and the sort centre all come from these.
-            let reach = morph_reach(nif, geometry, span);
+            // A shape drawn from vertices the file does not store needs every box taken from
+            // those vertices to grow and cover where it is carried. The far plane, the camera's
+            // framing and the sort centre all come from these.
+            let reach = match skinned {
+                true => skin_reach(nif, geometry, span),
+                false => morph_reach(nif, geometry, span),
+            };
             if let Some((low, high)) = reach {
                 local_min = local_min.min(low);
                 local_max = local_max.max(high);
@@ -1647,15 +1725,21 @@ impl Gfx {
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
 
-            boxes.insert(visit.index, (local_min, local_max));
-            // only a morphing shape pays to keep its attributes
-            let morph_source = reach.is_some().then(|| attributes.clone());
-            let morphs = morph_source.is_some();
+            // A skinned shape's box is already in world space and its bones, not its own
+            // transform, move it, so the transform sweep has nothing to say about it. Its own
+            // sweep is in the bounds above already.
+            if !skinned {
+                boxes.insert(visit.index, (local_min, local_max));
+            }
+            // only a shape whose geometry is rewritten pays to keep its attributes
+            let deform_source = (reach.is_some() || skinned).then(|| attributes.clone());
+            let deforms = deform_source.is_some();
             meshes.push(Mesh {
                 shape_block: visit.index,
                 lod: lod_of.get(&visit.index).copied(),
                 sorted: sorts(blend.is_some(), alpha),
-                morph_source,
+                deform_source,
+                skinned,
                 uv_pins,
                 attributes: (
                     shader.param_names,
@@ -1672,9 +1756,8 @@ impl Gfx {
                 vertices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("nifty vertices"),
                     contents: bytemuck::cast_slice(&attributes),
-                    // a morphing shape has its vertices rewritten every frame, and only it
-                    // needs the buffer to be writable
-                    usage: if morphs {
+                    // a shape the frame rewrites needs the buffer to be writable, and only it
+                    usage: if deforms {
                         wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST
                     } else {
                         wgpu::BufferUsages::VERTEX
@@ -2091,6 +2174,13 @@ impl PreviewCall {
     /// Where the shape's centre is this frame. A billboard turns and an animated node moves, so
     /// the centre the scene was built with is not where it is being drawn.
     fn center(&self, mesh: &Mesh) -> Vec3 {
+        // a skinned shape's node pose is not what places it, so where it deformed to is the
+        // only thing that knows where it is
+        if mesh.skinned {
+            return self
+                .frame
+                .deformed_center(mesh.shape_block, mesh.local_center);
+        }
         match self.frame.poses.get(&mesh.shape_block) {
             Some(model) => model.transform_point3(mesh.local_center),
             None => mesh.center,
@@ -2165,7 +2255,12 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
         _resources: &mut egui_wgpu::CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
         for mesh in &self.scene.meshes {
-            if let Some(model) = self.frame.poses.get(&mesh.shape_block) {
+            // a skinned shape's vertices arrive in world space, so its node pose is not its
+            // model matrix and writing one here would move it twice
+            if let Some(model) = (!mesh.skinned)
+                .then(|| self.frame.poses.get(&mesh.shape_block))
+                .flatten()
+            {
                 queue.write_buffer(
                     &mesh.model_buffer,
                     0,
@@ -2181,11 +2276,11 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
             if let Some(rows) = self.frame.uv.get(&mesh.shape_block) {
                 queue.write_buffer(&mesh.model_buffer, UV_OFFSET, bytemuck::cast_slice(rows));
             }
-            // a morph replaces the stored vertices outright, so the whole buffer goes back
+            // a deform replaces the stored vertices outright, so the whole buffer goes back
             // rather than the positions being poked one at a time
             if let (Some(moved), Some(source)) = (
-                self.frame.morph.get(&mesh.shape_block),
-                mesh.morph_source.as_ref(),
+                self.frame.deformed.get(&mesh.shape_block),
+                mesh.deform_source.as_ref(),
             ) {
                 let mut attributes = source.clone();
                 for (vertex, at) in moved.positions.iter().enumerate() {
@@ -2197,7 +2292,7 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
                     };
                     position.copy_from_slice(&[at.x, at.y, at.z]);
                 }
-                // the normal lane follows the position lane, since a morph that bends a lit
+                // the normal lane follows the position lane, since bending or turning a lit
                 // surface changes which way it faces
                 for (vertex, at) in moved.normals.iter().flat_map(|n| n.iter()).enumerate() {
                     let Some(slot) = attributes.get_mut(vertex * VERTEX_FLOATS + 3..) else {

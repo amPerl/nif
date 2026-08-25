@@ -326,6 +326,17 @@ impl Block {
         Some(geometry)
     }
 
+    /// The stored geometry behind a shape's `data_ref`, whichever form holds it.
+    pub fn geometry_data(&self) -> Option<&NiGeometryData> {
+        let data: &NiGeometryData = match self {
+            Block::NiTriShapeData(b) => b,
+            Block::NiTriShapeDynamicData(b) => b,
+            Block::NiTriStripsData(b) => b,
+            _ => return None,
+        };
+        Some(data)
+    }
+
     pub fn av_object(&self) -> Option<&NiAvObject> {
         let obj: &NiAvObject = match self {
             Block::NiAvObject(b) => b,

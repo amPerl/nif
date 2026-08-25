@@ -19,6 +19,9 @@ pub mod walk;
 #[cfg(feature = "glam")]
 pub mod psys;
 
+#[cfg(feature = "glam")]
+pub mod skin;
+
 #[cfg(feature = "facet")]
 pub mod reflect;
 

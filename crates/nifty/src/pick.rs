@@ -106,18 +106,18 @@ pub fn hits(
         if !visible.contains(&visit.index) {
             continue;
         }
-        let Some((_geometry, data, triangles)) = geometry_of(nif, visit.block) else {
+        let Some((geometry, data, triangles)) = geometry_of(nif, visit.block) else {
             continue;
         };
-        // A morph replaces the stored vertices, and the renderer draws the replacement, so the
-        // ray has to meet the shape where it has been carried to. Reading `data` here instead
-        // leaves a morphing shape clickable at rest and nowhere near where it is drawn.
-        let Some(vertices) = frame
-            .morph
-            .get(&visit.index)
-            .map(|moved| &moved.positions)
-            .or(data.vertices.as_ref())
-        else {
+        // the ray meets a morphed shape where the renderer carried it to, and a skinned shape
+        // is already in world space, so its own transform is not applied. A skinned shape the
+        // frame has not deformed yet has no usable geometry, so it is left unpickable
+        let skinned = nif::skin::is_skinned(&nif.blocks, geometry);
+        let deformed = frame.deformed.get(&visit.index).map(|moved| &moved.positions);
+        if skinned && deformed.is_none() {
+            continue;
+        }
+        let Some(vertices) = deformed.or(data.vertices.as_ref()) else {
             continue;
         };
         // the properties in force, a parent node's included, so what can be clicked matches
@@ -127,10 +127,13 @@ pub fn hits(
         }
 
         // a zero scale makes the inverse matrix meaningless
-        if visit.transform.scale.abs() < 1e-8 {
+        if !skinned && visit.transform.scale.abs() < 1e-8 {
             continue;
         }
-        let model = Mat4::from(&visit.transform);
+        let model = match skinned {
+            true => Mat4::IDENTITY,
+            false => Mat4::from(&visit.transform),
+        };
         let inverse = model.inverse();
         let origin = inverse.transform_point3(ray.origin);
         let direction = inverse.transform_vector3(ray.direction);
