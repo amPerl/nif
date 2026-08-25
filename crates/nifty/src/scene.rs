@@ -1800,12 +1800,10 @@ impl Gfx {
             address: (wgpu::AddressMode::Repeat, wgpu::AddressMode::Repeat),
             filter: wgpu::FilterMode::Linear,
         });
-        // the floor has to reach the geometry as well as the origin, which a chunk sitting
-        // far out is nowhere near
         // sized to the scene, not to how far the scene is from the origin, and placed on the
         // ground below it. The z stays at the world's own floor so height still reads truthfully.
-        let ground = Vec3::new(center.x, center.y, 0.0);
         let (lines, spacing, half) = grid_lines(radius);
+        let ground = grid_ground(center, spacing);
         let mut identity = [0f32; MODEL_FLOATS as usize];
         identity[..16]
             .copy_from_slice(&drawn_at(origin, Mat4::from_translation(ground)).to_cols_array());
@@ -1959,14 +1957,73 @@ pub fn slot_uv_rows(
     out
 }
 
+/// How many cells the grid will draw either side of its centre before it gives up on the
+/// spacing it wanted and takes a coarser one. Sized so a scene of a few hundred units still
+/// gets a cell for every unit.
+///
+/// Coarsening rather than clamping is what keeps the floor covering the scene: the spacing is
+/// raised until the cell count fits, so the count never has to be cut.
+const GRID_MAX_CELLS: i32 = 1024;
+
+/// The finest the grid will subdivide for a model smaller than a few cells across.
+const GRID_MIN_SPACING: f32 = 1e-4;
+
+/// The gap between grid lines for a scene reaching `reach` from its centre.
+///
+/// One unit per cell where the scene allows it. It coarsens only when a scene is too wide to
+/// draw at that, so a cell means the same thing across files and a size can be read off the
+/// floor.
+fn grid_spacing(reach: f32) -> f32 {
+    let reach = reach.max(1e-3);
+    let mut spacing = 1.0f32;
+    while reach / spacing > GRID_MAX_CELLS as f32 {
+        spacing *= 10.0;
+    }
+    // and a model smaller than a few units across gets a finer one, or it sits inside one cell
+    while reach / spacing < 4.0 && spacing > GRID_MIN_SPACING {
+        spacing /= 10.0;
+    }
+    spacing
+}
+
+/// How bright a grid line at `index` cells from the centre is drawn.
+///
+/// The tiers are keyed to where the line falls in the file's own units, not to a count of
+/// lines, so the one unit line is the one unit line at every spacing. Read off the index
+/// instead, the bright line means a different distance in every file.
+fn grid_tier(index: i32, spacing: f32) -> [f32; 4] {
+    // how many lines fall inside one unit, which is 1 once a cell is a unit or wider
+    let per_unit = (1.0 / spacing).round().max(1.0) as i32;
+    if index % per_unit.saturating_mul(10).max(1) == 0 {
+        // ten units, the coarsest reading
+        [0.52, 0.55, 0.62, 1.0]
+    } else if index % per_unit == 0 {
+        // exactly one unit, which is the line worth finding
+        [0.40, 0.43, 0.50, 1.0]
+    } else {
+        [0.26, 0.28, 0.32, 1.0]
+    }
+}
+
+/// Where the floor sits: under the scene, but snapped so that every line falls on a whole
+/// multiple of the spacing in world space.
+///
+/// Centring it on the scene alone leaves the lines wherever the bounding box happens to fall, so
+/// a cell is the right width but no line marks a round coordinate. Snapping costs up to half a
+/// cell of offset from the scene, which nothing depends on.
+fn grid_ground(center: Vec3, spacing: f32) -> Vec3 {
+    let snap = |v: f32| match spacing > 0.0 {
+        true => (v / spacing).round() * spacing,
+        false => v,
+    };
+    Vec3::new(snap(center.x), snap(center.y), 0.0)
+}
+
 /// A grid on the XY plane through the origin, plus the positive axes over it, as a line list.
 /// NIF is Z up, so XY is the ground. Returns the vertex data and the spacing it chose.
-///
-/// `reach` is how far the scene gets from the origin, and the spacing is the power of ten that
-/// puts roughly ten cells between the two, so the numbers on it stay round.
 fn grid_lines(reach: f32) -> (Vec<f32>, f32, f32) {
-    let spacing = 10f32.powf((reach.max(1e-3) / 10.0).log10().round());
-    let cells = ((reach / spacing).ceil() as i32).clamp(4, 40);
+    let spacing = grid_spacing(reach);
+    let cells = ((reach / spacing).ceil() as i32).clamp(4, GRID_MAX_CELLS);
     let half = cells as f32 * spacing;
 
     let mut out = Vec::new();
@@ -1981,12 +2038,7 @@ fn grid_lines(reach: f32) -> (Vec<f32>, f32, f32) {
 
     for i in -cells..=cells {
         let at = i as f32 * spacing;
-        // every tenth line is brighter, so the scale reads without counting cells
-        let color = if i % 10 == 0 {
-            [0.46, 0.48, 0.54, 1.0]
-        } else {
-            [0.32, 0.34, 0.38, 1.0]
-        };
+        let color = grid_tier(i, spacing);
         if i == 0 {
             // the positive halves of these two are the axes below. Drawing both would put two
             // lines in one place, which is what fights for depth once precision drops off.
@@ -2952,13 +3004,21 @@ mod tests {
     /// Every vertex is position, colour and two uv sets, and the axes are the last three lines.
     const STRIDE: usize = super::VERTEX_FLOATS;
 
+    /// One unit per cell wherever the scene allows it, and a power of ten either side of that
+    /// when it does not. A scene of a few hundred units is the common case and it is the one
+    /// that has to land on 1.
     #[test]
-    fn spacing_is_a_round_number_about_a_tenth_of_the_reach() {
+    fn a_cell_is_one_unit_unless_the_scene_is_too_wide_for_that() {
         for (reach, expected) in [
-            (1.0, 0.1),
             (10.0, 1.0),
-            (50.0, 10.0),
-            (6000.0, 1000.0),
+            (50.0, 1.0),
+            (192.0, 1.0),
+            (1000.0, 1.0),
+            // past the cell budget it coarsens by powers of ten rather than fitting the scene
+            (2000.0, 10.0),
+            (20000.0, 100.0),
+            // and a model smaller than a few cells across subdivides instead
+            (1.0, 0.1),
             (0.05, 0.01),
         ] {
             let (_, spacing, _) = grid_lines(reach);
@@ -2966,6 +3026,35 @@ mod tests {
         }
     }
 
+    /// The brightest lines have to land on round distances in the file's own units, or the
+    /// floor cannot be read as a ruler. Keyed off the line index alone, as it was, the bright
+    /// line lands on a different distance in every file.
+    #[test]
+    fn the_emphasised_lines_fall_on_whole_units() {
+        // a cell per unit: every line is a unit line, every tenth is a ten
+        let unit = super::grid_tier(1, 1.0);
+        let ten = super::grid_tier(10, 1.0);
+        assert_ne!(unit, ten);
+        assert_eq!(super::grid_tier(3, 1.0), unit);
+
+        // a tenth of a unit per cell: the unit line is every tenth line, not every line
+        let dim = super::grid_tier(3, 0.1);
+        assert_ne!(dim, unit);
+        assert_eq!(super::grid_tier(10, 0.1), unit, "1.0 units in");
+        assert_eq!(super::grid_tier(20, 0.1), unit, "2.0 units in");
+        assert_eq!(super::grid_tier(100, 0.1), ten, "10.0 units in");
+
+        // a hundredth, and the same distances still carry the same weight
+        assert_eq!(super::grid_tier(100, 0.01), unit, "1.0 units in");
+        assert_eq!(super::grid_tier(1000, 0.01), ten, "10.0 units in");
+        assert_eq!(super::grid_tier(50, 0.01), dim, "half a unit in");
+
+        // and the unit line is brighter than the ones between it
+        assert!(unit[0] > dim[0] && ten[0] > unit[0]);
+    }
+
+    /// The floor still covers the scene at every size. Coarsening is what keeps the cell count
+    /// inside its budget, so the budget itself never has to cut the grid short.
     #[test]
     fn the_floor_reaches_at_least_as_far_as_the_scene() {
         for reach in [0.05, 1.0, 7.5, 240.0, 6000.0] {
@@ -2996,6 +3085,33 @@ mod tests {
                 half >= furthest,
                 "reach {reach} reported {half} but a vertex sits at {furthest}"
             );
+        }
+    }
+
+    /// A scene centre is an arbitrary float, so the floor has to be snapped or its lines fall
+    /// on nothing in particular. The width of a cell is only half of being able to read a
+    /// coordinate off it.
+    #[test]
+    fn every_grid_line_lands_on_a_whole_multiple_of_the_spacing() {
+        for (centre, radius) in [
+            (Vec3::new(123.456, -7.3, 0.0), 200.0f32),
+            (Vec3::new(-1893.02, 44.87, 0.0), 900.0),
+            (Vec3::new(0.4999, 0.5001, 0.0), 8.0),
+            (Vec3::new(-0.03, 0.07, 0.0), 0.4),
+        ] {
+            let spacing = super::grid_spacing(radius);
+            let ground = super::grid_ground(centre, spacing);
+            for axis in [ground.x, ground.y] {
+                let steps = axis / spacing;
+                assert!(
+                    (steps - steps.round()).abs() < 1e-3,
+                    "centre {centre:?} at spacing {spacing} left a line at {axis}"
+                );
+            }
+            // and the floor still sits under the scene rather than being dragged to the origin
+            assert!((ground.x - centre.x).abs() <= spacing * 0.5 + 1e-4);
+            assert!((ground.y - centre.y).abs() <= spacing * 0.5 + 1e-4);
+            assert_eq!(ground.z, 0.0, "the floor stays at the world's own z");
         }
     }
 
