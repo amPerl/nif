@@ -12,16 +12,20 @@
 //! The particles will not sit where the game's did. Spawning is random and this generator is a
 //! different one, so the behaviour is reproduced and the individual particles are not.
 
-use glam::Vec3;
+use glam::{Mat4, Vec3};
 
 use crate::blocks::{
-    Block, NiPSysColorModifier, NiPSysEmitter, NiPSysGrowFadeModifier, NiPSysRotationModifier,
+    Block, ForceType, NiPSysColorModifier, NiPSysEmitter, NiPSysGravityModifier,
+    NiPSysGrowFadeModifier, NiPSysRotationModifier,
 };
-use crate::common::{BlockRef, Color4, Vector3};
+use crate::common::{BlockRef, Color4, NiTransform, Vector3};
 
 /// The interval the simulation advances by. Forces apply before movement within a step, so how
 /// far a particle travels depends on how coarse the step is and only a fixed one repeats.
 pub const STEP: f32 = 1.0 / 60.0;
+
+/// What the engine multiplies a stored gravity strength by before applying it.
+const GRAVITY_SCALE: f32 = 1.6;
 
 /// Where the engine gives up unwinding a rotation and starts the turn again.
 const TEN_PI: f32 = 10.0 * std::f32::consts::PI;
@@ -166,6 +170,7 @@ impl System {
             match blocks.get(index) {
                 Some(Block::NiPSysGrowFadeModifier(m)) => self.grow_and_fade(m),
                 Some(Block::NiPSysRotationModifier(_)) => self.spin(now),
+                Some(Block::NiPSysGravityModifier(m)) => self.pull(blocks, m, now),
                 Some(Block::NiPSysColorModifier(m)) => self.tint(blocks, m),
                 _ => match order {
                     order::AGE_DEATH => self.age_and_die(now),
@@ -198,6 +203,51 @@ impl System {
                 1.0
             };
             particle.size = grow.min(fade).max(SIZE_FLOOR);
+        }
+    }
+
+    /// Add a force to each particle's velocity. Position integrates afterwards, which the
+    /// modifier order already arranges, so a force accumulates into velocity and then moves.
+    ///
+    /// The direction is the modifier's axis carried into the system's own space by the gravity
+    /// object's transform, and without a gravity object the engine applies nothing at all. Every
+    /// file stores the same axis, so it is the transform that decides where a system's gravity
+    /// points, not the axis.
+    fn pull(&mut self, blocks: &[Block], modifier: &NiPSysGravityModifier, now: f32) {
+        let Some(object) = modifier.gravity_object_ref.index() else {
+            return;
+        };
+        let Some(relative) = relative_transform(blocks, self.block, object, now) else {
+            return;
+        };
+        let towards = relative.w_axis.truncate();
+        let axis = relative
+            .transform_vector3(Vec3::from(&modifier.gravity_axis))
+            .normalize_or_zero();
+        // the engine scales the stored strength before applying it
+        let strength = modifier.strength * GRAVITY_SCALE;
+
+        for particle in &mut self.particles {
+            let delta = now - particle.last_update;
+            let at = Vec3::from(&particle.position);
+            // a planar force pushes the same way everywhere; a spherical one points at the
+            // object, so its direction is the particle's own
+            let (direction, distance) = match modifier.force_type {
+                ForceType::Spherical => {
+                    let to_object = towards - at;
+                    (to_object.normalize_or_zero(), to_object.length())
+                }
+                _ => (axis, axis.dot(towards - at)),
+            };
+            // decay falls off with how far the particle is along that direction, and the engine
+            // measures a planar distance signed and folds the sign away
+            let decay = if modifier.decay == 0.0 {
+                1.0
+            } else {
+                (-modifier.decay * distance.abs()).exp()
+            };
+            let push = direction * (strength * decay * delta);
+            particle.velocity = (Vec3::from(&particle.velocity) + push).into();
         }
     }
 
@@ -475,6 +525,55 @@ fn emit(emitter: &NiPSysEmitter, age: f32, rng: &mut Rng) -> Option<Particle> {
     })
 }
 
+/// One object's transform as of `time`, composed from the root down. A NIF links parents to
+/// children and not the other way, so the chain up is found by asking which node claims each
+/// block as a child.
+fn world_transform(blocks: &[Block], target: usize, time: f32) -> Option<NiTransform> {
+    let mut chain = vec![target];
+    let mut at = target;
+    // a graph is a tree here, and the guard is against a file that says otherwise
+    for _ in 0..blocks.len() {
+        let Some(parent) = parent_of(blocks, at) else {
+            break;
+        };
+        chain.push(parent);
+        at = parent;
+    }
+
+    let mut world = NiTransform::IDENTITY;
+    for index in chain.into_iter().rev() {
+        let object = blocks.get(index)?.av_object()?;
+        // an animated node is wherever its controller leaves it, not where the file stores it
+        let own = crate::anim::transform_at(blocks, object, time).unwrap_or(NiTransform {
+            rotation: object.rotation,
+            translation: object.translation,
+            scale: object.scale,
+        });
+        world = world.compose(&own);
+    }
+    Some(world)
+}
+
+/// Which block names `child` among its children.
+fn parent_of(blocks: &[Block], child: usize) -> Option<usize> {
+    blocks.iter().position(|block| match block {
+        Block::NiNode(node) => node.child_refs.iter().any(|r| r.index() == Some(child)),
+        Block::NiBillboardNode(node) => node.child_refs.iter().any(|r| r.index() == Some(child)),
+        Block::NiSortAdjustNode(node) => node.child_refs.iter().any(|r| r.index() == Some(child)),
+        Block::NiSwitchNode(node) => node.child_refs.iter().any(|r| r.index() == Some(child)),
+        Block::NiLODNode(node) => node.child_refs.iter().any(|r| r.index() == Some(child)),
+        _ => false,
+    })
+}
+
+/// Where one object sits in another's space, which is what carries a gravity axis and a gravity
+/// object's position into the space a system's particles live in.
+fn relative_transform(blocks: &[Block], system: usize, object: usize, time: f32) -> Option<Mat4> {
+    let system = Mat4::from(&world_transform(blocks, system, time)?);
+    let object = Mat4::from(&world_transform(blocks, object, time)?);
+    Some(system.inverse() * object)
+}
+
 /// How far and how fast a newly born particle turns. The variation is applied whole here rather
 /// than halved, unlike the emitter's speed and life span.
 fn seed_rotation(modifier: &NiPSysRotationModifier, particle: &mut Particle, rng: &mut Rng) {
@@ -548,11 +647,12 @@ pub fn systems(blocks: &[Block]) -> Vec<System> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::blocks::{NiAvObject, NiNode, NiObjectNET};
     use crate::blocks::{
         NiBoolData, NiBoolInterpolator, NiColorData, NiInterpolator, NiKeyBasedInterpolator,
         NiPSysModifier, NiString,
     };
-    use crate::common::{BlockRef, Key, KeyGroup, KeyType};
+    use crate::common::{BlockRef, Key, KeyGroup, KeyType, Matrix33};
 
     fn parse(path: &str) -> crate::Nif {
         let bytes = std::fs::read(path).expect("fixture");
@@ -620,6 +720,62 @@ mod tests {
         }
         assert!(alive > 0, "no system emitted anything");
         assert!(moved > 0, "nothing moved away from where it was born");
+    }
+
+    /// Files store the same gravity axis throughout, so the transform between a system and its
+    /// gravity object is what decides which way the pull points. Reading the axis alone would
+    /// have a fountain accelerating upwards.
+    #[test]
+    fn gravity_takes_its_direction_from_the_object_rather_than_the_axis() {
+        // a root, a system under it, and a gravity object turned half way over about x
+        let node = |children: Vec<usize>, rotation: Matrix33| {
+            Block::NiNode(NiNode {
+                base: NiAvObject {
+                    base: NiObjectNET {
+                        name: NiString::from("node"),
+                        extra_data_refs: Vec::new(),
+                        controller_ref: BlockRef::None,
+                    },
+                    flags: 0,
+                    translation: Vector3 {
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
+                    },
+                    rotation,
+                    scale: 1.0,
+                    property_refs: Vec::new(),
+                    collision_ref: BlockRef::None,
+                },
+                child_refs: children
+                    .into_iter()
+                    .map(|i| BlockRef::Index(i as u32))
+                    .collect(),
+                effect_refs: Vec::new(),
+            })
+        };
+        // half a turn about x, which sends z to -z
+        let flipped = Matrix33 {
+            column_major: [1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, -1.0],
+        };
+        let blocks = vec![
+            node(vec![1, 2], Matrix33::IDENTITY),
+            node(Vec::new(), Matrix33::IDENTITY),
+            node(Vec::new(), flipped),
+        ];
+
+        assert_eq!(parent_of(&blocks, 1), Some(0));
+        assert_eq!(parent_of(&blocks, 2), Some(0));
+        assert_eq!(parent_of(&blocks, 0), None);
+
+        let up = Vec3::new(0.0, 0.0, 1.0);
+        // the system's own space, so an object sharing its orientation leaves the axis alone
+        let same = relative_transform(&blocks, 1, 1, 0.0).expect("resolves");
+        assert!(same.transform_vector3(up).abs_diff_eq(up, 1e-5));
+
+        // and the turned object sends the same axis the other way
+        let turned = relative_transform(&blocks, 1, 2, 0.0).expect("resolves");
+        assert!(turned.transform_vector3(up).abs_diff_eq(-up, 1e-5));
     }
 
     /// A rotation is a scalar turn in the plane facing the camera, and only its speed varies per
