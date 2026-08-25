@@ -957,7 +957,7 @@ impl Viewer<'_> {
                 let mut visible =
                     scene.visible_shapes(self.state.lod_mode, self.state.lod_distance, eye);
                 visible.retain(|shape| !frame.hidden.contains(shape));
-                let hits = pick::ray_through(view_proj, rect, pointer)
+                let hits = pick::ray_through(view_proj, scene.origin, rect, pointer)
                     .map(|ray| pick::hits(&loaded.nif, &ray, &visible, viewpoint, &frame))
                     .unwrap_or_default();
                 let repeat = self

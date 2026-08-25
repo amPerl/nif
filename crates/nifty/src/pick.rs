@@ -38,8 +38,19 @@ fn sphere_hit(ray: &Ray, centre: Vec3, radius: f32) -> Option<f32> {
     (distance >= 0.0).then_some(distance)
 }
 
-/// The ray under the cursor. The projection is DirectX style, so near is depth 0.
-pub fn ray_through(view_proj: Mat4, rect: egui::Rect, pointer: egui::Pos2) -> Option<Ray> {
+/// The ray under the cursor, in the file's own world space. The projection is DirectX style, so
+/// near is depth 0.
+///
+/// `view_proj` draws the scene moved to sit near zero, so unprojecting through it gives a ray in
+/// that moved space, while everything this module tests against is where the file puts it.
+/// `origin` moves the ray back. Only its start needs it: a translation leaves the direction
+/// alone.
+pub fn ray_through(
+    view_proj: Mat4,
+    origin: Vec3,
+    rect: egui::Rect,
+    pointer: egui::Pos2,
+) -> Option<Ray> {
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return None;
     }
@@ -51,11 +62,12 @@ pub fn ray_through(view_proj: Mat4, rect: egui::Rect, pointer: egui::Pos2) -> Op
         let clip = inverse * Vec4::new(x, y, depth, 1.0);
         (clip.w.abs() > f32::EPSILON).then(|| clip.truncate() / clip.w)
     };
-    let origin = unproject(0.0)?;
+    let unprojected = unproject(0.0)?;
     let far = unproject(1.0)?;
-    let direction = far - origin;
+    let direction = far - unprojected;
+    let start = origin + unprojected;
     (direction.length_squared() > 0.0).then(|| Ray {
-        origin,
+        origin: start,
         direction: direction.normalize(),
     })
 }
@@ -224,6 +236,31 @@ fn intersect(
 
 #[cfg(test)]
 mod tests {
+
+    /// The scene is drawn moved to sit near zero and picked where the file puts it, so the ray
+    /// has to cross back. Getting this wrong makes every click miss on a model far from the
+    /// origin while working on one near it.
+    #[test]
+    fn a_ray_comes_back_into_the_space_the_file_uses() {
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(100.0, 100.0));
+        let centre = egui::pos2(50.0, 50.0);
+        let eye = Vec3::new(0.0, -4.0, 0.0);
+        let view = Mat4::look_at_rh(eye, Vec3::ZERO, Vec3::Z);
+        let projection = Mat4::perspective_rh(1.0, 1.0, 0.1, 100.0);
+        let view_proj = projection * view;
+
+        // drawn at zero and picked at zero: the ray starts near the eye
+        let here = super::ray_through(view_proj, Vec3::ZERO, rect, centre).expect("a ray");
+        assert!(here.origin.distance(eye) < 0.5, "{:?}", here.origin);
+
+        // drawn at zero and picked nine thousand units out: the ray starts near the eye there
+        let far = Vec3::new(9000.0, 0.0, 0.0);
+        let moved = super::ray_through(view_proj, far, rect, centre).expect("a ray");
+        assert!(moved.origin.distance(eye + far) < 0.5, "{:?}", moved.origin);
+
+        // and the direction is untouched, since a translation cannot turn it
+        assert!(moved.direction.abs_diff_eq(here.direction, 1e-6));
+    }
     use super::*;
 
     fn ray(origin: Vec3, at: Vec3) -> Ray {
