@@ -22,6 +22,9 @@ pub mod psys;
 #[cfg(feature = "glam")]
 pub mod skin;
 
+#[cfg(feature = "glam")]
+mod path;
+
 #[cfg(feature = "facet")]
 pub mod reflect;
 

@@ -82,12 +82,20 @@ pub fn transform_at(blocks: &[Block], object: &NiAvObject, time: f32) -> Option<
         if !time_controller.is_active() {
             continue;
         }
-        let Some(Block::NiTransformInterpolator(interpolator)) =
-            controller.base.interpolator_ref.get(blocks)
-        else {
-            continue;
+        let local = time_controller.local_time(time);
+        // one controller carries either a transform track or a path to run along
+        let pose = match controller.base.interpolator_ref.get(blocks) {
+            Some(Block::NiTransformInterpolator(interpolator)) => {
+                interpolator.sample(blocks, local)
+            }
+            Some(Block::NiPathInterpolator(interpolator)) => {
+                match crate::path::pose_at(blocks, interpolator, local) {
+                    Some(pose) => pose,
+                    None => continue,
+                }
+            }
+            _ => continue,
         };
-        let pose = interpolator.sample(blocks, time_controller.local_time(time));
         if pose.is_empty() {
             continue;
         }
