@@ -266,13 +266,23 @@ pub struct Scene {
     pub meshes: Vec<Mesh>,
     pub particles: Vec<ParticleMesh>,
     pub center: Vec3,
+    /// The bounds at rest, which is what the camera frames and what LOD measures against. An
+    /// animation is not included: framing a file whose animation flings something a hundred
+    /// times its own size away would leave the thing you came to look at a speck.
     pub radius: f32,
+    /// The furthest anything gets from `center` at any point in the animation, never less than
+    /// `radius`. Only the far plane reads this, so nothing clips out mid animation without the
+    /// framing paying for it.
+    ///
+    /// Swept rather than guessed at: an animation can carry geometry far enough outside the
+    /// resting bounds that no fixed headroom covers it.
+    pub animated_radius: f32,
     pub lods: HashMap<usize, Lod>,
     pub grid: Grid,
 }
 
 /// The ground plane and axes. Sized to the file when the scene is built, since one spacing
-/// cannot serve a 2 unit gauge and a 6,000 unit parking lot.
+/// cannot serve both the smallest and the largest scenes.
 pub struct Grid {
     vertices: wgpu::Buffer,
     count: u32,
@@ -527,6 +537,53 @@ fn named_map(blocks: &[Block], extra_data_refs: &[BlockRef], index: &str) -> Opt
 /// is composed per vertex moves.
 fn drawn_at(origin: Vec3, model: Mat4) -> Mat4 {
     Mat4::from_translation(-origin) * model
+}
+
+/// Every corner of a box. A rotation can put any of the eight furthest out, so taking the two
+/// extremes alone understates the reach of anything turned.
+fn box_corners(low: Vec3, high: Vec3) -> [Vec3; 8] {
+    std::array::from_fn(|corner| {
+        Vec3::new(
+            if corner & 1 == 0 { low.x } else { high.x },
+            if corner & 2 == 0 { low.y } else { high.y },
+            if corner & 4 == 0 { low.z } else { high.z },
+        )
+    })
+}
+
+/// How far anything gets from the resting centre over the whole animation. The far plane reads
+/// this so a shape carried outside the resting bounds does not clip out part way through.
+///
+/// Sampled rather than solved: a transform track can move a shape any way at all between its
+/// keys, and sampling costs one transform walk per step with no geometry touched.
+fn swept_radius(
+    nif: &Nif,
+    center: Vec3,
+    resting: f32,
+    boxes: &HashMap<usize, (Vec3, Vec3)>,
+) -> f32 {
+    const STEPS: u32 = 12;
+    let Some((start, end)) = nif::anim::span(&nif.blocks) else {
+        return resting;
+    };
+    if end <= start || boxes.is_empty() {
+        return resting;
+    }
+
+    let mut furthest = resting;
+    for step in 0..=STEPS {
+        let time = start + (end - start) * step as f32 / STEPS as f32;
+        for visit in nif.walk().at_time(time) {
+            let Some((low, high)) = boxes.get(&visit.index) else {
+                continue;
+            };
+            let model = Mat4::from(&visit.transform);
+            for at in box_corners(*low, *high) {
+                furthest = furthest.max(center.distance(model.transform_point3(at)));
+            }
+        }
+    }
+    furthest
 }
 
 /// Whether a shape joins the back to front pass. The engine queues one only when it blends and
@@ -1151,6 +1208,9 @@ impl Gfx {
         let fixed_module = compile(device, &fixed.name, &fixed.passes[0])
             .expect("the built in fixed function shader has to compile");
         let mut unhandled: Vec<String> = Vec::new();
+        // each shape's own box, kept so the animated sweep can move it without touching
+        // vertices again
+        let mut boxes: HashMap<usize, (Vec3, Vec3)> = HashMap::new();
         // A technique that is drawn but not wholly. Reporting only the ones nothing can draw
         // leaves a partial reading looking finished, which is the same trap the fixed function
         // fallback was: it is the not saying that makes it wrong.
@@ -1520,6 +1580,7 @@ impl Gfx {
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
 
+            boxes.insert(visit.index, (local_min, local_max));
             meshes.push(Mesh {
                 shape_block: visit.index,
                 lod: lod_of.get(&visit.index).copied(),
@@ -1573,6 +1634,7 @@ impl Gfx {
         } else {
             ((min + max) * 0.5, (max - min).length() * 0.5)
         };
+        let animated_radius = swept_radius(nif, center, radius, &boxes);
 
         let samplers_for_grid = self.sampler(shaders::Sampling {
             address: (wgpu::AddressMode::Repeat, wgpu::AddressMode::Repeat),
@@ -1633,6 +1695,7 @@ impl Gfx {
                 particles,
                 center,
                 radius: radius.max(0.001),
+                animated_radius: animated_radius.max(radius).max(0.001),
                 lods,
                 grid,
             },
@@ -2367,6 +2430,34 @@ mod tests {
         assert_eq!(bound[0], shader.params[0]);
         assert_eq!(bound[1], 8.0);
         assert_eq!(bound[2..], shader.params[2..]);
+    }
+
+    /// A rotated box reaches furthest at a corner, and which corner depends on the rotation, so
+    /// the sweep has to try all eight. Taking the two extremes alone would understate every
+    /// animated shape that turns.
+    #[test]
+    fn a_box_offers_all_eight_of_its_corners() {
+        let low = Vec3::new(-1.0, -2.0, -3.0);
+        let high = Vec3::new(4.0, 5.0, 6.0);
+        let corners = super::box_corners(low, high);
+
+        assert!(corners.contains(&low));
+        assert!(corners.contains(&high));
+        // every one is distinct, and every one is a corner of the box
+        for (at, corner) in corners.iter().enumerate() {
+            assert!(corners[at + 1..].iter().all(|other| other != corner));
+            for axis in 0..3 {
+                assert!(corner[axis] == low[axis] || corner[axis] == high[axis]);
+            }
+        }
+        // the furthest from any point is a corner, which is the property the sweep leans on
+        let from = Vec3::new(10.0, -10.0, 0.0);
+        let furthest = corners
+            .iter()
+            .map(|c| from.distance(*c))
+            .fold(0.0f32, f32::max);
+        assert!(furthest >= from.distance(low));
+        assert!(furthest >= from.distance(high));
     }
 
     /// A `TexDesc` naming its own uv set is a fixed function notion, and a technique with its

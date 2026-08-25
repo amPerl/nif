@@ -930,10 +930,10 @@ impl Viewer<'_> {
         let view = look_at_mat4(eye - scene.origin, target - scene.origin, Vec3::Z);
         // the near plane tracks the distance so precision stays where the camera looks. The far
         // plane cannot: it has to clear the floor, which is sized to the scene. Both terms are
-        // measured from the eye rather than from the world origin, and the scene term keeps a
-        // few radii of headroom for a node an animation carries past the static bounds
+        // measured from the eye rather than from the world origin, and the scene term uses the
+        // swept bounds so an animation carrying a shape outside its resting box is not clipped
         let reach = (eye.distance(scene.grid.center) + scene.grid.half)
-            .max(eye.distance(scene.center) + scene.radius * 3.0)
+            .max(eye.distance(scene.center) + scene.animated_radius)
             * 1.25;
         let projection = perspective(
             fov,
