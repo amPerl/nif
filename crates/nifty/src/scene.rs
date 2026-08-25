@@ -2164,6 +2164,34 @@ mod tests {
         assert_eq!(bare[1], Some(super::shaders::Source::Named("ToonRamp.bmp")));
     }
 
+    /// The outline test reduces to `N dot V <= outlineThickness`, and reducing it depends on a
+    /// declared constant of a half. The vertex program's own comment lists that constant as 1,
+    /// where the test can never fire and the shader has no outline at all, so the two disagree
+    /// and the declared value is what runs.
+    #[test]
+    fn outlining_per_pixel_is_a_separate_technique_from_the_hull() {
+        let shaders = Shaders::default();
+        let outline = shaders.get("ToonShadingWithOutline").expect("built in");
+        // one pass, unlike the cartoon pair, and it moves no vertices
+        assert_eq!(outline.passes.len(), 1);
+        assert!(outline.passes[0].vertex.is_none());
+        assert_eq!(outline.param_names[0], "outlineThickness");
+        assert_eq!(outline.params[0], 0.1);
+
+        // it reads the same ramp attribute the rest of the family does
+        assert!(matches!(
+            outline.passes[0].slots[1],
+            Some(super::shaders::Source::Attribute {
+                index: "ToonRampIndex",
+                ..
+            })
+        ));
+        // and leaves cull and depth to the file, where the hull pins both
+        assert_eq!(outline.passes[0].state.cull, None);
+        let hull = &shaders.get("ActionGameCartoon").expect("built in").passes[0];
+        assert!(hull.state.cull.is_some());
+    }
+
     /// `Reflection` is the exponent the specular band raises its cosine to, so a default left in
     /// place where the file overrides it is the difference between a pinpoint and a sweep.
     #[test]

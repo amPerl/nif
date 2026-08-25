@@ -321,6 +321,20 @@ fn built_ins() -> Vec<Shader> {
             origin: Origin::BuiltIn,
         },
         Shader::single("ToonShading", toon_shading_pass()),
+        Shader {
+            name: "ToonShadingWithOutline".into(),
+            // one pass: it outlines per pixel rather than by drawing a shell, so it shares
+            // nothing with the cartoon techniques but the ramp and the attribute names
+            passes: vec![Pass {
+                source: include_str!("ToonShadingWithOutline.wgsl").into(),
+                ..toon_shading_pass()
+            }],
+            // outlineThickness, at the value the technique declares. outlineColor is a colour
+            // attribute, which nothing binds yet, and black is what it declares.
+            params: [0.1, 0.0, 0.0, 0.0],
+            param_names: ["outlineThickness", "", "", ""],
+            origin: Origin::BuiltIn,
+        },
         outlined_toon("ActionGameCartoon"),
         outlined_toon("JiCartoon"),
         Shader {
