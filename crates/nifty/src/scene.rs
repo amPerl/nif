@@ -249,6 +249,15 @@ enum Sorted<'a> {
 }
 
 pub struct Scene {
+    /// Where the scene is drawn from. Everything uploaded to the GPU is relative to this, and
+    /// everything the CPU reasons about, bounds, picking, LOD distances, stays in the file's own
+    /// world space.
+    ///
+    /// A NIF can sit far enough from the world origin that f32 quantisation there is coarser
+    /// than the gap between two coincident surfaces, so composing `model * position` at full
+    /// world magnitude made them fight for the same depth. Composing near zero keeps the
+    /// shape's own geometry exact.
+    pub origin: Vec3,
     pub meshes: Vec<Mesh>,
     pub particles: Vec<ParticleMesh>,
     pub center: Vec3,
@@ -470,6 +479,13 @@ fn named_map(blocks: &[Block], extra_data_refs: &[BlockRef], index: &str) -> Opt
             }
             _ => None,
         })
+}
+
+/// One transform as the GPU is given it, moved so the scene sits near zero. The CPU keeps the
+/// original: bounds, picking and LOD distances all stay in the file's own space, and only what
+/// is composed per vertex moves.
+fn drawn_at(origin: Vec3, model: Mat4) -> Mat4 {
+    Mat4::from_translation(-origin) * model
 }
 
 /// Whether a shape joins the back to front pass. The engine queues one only when it blends and
@@ -1092,6 +1108,19 @@ impl Gfx {
         let mut min = Vec3::splat(f32::MAX);
         let mut max = Vec3::splat(f32::MIN);
 
+        // Where the scene is drawn from, taken from the first thing in it. It only has to be
+        // near the geometry, not at its centre, and the centre is not known until the bounds
+        // are. A file whose parts are spread over a huge range keeps some of the error, which
+        // is the format's own: its transforms are f32 at that magnitude too.
+        let origin = nif
+            .walk()
+            .find(|visit| {
+                matches!(visit.block, Block::NiParticleSystem(_))
+                    || geometry_of(nif, visit.block).is_some()
+            })
+            .map(|visit| Mat4::from(&visit.transform).w_axis.truncate())
+            .unwrap_or(Vec3::ZERO);
+
         for visit in nif.walk() {
             // the walk is the only place the node's world transform is known
             if let Block::NiLODNode(node) = visit.block {
@@ -1386,7 +1415,7 @@ impl Gfx {
                 });
             }
             let mut model_uniform = [0f32; MODEL_FLOATS as usize];
-            model_uniform[..16].copy_from_slice(&model.to_cols_array());
+            model_uniform[..16].copy_from_slice(&drawn_at(origin, model).to_cols_array());
             model_uniform[16..20].copy_from_slice(&diffuse);
             model_uniform[20..24].copy_from_slice(&emissive);
             model_uniform[24..28].copy_from_slice(&[
@@ -1488,7 +1517,8 @@ impl Gfx {
         let ground = Vec3::new(center.x, center.y, 0.0);
         let (lines, spacing, half) = grid_lines(radius);
         let mut identity = [0f32; MODEL_FLOATS as usize];
-        identity[..16].copy_from_slice(&Mat4::from_translation(ground).to_cols_array());
+        identity[..16]
+            .copy_from_slice(&drawn_at(origin, Mat4::from_translation(ground)).to_cols_array());
         identity[32..64].copy_from_slice(&slot_uv_rows(&[], None, DEFAULT_SLOTS, 0.0));
         let grid = Grid {
             half,
@@ -1522,6 +1552,7 @@ impl Gfx {
         unhandled.dedup();
         (
             Scene {
+                origin,
                 meshes,
                 particles,
                 center,
@@ -1899,7 +1930,7 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
                 queue.write_buffer(
                     &mesh.model_buffer,
                     0,
-                    bytemuck::cast_slice(&model.to_cols_array()),
+                    bytemuck::cast_slice(&drawn_at(self.scene.origin, *model).to_cols_array()),
                 );
             }
             if let Some(alpha) = mesh
@@ -1934,6 +1965,7 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
                 .copied()
                 .unwrap_or(mesh.model);
             let scale = model.x_axis.truncate().length();
+            let model = drawn_at(self.scene.origin, model);
             let (right, up) = self.quad_axes();
             let mut vertices: Vec<f32> = Vec::with_capacity(particles.len() * 4 * VERTEX_FLOATS);
             for particle in particles.iter().take(mesh.capacity) {

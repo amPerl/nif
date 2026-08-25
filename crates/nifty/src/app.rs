@@ -915,20 +915,14 @@ impl Viewer<'_> {
 
         // NIF is Z-up; only the camera rig needs to know that
         let target = scene.center + camera.pan;
-        let view = look_at_mat4(target + direction * distance, target, Vec3::Z);
         let eye = target + direction * distance;
-        // The near plane tracks the distance, so precision stays where the camera is looking.
-        // The far plane cannot: it has to clear everything drawn, and the floor is sized to the
-        // scene rather than to the zoom. Tying it to the distance alone cut the grid off as soon
-        // as you closed in on a small shape.
-        //
-        // Both terms are measured from the eye to the thing they cover, so a scene far from the
-        // world origin no longer drags the far plane out to it. That distance was buying nothing
-        // and costing the depth precision that keeps coincident surfaces apart.
-        // The scene bounds come from the static walk, so an animated node can carry a shape
-        // beyond them. The grid term is exact and stays tight; the scene term keeps a few radii
-        // of headroom for that motion, which costs almost nothing here because the grid is the
-        // larger of the two on most files.
+        // the scene is drawn near zero, so the view is built there too. Bounds, LOD distances
+        // and the pick ray all stay in the file's own space
+        let view = look_at_mat4(eye - scene.origin, target - scene.origin, Vec3::Z);
+        // the near plane tracks the distance so precision stays where the camera looks. The far
+        // plane cannot: it has to clear the floor, which is sized to the scene. Both terms are
+        // measured from the eye rather than from the world origin, and the scene term keeps a
+        // few radii of headroom for a node an animation carries past the static bounds
         let reach = (eye.distance(scene.grid.center) + scene.grid.half)
             .max(eye.distance(scene.center) + scene.radius * 3.0)
             * 1.25;
@@ -987,7 +981,7 @@ impl Viewer<'_> {
 
         let uniform = crate::scene::camera_uniform(
             view_proj,
-            eye,
+            eye - scene.origin,
             self.state.colors,
             self.state.textures,
             self.light,
