@@ -183,6 +183,10 @@ pub struct Mesh {
     /// The attributes this shape's shader declares and what they resolved to when the scene was
     /// built, so a controller driving one only has to replace that lane.
     pub attributes: ([&'static str; 4], [f32; 4]),
+    /// The vertex buffer's contents as built, kept only for a shape a morpher rewrites. Morphing
+    /// replaces positions and leaves everything interleaved with them alone, so the rest has to
+    /// still be here to write back.
+    morph_source: Option<Vec<f32>>,
     /// The uv set each binding reads where its shader pins one, parallel to `bound`.
     pub uv_pins: [Option<u32>; BOUND_SLOTS],
     /// Which texture slots this shape's bindings hold, which its shader decides. The uv rows
@@ -350,6 +354,9 @@ pub struct Frame {
     /// property at once. Keyed by shape rather than property because which slots a shape binds
     /// is its shader's choice, so two shapes sharing a property can want different rows.
     pub uv: HashMap<usize, [f32; BOUND_SLOTS * 8]>,
+    /// Where a morphing shape's vertices have moved to, by shape block. Empty unless a file
+    /// carries a geometry morpher, which is the only thing that rewrites stored geometry.
+    pub morph: HashMap<usize, Vec<nif::common::Vector3>>,
     /// A shape's shader attributes where a controller drives one of them, by shape block. Empty
     /// unless a file animates an attribute, which is rare and was easy to miss.
     pub params: HashMap<usize, [f32; 4]>,
@@ -1581,10 +1588,17 @@ impl Gfx {
             });
 
             boxes.insert(visit.index, (local_min, local_max));
+            // only a morphing shape pays to keep its attributes, which is 445 controllers over
+            // 98 files rather than everything
+            let morph_source = nif::anim::morph_at(&nif.blocks, geometry, 0.0)
+                .is_some()
+                .then(|| attributes.clone());
+            let morphs = morph_source.is_some();
             meshes.push(Mesh {
                 shape_block: visit.index,
                 lod: lod_of.get(&visit.index).copied(),
                 sorted: sorts(blend.is_some(), alpha),
+                morph_source,
                 uv_pins,
                 attributes: (
                     shader.param_names,
@@ -1601,7 +1615,13 @@ impl Gfx {
                 vertices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("nifty vertices"),
                     contents: bytemuck::cast_slice(&attributes),
-                    usage: wgpu::BufferUsages::VERTEX,
+                    // a morphing shape has its vertices rewritten every frame, and only it
+                    // needs the buffer to be writable
+                    usage: if morphs {
+                        wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST
+                    } else {
+                        wgpu::BufferUsages::VERTEX
+                    },
                 }),
                 indices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("nifty indices"),
@@ -2103,6 +2123,24 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
             }
             if let Some(rows) = self.frame.uv.get(&mesh.shape_block) {
                 queue.write_buffer(&mesh.model_buffer, UV_OFFSET, bytemuck::cast_slice(rows));
+            }
+            // a morph replaces the stored vertices outright, so the whole buffer goes back
+            // rather than the positions being poked one at a time
+            if let (Some(moved), Some(source)) = (
+                self.frame.morph.get(&mesh.shape_block),
+                mesh.morph_source.as_ref(),
+            ) {
+                let mut attributes = source.clone();
+                for (vertex, at) in moved.iter().enumerate() {
+                    let Some(slot) = attributes.get_mut(vertex * VERTEX_FLOATS..) else {
+                        break;
+                    };
+                    let Some(position) = slot.get_mut(..3) else {
+                        break;
+                    };
+                    position.copy_from_slice(&[at.x, at.y, at.z]);
+                }
+                queue.write_buffer(&mesh.vertices, 0, bytemuck::cast_slice(&attributes));
             }
             if let Some(params) = self.frame.params.get(&mesh.shape_block) {
                 queue.write_buffer(

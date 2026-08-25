@@ -670,6 +670,22 @@ impl Viewer<'_> {
                     frame.alpha.insert(index, alpha.clamp(0.0, 1.0));
                 }
             }
+            // a geometry morpher rewrites the shape's vertices rather than moving the shape,
+            // so it is resolved per frame like a pose and handed to the renderer the same way
+            let scene = self.state.scene.iter();
+            for mesh in scene.flat_map(|scene| scene.meshes.iter()) {
+                let Some(geometry) = loaded
+                    .nif
+                    .blocks
+                    .get(mesh.shape_block)
+                    .and_then(Block::av_object)
+                else {
+                    continue;
+                };
+                if let Some(moved) = nif::anim::morph_at(&loaded.nif.blocks, geometry, time) {
+                    frame.morph.insert(mesh.shape_block, moved);
+                }
+            }
             // an attribute can be driven over time, and a shader reads it from the same model
             // uniform either way, so only the lane the controller names is replaced
             let scene = self.state.scene.iter();

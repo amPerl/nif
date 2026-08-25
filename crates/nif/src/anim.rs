@@ -343,6 +343,79 @@ pub fn float_extra_data_at(
     None
 }
 
+/// The vertex positions a geometry morpher leaves a shape at, or None where nothing morphs it.
+///
+/// A morph is a weighted sum of whole targets, starting from nothing, rather than a base
+/// shape with offsets added to it. Each target carries a full set of vectors and its own weight
+/// track, and the result replaces the geometry's stored vertices outright.
+///
+/// Where the data says its targets are relative, target 0 is the base and its weight is pinned
+/// at 1 whatever its track says: the rest are then deltas that sum on top of it. Reading the
+/// first target's track instead would fade the whole shape toward the origin.
+///
+/// A weight under a thousandth is skipped, which is what the engine does.
+pub fn morph_at(blocks: &[Block], geometry: &NiAvObject, time: f32) -> Option<Vec<Vector3>> {
+    for block in controllers(blocks, geometry.controller_ref) {
+        let Block::NiGeomMorpherController(controller) = block else {
+            continue;
+        };
+        if !controller.is_active() {
+            continue;
+        }
+        let Some(Block::NiMorphData(data)) = controller.data_ref.get(blocks) else {
+            continue;
+        };
+        let vertices = data.num_vertices as usize;
+        if vertices == 0 || data.morphs.is_empty() {
+            continue;
+        }
+
+        let relative = data.relative_targets != 0;
+        let mut out = vec![
+            Vector3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            };
+            vertices
+        ];
+
+        for (at, morph) in data.morphs.iter().enumerate() {
+            let weight = if at == 0 && relative {
+                1.0
+            } else {
+                let interpolator = controller
+                    .interpolator_refs
+                    .get(at)
+                    .and_then(|reference| reference.get(blocks));
+                match interpolator {
+                    Some(Block::NiFloatInterpolator(interpolator)) => {
+                        match interpolator.data_ref.get(blocks) {
+                            Some(Block::NiFloatData(keys)) => {
+                                keys.data.sample(time).unwrap_or(interpolator.value)
+                            }
+                            // posed rather than keyed, so it holds one weight throughout
+                            _ => interpolator.value,
+                        }
+                    }
+                    // a target with no interpolator keeps the weight the file stores for it
+                    _ => morph.legacy_weight,
+                }
+            };
+            if weight.abs() < 0.001 {
+                continue;
+            }
+            for (vertex, vector) in morph.vectors.iter().enumerate().take(vertices) {
+                out[vertex].x += vector.x * weight;
+                out[vertex].y += vector.y * weight;
+                out[vertex].z += vector.z * weight;
+            }
+        }
+        return Some(out);
+    }
+    None
+}
+
 /// Whether anything in the file repeats. When nothing does, every controller holds its final
 /// value once its span is over, so a player should stop at the end rather than start again.
 pub fn repeats(blocks: &[Block]) -> bool {
