@@ -678,12 +678,19 @@ impl Viewer<'_> {
                     .nif
                     .blocks
                     .get(mesh.shape_block)
-                    .and_then(Block::av_object)
+                    .and_then(Block::geometry)
                 else {
                     continue;
                 };
-                if let Some(moved) = nif::anim::morph_at(&loaded.nif.blocks, geometry, time) {
-                    frame.morph.insert(mesh.shape_block, moved);
+                if let Some(positions) = nif::anim::morph_at(&loaded.nif.blocks, geometry, time) {
+                    // bending a surface leaves its resting shading behind, so the normals are
+                    // rebuilt from the moved vertices wherever the morpher asks for it
+                    let normals =
+                        nif::anim::morph_normals(&loaded.nif.blocks, geometry, &positions);
+                    frame.morph.insert(
+                        mesh.shape_block,
+                        crate::scene::Morphed { positions, normals },
+                    );
                 }
             }
             // an attribute can be driven over time, and a shader reads it from the same model

@@ -1,11 +1,12 @@
-use glam::{Mat3, Quat};
+use glam::{Mat3, Quat, Vec3};
 
 use crate::blocks::{
-    Block, NiAvObject, NiMaterialProperty, NiTexturingProperty, NiTimeController, NiTransformData,
-    NiTransformInterpolator, TextureSlot, TextureTransform,
+    Block, GeomMorpherFlags, NiAvObject, NiGeometry, NiMaterialProperty, NiTexturingProperty,
+    NiTimeController, NiTransformData, NiTransformInterpolator, TextureSlot, TextureTransform,
 };
 use crate::common::{
-    BlockRef, Color4, Key, KeyGroup, KeyType, NiQuatTransform, NiTransform, Quaternion, Vector3,
+    BlockRef, Color4, Key, KeyGroup, KeyType, NiQuatTransform, NiTransform, Quaternion, Triangle,
+    Vector3,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -414,6 +415,89 @@ pub fn morph_at(blocks: &[Block], geometry: &NiAvObject, time: f32) -> Option<Ve
         return Some(out);
     }
     None
+}
+
+/// The normals a morphed shape draws with, given the vertices `morph_at` moved it to. `None`
+/// where its morpher does not ask for them, where the shape stores none of its own, or where
+/// the shape carries no triangles to derive them from.
+///
+/// Every face contributes its own unit normal to each of the three vertices it touches, and the
+/// sums are normalised at the end. A face counts once however large it is, which is the engine's
+/// own weighting and not the area weighted one a reference would give.
+pub fn morph_normals(
+    blocks: &[Block],
+    geometry: &NiGeometry,
+    moved: &[Vector3],
+) -> Option<Vec<Vector3>> {
+    if !updates_normals(blocks, geometry) {
+        return None;
+    }
+    match geometry.data_ref.get(blocks)? {
+        Block::NiTriShapeData(data) => {
+            data.base.base.normals.as_ref()?;
+            Some(face_normals(moved, data.triangles.as_ref()?.iter().cloned()))
+        }
+        Block::NiTriShapeDynamicData(data) => {
+            data.base.base.base.normals.as_ref()?;
+            Some(face_normals(
+                moved,
+                data.base.triangles.as_ref()?.iter().cloned(),
+            ))
+        }
+        Block::NiTriStripsData(data) => {
+            data.base.base.normals.as_ref()?;
+            Some(face_normals(moved, data.triangles()))
+        }
+        _ => None,
+    }
+}
+
+/// Whether an active morpher on this object asks for the normals to be recalculated as it runs.
+fn updates_normals(blocks: &[Block], geometry: &NiGeometry) -> bool {
+    controllers(blocks, geometry.controller_ref).any(|block| {
+        matches!(
+            block,
+            Block::NiGeomMorpherController(controller)
+                if controller.is_active()
+                    && matches!(
+                        controller.morpher_flags,
+                        GeomMorpherFlags::UpdateNormalsEnabled
+                    )
+        )
+    })
+}
+
+fn face_normals(moved: &[Vector3], triangles: impl Iterator<Item = Triangle>) -> Vec<Vector3> {
+    let mut out = vec![Vec3::ZERO; moved.len()];
+    for triangle in triangles {
+        let (Some(a), Some(b), Some(c)) = (
+            moved.get(triangle.a as usize).map(Vec3::from),
+            moved.get(triangle.b as usize).map(Vec3::from),
+            moved.get(triangle.c as usize).map(Vec3::from),
+        ) else {
+            continue;
+        };
+        let face = (b - a).cross(c - b);
+        // a degenerate face has no direction to contribute, and normalising it gives NaN
+        if face.length_squared() <= f32::MIN_POSITIVE {
+            continue;
+        }
+        let face = face.normalize();
+        out[triangle.a as usize] += face;
+        out[triangle.b as usize] += face;
+        out[triangle.c as usize] += face;
+    }
+
+    out.into_iter()
+        .map(|normal| {
+            let unit = normal.normalize_or_zero();
+            Vector3 {
+                x: unit.x,
+                y: unit.y,
+                z: unit.z,
+            }
+        })
+        .collect()
 }
 
 /// Whether anything in the file repeats. When nothing does, every controller holds its final
@@ -950,6 +1034,246 @@ mod tests {
             span(&nif.blocks).is_some(),
             "a file with particle controllers has no span"
         );
+    }
+
+    fn vector(x: f32, y: f32, z: f32) -> Vector3 {
+        Vector3 { x, y, z }
+    }
+
+    fn time_controller(next: BlockRef) -> crate::blocks::NiTimeController {
+        crate::blocks::NiTimeController {
+            next_controller_ref: next,
+            flags: 0x0008,
+            frequency: 1.0,
+            phase: 0.0,
+            start_time: 0.0,
+            end_time: 1.0,
+            target_ref: BlockRef::None,
+        }
+    }
+
+    fn shape(controller: BlockRef, data: BlockRef) -> Block {
+        Block::NiTriShape(crate::blocks::NiTriShape {
+            base: NiGeometry {
+                base: NiAvObject {
+                    base: crate::blocks::NiObjectNET {
+                        name: crate::blocks::NiString::from("shape"),
+                        extra_data_refs: Vec::new(),
+                        controller_ref: controller,
+                    },
+                    flags: 0,
+                    translation: vector(0.0, 0.0, 0.0),
+                    rotation: crate::common::Matrix33::IDENTITY,
+                    scale: 1.0,
+                    property_refs: Vec::new(),
+                    collision_ref: BlockRef::None,
+                },
+                data_ref: data,
+                skin_instance_ref: BlockRef::None,
+                material_data: crate::blocks::MaterialData::None,
+            },
+        })
+    }
+
+    fn shape_data(vertices: Vec<Vector3>, normals: Option<Vec<Vector3>>, tris: Vec<Triangle>) -> Block {
+        Block::NiTriShapeData(crate::blocks::NiTriShapeData {
+            base: crate::blocks::NiTriBasedGeomData {
+                base: crate::blocks::NiGeometryData {
+                    group_id: 0,
+                    keep_flags: 0,
+                    compress_flags: 0,
+                    vertices: Some(vertices),
+                    data_flags: 0,
+                    normals,
+                    tangents: None,
+                    binormals: None,
+                    center: vector(0.0, 0.0, 0.0),
+                    radius: 1.0,
+                    vertex_colors: None,
+                    uv_sets: Vec::new(),
+                    consistency_flags: 0,
+                    additional_data_ref: BlockRef::None,
+                },
+                num_triangles: tris.len() as u16,
+            },
+            triangles: Some(tris),
+            match_groups: Vec::new(),
+        })
+    }
+
+    fn morpher(flags: GeomMorpherFlags) -> Block {
+        Block::NiGeomMorpherController(crate::blocks::NiGeomMorpherController {
+            base: crate::blocks::NiInterpController {
+                base: time_controller(BlockRef::None),
+            },
+            morpher_flags: flags,
+            data_ref: BlockRef::None,
+            always_update: 0,
+            interpolator_refs: Vec::new(),
+        })
+    }
+
+    fn float_interpolator(pose: f32, data: BlockRef) -> Block {
+        Block::NiFloatInterpolator(crate::blocks::NiFloatInterpolator {
+            base: crate::blocks::NiKeyBasedInterpolator {
+                base: crate::blocks::NiInterpolator {},
+            },
+            value: pose,
+            data_ref: data,
+        })
+    }
+
+    fn extra_data_controller(attribute: &str, target: BlockRef, interpolator: BlockRef) -> Block {
+        Block::NiFloatExtraDataController(crate::blocks::NiFloatExtraDataController {
+            base: crate::blocks::NiExtraDataController {
+                base: crate::blocks::NiSingleInterpController {
+                    base: crate::blocks::NiInterpController {
+                        base: crate::blocks::NiTimeController {
+                            target_ref: target,
+                            ..time_controller(BlockRef::None)
+                        },
+                    },
+                    interpolator_ref: interpolator,
+                },
+                extra_data_name: crate::blocks::NiString::from(attribute),
+            },
+        })
+    }
+
+    /// An animated shader attribute is a controller, an interpolator and a key group deep, and
+    /// what picks it out of a file is a name and a target rather than a place in the graph.
+    /// Verified on a real file when it was built; this is the synthetic case it never got.
+    #[test]
+    fn a_driven_attribute_follows_its_keys() {
+        let blocks = vec![
+            shape(BlockRef::None, BlockRef::None),
+            extra_data_controller("WarpAlpha", BlockRef::Index(0), BlockRef::Index(2)),
+            float_interpolator(0.25, BlockRef::Index(3)),
+            Block::NiFloatData(crate::blocks::NiFloatData {
+                data: group(KeyType::Linear, vec![key(0.0, 1.0, 0.0, 0.0), key(2.0, 5.0, 0.0, 0.0)]),
+            }),
+        ];
+        let Some(Block::NiTriShape(geometry)) = blocks.first() else {
+            unreachable!()
+        };
+
+        assert_eq!(
+            float_extra_data_at(&blocks, geometry, "WarpAlpha", 1.0),
+            Some(3.0)
+        );
+        // the keys beat the interpolator's own pose value wherever there are keys
+        assert_eq!(
+            float_extra_data_at(&blocks, geometry, "WarpAlpha", 0.0),
+            Some(1.0)
+        );
+        // and an attribute nothing names keeps whatever the shape's extra data stores
+        assert_eq!(
+            float_extra_data_at(&blocks, geometry, "Exponent", 1.0),
+            None
+        );
+    }
+
+    /// A file can drive the same attribute on several shapes at once, so the controller's own
+    /// target decides which one it moves. Matching on the name alone would drag every shape
+    /// carrying that attribute along with the one that animates.
+    #[test]
+    fn a_driven_attribute_moves_only_the_shape_its_controller_names() {
+        let blocks = vec![
+            shape(BlockRef::None, BlockRef::None),
+            shape(BlockRef::None, BlockRef::None),
+            extra_data_controller("WarpAlpha", BlockRef::Index(1), BlockRef::Index(3)),
+            float_interpolator(0.75, BlockRef::None),
+        ];
+        let (Some(Block::NiTriShape(first)), Some(Block::NiTriShape(second))) =
+            (blocks.first(), blocks.get(1))
+        else {
+            unreachable!()
+        };
+
+        // with no key data the interpolator's pose value is what the target gets
+        assert_eq!(
+            float_extra_data_at(&blocks, second, "WarpAlpha", 1.0),
+            Some(0.75)
+        );
+        assert_eq!(float_extra_data_at(&blocks, first, "WarpAlpha", 1.0), None);
+    }
+
+    /// Two faces meeting at one vertex, one a hundred times the area of the other and facing a
+    /// different way. Each contributes its own unit normal, so the shared vertex splits the
+    /// difference evenly. Accumulating the raw cross products instead weights by area and would
+    /// leave it pointing very nearly along the large face.
+    fn bent_fan() -> (Vec<Vector3>, Vec<Triangle>) {
+        let vertices = vec![
+            vector(0.0, 0.0, 0.0),
+            vector(1.0, 0.0, 0.0),
+            vector(0.0, 1.0, 0.0),
+            vector(0.0, 0.0, 10.0),
+            vector(10.0, 0.0, 0.0),
+        ];
+        let triangles = vec![
+            Triangle { a: 0, b: 1, c: 2 },
+            Triangle { a: 0, b: 3, c: 4 },
+        ];
+        (vertices, triangles)
+    }
+
+    #[test]
+    fn a_recalculated_normal_weighs_every_face_the_same() {
+        let (vertices, triangles) = bent_fan();
+        let blocks = vec![
+            shape(BlockRef::Index(1), BlockRef::Index(2)),
+            morpher(GeomMorpherFlags::UpdateNormalsEnabled),
+            shape_data(
+                vertices.clone(),
+                Some(vec![vector(0.0, 0.0, 1.0); 5]),
+                triangles,
+            ),
+        ];
+        let Some(Block::NiTriShape(geometry)) = blocks.first() else {
+            unreachable!()
+        };
+
+        let normals = morph_normals(&blocks, geometry, &vertices).expect("the morpher asks");
+
+        // the two faces face +z and +y, so the vertex they share points between them
+        let shared = Vec3::from(&normals[0]);
+        let half = std::f32::consts::FRAC_1_SQRT_2;
+        assert!(
+            (shared - Vec3::new(0.0, half, half)).length() < 1e-5,
+            "shared vertex normal is {shared:?}"
+        );
+        // and a vertex only one face touches takes that face's normal outright
+        assert!((Vec3::from(&normals[1]) - Vec3::Z).length() < 1e-5);
+        assert!((Vec3::from(&normals[4]) - Vec3::Y).length() < 1e-5);
+    }
+
+    /// The engine recalculates only when the morpher asks and the shape has normals of its own,
+    /// so both halves of that gate have to hold.
+    #[test]
+    fn normals_are_left_alone_unless_the_morpher_asks_for_them() {
+        let (vertices, triangles) = bent_fan();
+        let stored = vec![vector(0.0, 0.0, 1.0); 5];
+
+        let quiet = vec![
+            shape(BlockRef::Index(1), BlockRef::Index(2)),
+            morpher(GeomMorpherFlags::UpdateNormalsDisabled),
+            shape_data(vertices.clone(), Some(stored), triangles.clone()),
+        ];
+        let Some(Block::NiTriShape(geometry)) = quiet.first() else {
+            unreachable!()
+        };
+        assert!(morph_normals(&quiet, geometry, &vertices).is_none());
+
+        // and a shape storing none gets none whether or not the morpher asks
+        let bare = vec![
+            shape(BlockRef::Index(1), BlockRef::Index(2)),
+            morpher(GeomMorpherFlags::UpdateNormalsEnabled),
+            shape_data(vertices.clone(), None, triangles),
+        ];
+        let Some(Block::NiTriShape(geometry)) = bare.first() else {
+            unreachable!()
+        };
+        assert!(morph_normals(&bare, geometry, &vertices).is_none());
     }
 
     fn key(time: f32, value: f32, in_tangent: f32, out_tangent: f32) -> Key<f32> {

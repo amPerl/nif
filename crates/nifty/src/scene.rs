@@ -356,7 +356,11 @@ pub struct Frame {
     pub uv: HashMap<usize, [f32; BOUND_SLOTS * 8]>,
     /// Where a morphing shape's vertices have moved to, by shape block. Empty unless a file
     /// carries a geometry morpher, which is the only thing that rewrites stored geometry.
-    pub morph: HashMap<usize, Vec<nif::common::Vector3>>,
+    ///
+    /// The renderer and the picker both read this. They have to read the same value: a shape
+    /// tested against the vertices the file stores is clickable where it rested rather than
+    /// where it has been carried to.
+    pub morph: HashMap<usize, Morphed>,
     /// A shape's shader attributes where a controller drives one of them, by shape block. Empty
     /// unless a file animates an attribute, which is rare and was easy to miss.
     pub params: HashMap<usize, [f32; 4]>,
@@ -365,6 +369,16 @@ pub struct Frame {
     /// Where each particle system's particles are, by the system's own block. Simulated by the
     /// caller, since the state has to outlive a scene rebuild.
     pub particles: HashMap<usize, Vec<nif::psys::Particle>>,
+}
+
+/// A morphing shape's geometry for one frame. The normals travel with the positions because
+/// the two are recalculated together or not at all, and keeping them apart is how they would
+/// come to disagree.
+pub struct Morphed {
+    pub positions: Vec<nif::common::Vector3>,
+    /// Recalculated normals, where the morpher asks for them and the shape stores some of its
+    /// own. `None` leaves the shape shaded as it rests, which is what the engine does.
+    pub normals: Option<Vec<nif::common::Vector3>>,
 }
 
 /// Which level of each LOD node to draw.
@@ -556,6 +570,32 @@ fn box_corners(low: Vec3, high: Vec3) -> [Vec3; 8] {
             if corner & 4 == 0 { low.z } else { high.z },
         )
     })
+}
+
+/// The local box a morphing shape reaches over the whole animation, or `None` where nothing
+/// morphs it. Its own resting box is not it: a morph replaces the stored vertices rather than
+/// nudging them, so a shape can end the span nowhere near where it began.
+///
+/// Sampled, like the transform sweep, and for the same reason: a weight track can carry a
+/// target anywhere between its keys. More steps than that sweep takes, because this runs once
+/// per shape when the scene is built rather than once per walk.
+fn morph_reach(nif: &Nif, geometry: &NiGeometry, span: Option<(f32, f32)>) -> Option<(Vec3, Vec3)> {
+    const STEPS: u32 = 24;
+    let (start, end) = span.unwrap_or((0.0, 0.0));
+
+    let mut low = Vec3::splat(f32::MAX);
+    let mut high = Vec3::splat(f32::MIN);
+    let mut reached = false;
+    for step in 0..=STEPS {
+        let time = start + (end - start) * step as f32 / STEPS as f32;
+        let moved = nif::anim::morph_at(&nif.blocks, geometry, time)?;
+        for at in &moved {
+            low = low.min(Vec3::from(at));
+            high = high.max(Vec3::from(at));
+            reached = true;
+        }
+    }
+    reached.then_some((low, high))
 }
 
 /// How far anything gets from the resting centre over the whole animation. The far plane reads
@@ -1241,6 +1281,8 @@ impl Gfx {
             .map(|visit| Mat4::from(&visit.transform).w_axis.truncate())
             .unwrap_or(Vec3::ZERO);
 
+        // one span for the whole file, since every shape's sweep runs over the same one
+        let span = nif::anim::span(&nif.blocks);
         for visit in nif.walk() {
             // the walk is the only place the node's world transform is known
             if let Block::NiLODNode(node) = visit.block {
@@ -1335,6 +1377,24 @@ impl Gfx {
                 attributes.extend_from_slice(&uv);
                 attributes.extend_from_slice(&uv1);
                 attributes.extend_from_slice(&uv2);
+            }
+
+            // A morphing shape is drawn from vertices the file does not store, so every box
+            // taken from those vertices has to grow to cover where the morph carries it. The
+            // far plane, the camera's framing and the sort centre all come from these.
+            let reach = morph_reach(nif, geometry, span);
+            if let Some((low, high)) = reach {
+                local_min = local_min.min(low);
+                local_max = local_max.max(high);
+                // an affine transform takes a box to the hull of its own eight corners, so
+                // these bound the moved shape in world space without moving every vertex
+                for corner in box_corners(low, high) {
+                    let world = model.transform_point3(corner);
+                    min = min.min(world);
+                    max = max.max(world);
+                    shape_min = shape_min.min(world);
+                    shape_max = shape_max.max(world);
+                }
             }
 
             // NiMaterialProperty is a D3DMATERIAL9 verbatim. There is no ambient term: the
@@ -1588,11 +1648,8 @@ impl Gfx {
             });
 
             boxes.insert(visit.index, (local_min, local_max));
-            // only a morphing shape pays to keep its attributes, which is 445 controllers over
-            // 98 files rather than everything
-            let morph_source = nif::anim::morph_at(&nif.blocks, geometry, 0.0)
-                .is_some()
-                .then(|| attributes.clone());
+            // only a morphing shape pays to keep its attributes
+            let morph_source = reach.is_some().then(|| attributes.clone());
             let morphs = morph_source.is_some();
             meshes.push(Mesh {
                 shape_block: visit.index,
@@ -2131,7 +2188,7 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
                 mesh.morph_source.as_ref(),
             ) {
                 let mut attributes = source.clone();
-                for (vertex, at) in moved.iter().enumerate() {
+                for (vertex, at) in moved.positions.iter().enumerate() {
                     let Some(slot) = attributes.get_mut(vertex * VERTEX_FLOATS..) else {
                         break;
                     };
@@ -2139,6 +2196,17 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
                         break;
                     };
                     position.copy_from_slice(&[at.x, at.y, at.z]);
+                }
+                // the normal lane follows the position lane, since a morph that bends a lit
+                // surface changes which way it faces
+                for (vertex, at) in moved.normals.iter().flat_map(|n| n.iter()).enumerate() {
+                    let Some(slot) = attributes.get_mut(vertex * VERTEX_FLOATS + 3..) else {
+                        break;
+                    };
+                    let Some(normal) = slot.get_mut(..3) else {
+                        break;
+                    };
+                    normal.copy_from_slice(&[at.x, at.y, at.z]);
                 }
                 queue.write_buffer(&mesh.vertices, 0, bytemuck::cast_slice(&attributes));
             }

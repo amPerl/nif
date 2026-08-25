@@ -109,7 +109,15 @@ pub fn hits(
         let Some((_geometry, data, triangles)) = geometry_of(nif, visit.block) else {
             continue;
         };
-        let Some(vertices) = &data.vertices else {
+        // A morph replaces the stored vertices, and the renderer draws the replacement, so the
+        // ray has to meet the shape where it has been carried to. Reading `data` here instead
+        // leaves a morphing shape clickable at rest and nowhere near where it is drawn.
+        let Some(vertices) = frame
+            .morph
+            .get(&visit.index)
+            .map(|moved| &moved.positions)
+            .or(data.vertices.as_ref())
+        else {
             continue;
         };
         // the properties in force, a parent node's included, so what can be clicked matches
