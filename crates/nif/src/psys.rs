@@ -15,7 +15,7 @@
 use glam::Vec3;
 
 use crate::blocks::{Block, NiPSysColorModifier, NiPSysEmitter, NiPSysGrowFadeModifier};
-use crate::common::{Color4, Vector3};
+use crate::common::{BlockRef, Color4, Vector3};
 
 /// The interval the simulation advances by. Forces apply before movement within a step, so how
 /// far a particle travels depends on how coarse the step is and only a fixed one repeats.
@@ -234,7 +234,7 @@ impl System {
         let Some(emitter) = blocks.get(index).and_then(as_emitter) else {
             return;
         };
-        let Some(rate) = birth_rate(blocks, index) else {
+        let Some(rate) = birth_rate(blocks, self.block, index) else {
             return;
         };
         let (start, stop) = rate.window;
@@ -242,12 +242,9 @@ impl System {
             return;
         }
 
-        let current_delta = if now <= stop {
-            now - start
-        } else {
-            stop - start
-        };
-        let last_delta = if last >= start { last - start } else { 0.0 };
+        // emission counts against how long the emitter has been on, not against the clock
+        let current_delta = rate.emitting_before(now);
+        let last_delta = rate.emitting_before(last);
         let current_count = (rate.per_second * current_delta) as u32;
         let last_count = (rate.per_second * last_delta) as u32;
         let interval = 1.0 / rate.per_second;
@@ -256,7 +253,10 @@ impl System {
             if self.particles.len() >= self.capacity {
                 return;
             }
-            let age = current_delta - (born + 1) as f32 * interval;
+            // its age is real elapsed time, so the moment it was due is converted back out of
+            // emitting time before measuring from it
+            let due = rate.moment_at((born + 1) as f32 * interval);
+            let age = (now - due).max(0.0);
             let Some(mut particle) = emit(emitter, age, &mut self.rng) else {
                 continue;
             };
@@ -272,11 +272,39 @@ impl System {
 struct BirthRate {
     per_second: f32,
     window: (f32, f32),
+    /// When the emitter is switched on, in order and within the window.
+    on: Vec<(f32, f32)>,
+}
+
+impl BirthRate {
+    /// How long the emitter has been switched on by `time`, which is the clock emission counts
+    /// against. A track that is on throughout makes this the plain elapsed time.
+    fn emitting_before(&self, time: f32) -> f32 {
+        self.on
+            .iter()
+            .map(|(from, to)| (time.min(*to) - from).max(0.0))
+            .sum()
+    }
+
+    /// The moment an emitter that had been on for `elapsed` reached it, which is the inverse of
+    /// `emitting_before`. Past the end of the last interval it holds there, since nothing is born
+    /// after that anyway.
+    fn moment_at(&self, elapsed: f32) -> f32 {
+        let mut left = elapsed;
+        for (from, to) in &self.on {
+            let length = to - from;
+            if left <= length {
+                return from + left;
+            }
+            left -= length;
+        }
+        self.on.last().map_or(self.window.0, |(_, to)| *to)
+    }
 }
 
 /// The birth rate driving this emitter. A controller names the modifier it drives rather than
 /// pointing at it, so the two are matched by name.
-fn birth_rate(blocks: &[Block], modifier: usize) -> Option<BirthRate> {
+fn birth_rate(blocks: &[Block], system: usize, modifier: usize) -> Option<BirthRate> {
     let name = &blocks.get(modifier)?.as_psys_modifier()?.name;
     for block in blocks {
         let Block::NiPSysEmitterCtlr(controller) = block else {
@@ -286,6 +314,14 @@ fn birth_rate(blocks: &[Block], modifier: usize) -> Option<BirthRate> {
             continue;
         }
         let time = &controller.base.base.base;
+        // a modifier name is unique only within its own system
+        if time
+            .target_ref
+            .index()
+            .is_some_and(|target| target != system)
+        {
+            continue;
+        }
         let keyed = match controller.interpolator_ref.get(blocks) {
             Some(Block::NiFloatInterpolator(interpolator)) => {
                 match interpolator.data_ref.get(blocks) {
@@ -295,12 +331,63 @@ fn birth_rate(blocks: &[Block], modifier: usize) -> Option<BirthRate> {
             }
             _ => None,
         };
+        let window = (time.start_time, time.end_time);
         return Some(BirthRate {
             per_second: keyed.unwrap_or(0.0),
-            window: (time.start_time, time.end_time),
+            window,
+            on: switched_on(blocks, controller.visibility_interpolator_ref, window),
         });
     }
     None
+}
+
+/// When an emitter is switched on, as intervals inside its controller's own span. The engine
+/// walks this track's key pairs and emits once per on interval rather than across the whole span,
+/// so an emitter that burst fires stops when the track says so instead of running forever.
+///
+/// A track with no keys leaves the emitter on for the whole span, which is what a posed
+/// interpolator amounts to.
+fn switched_on(blocks: &[Block], reference: BlockRef, window: (f32, f32)) -> Vec<(f32, f32)> {
+    let whole = vec![window];
+    let Some(Block::NiBoolInterpolator(interpolator)) = reference.get(blocks) else {
+        return whole;
+    };
+    let Some(Block::NiBoolData(data)) = interpolator.data_ref.get(blocks) else {
+        // posed rather than keyed, so it holds one value for the whole span
+        return if interpolator.value == 0 {
+            Vec::new()
+        } else {
+            whole
+        };
+    };
+    if data.data.keys.is_empty() {
+        return whole;
+    }
+
+    let mut intervals = Vec::new();
+    let mut opened: Option<f32> = None;
+    for key in &data.data.keys {
+        match (key.value != 0, opened) {
+            (true, None) => opened = Some(key.time),
+            (false, Some(from)) => {
+                intervals.push((from, key.time));
+                opened = None;
+            }
+            _ => {}
+        }
+    }
+    // a track that never switches off runs to the end of the span
+    if let Some(from) = opened {
+        intervals.push((from, window.1));
+    }
+
+    intervals
+        .into_iter()
+        .filter_map(|(from, to)| {
+            let clipped = (from.max(window.0), to.min(window.1));
+            (clipped.1 > clipped.0).then_some(clipped)
+        })
+        .collect()
 }
 
 fn as_emitter(block: &Block) -> Option<&NiPSysEmitter> {
@@ -400,7 +487,10 @@ pub fn systems(blocks: &[Block]) -> Vec<System> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::blocks::{NiColorData, NiPSysModifier, NiString};
+    use crate::blocks::{
+        NiBoolData, NiBoolInterpolator, NiColorData, NiInterpolator, NiKeyBasedInterpolator,
+        NiPSysModifier, NiString,
+    };
     use crate::common::{BlockRef, Key, KeyGroup, KeyType};
 
     fn parse(path: &str) -> crate::Nif {
@@ -469,6 +559,107 @@ mod tests {
         }
         assert!(alive > 0, "no system emitted anything");
         assert!(moved > 0, "nothing moved away from where it was born");
+    }
+
+    /// An emitter is switched on and off by a track of its own, and emission counts against how
+    /// long it has actually been on rather than against the clock. Without that a burst emitter
+    /// runs for its whole span, emitting long after it should stop.
+    #[test]
+    fn emission_counts_only_the_time_an_emitter_is_switched_on() {
+        let burst = BirthRate {
+            per_second: 300.0,
+            window: (0.0, 3.3333333),
+            on: vec![(0.0, 0.16666667)],
+        };
+        assert!((burst.emitting_before(0.1) - 0.1).abs() < 1e-6);
+        // past the end of the burst the total holds, so nothing more is ever born
+        assert!((burst.emitting_before(1.0) - 0.16666667).abs() < 1e-6);
+        assert_eq!(burst.emitting_before(1.0), burst.emitting_before(60.0));
+        // which caps the population at what the rate buys inside the burst
+        assert_eq!((burst.per_second * burst.emitting_before(60.0)) as u32, 50);
+
+        // an emitter on throughout counts the plain elapsed time, as it did before any of this
+        let steady = BirthRate {
+            per_second: 30.0,
+            window: (0.0, 3.3333333),
+            on: vec![(0.0, 3.3333333)],
+        };
+        assert!((steady.emitting_before(1.0) - 1.0).abs() < 1e-6);
+    }
+
+    /// A particle's age is real elapsed time, so the moment it was due has to come back out of
+    /// emitting time. Getting this wrong ages a particle by the gaps between bursts.
+    #[test]
+    fn a_due_moment_converts_back_out_of_emitting_time() {
+        let twice = BirthRate {
+            per_second: 10.0,
+            window: (0.0, 4.0),
+            on: vec![(0.0, 1.0), (2.0, 3.0)],
+        };
+        // the gap contributes nothing to either direction
+        assert!((twice.emitting_before(2.5) - 1.5).abs() < 1e-6);
+        assert!((twice.moment_at(1.5) - 2.5).abs() < 1e-6);
+        // and the two are inverses across the whole span
+        for tenth in 0..=20 {
+            let elapsed = tenth as f32 * 0.1;
+            let moment = twice.moment_at(elapsed);
+            assert!(
+                (twice.emitting_before(moment) - elapsed).abs() < 1e-5,
+                "elapsed {elapsed} came back as {moment}"
+            );
+        }
+        // past the last interval it holds at its end rather than running away
+        assert!((twice.moment_at(9.0) - 3.0).abs() < 1e-6);
+    }
+
+    /// The keys are a step function, and pairing them wrongly is the difference between a burst
+    /// and a shader that never stops. A track that only ever switches on runs to the end.
+    #[test]
+    fn a_visibility_track_pairs_its_keys_into_intervals() {
+        let keys = |values: &[(f32, u8)]| {
+            let keys = values
+                .iter()
+                .map(|(time, value)| Key {
+                    time: *time,
+                    value: *value,
+                    in_tangent: None,
+                    out_tangent: None,
+                    tbc: None,
+                })
+                .collect();
+            vec![
+                Block::NiBoolData(NiBoolData {
+                    data: KeyGroup {
+                        keys,
+                        interpolation: Some(KeyType::Const),
+                    },
+                }),
+                Block::NiBoolInterpolator(NiBoolInterpolator {
+                    base: NiKeyBasedInterpolator {
+                        base: NiInterpolator {},
+                    },
+                    value: 2,
+                    data_ref: BlockRef::Index(0),
+                }),
+            ]
+        };
+        let window = (0.0, 3.0);
+        let at = BlockRef::Index(1);
+
+        // on, then off part way: one interval
+        let blocks = keys(&[(0.0, 1), (0.5, 0), (3.0, 0)]);
+        assert_eq!(switched_on(&blocks, at, window), vec![(0.0, 0.5)]);
+
+        // off, then on later: emission starts late
+        let blocks = keys(&[(0.0, 0), (1.0, 1), (2.0, 0)]);
+        assert_eq!(switched_on(&blocks, at, window), vec![(1.0, 2.0)]);
+
+        // never switched off, so it runs to the end of the span
+        let blocks = keys(&[(0.0, 1)]);
+        assert_eq!(switched_on(&blocks, at, window), vec![(0.0, 3.0)]);
+
+        // nothing pointing at a track leaves it on throughout
+        assert_eq!(switched_on(&[], BlockRef::None, window), vec![window]);
     }
 
     /// A colour track is read at how far through its life a particle is, not at the clock, and
