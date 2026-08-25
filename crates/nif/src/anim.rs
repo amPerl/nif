@@ -170,6 +170,13 @@ pub trait Interpolate: Copy {
     /// With both tangents equal to `to - from` this is exactly linear, which is how an
     /// exporter writes a constant rate segment.
     fn hermite(from: Self, out_of_from: Self, to: Self, into_to: Self, t: f32) -> Self;
+
+    /// `a * wa + b * wb`. A tension, continuity and bias tangent is a weighted sum of the two
+    /// differences either side of a key, and this is the only arithmetic that needs.
+    fn weighted(a: Self, wa: f32, b: Self, wb: f32) -> Self;
+
+    /// `from - to`, the difference a tangent is built out of.
+    fn difference(from: Self, to: Self) -> Self;
 }
 
 impl Interpolate for f32 {
@@ -183,6 +190,14 @@ impl Interpolate for f32 {
             + (t3 - 2.0 * t2 + t) * out_of_from
             + (-2.0 * t3 + 3.0 * t2) * to
             + (t3 - t2) * into_to
+    }
+
+    fn weighted(a: Self, wa: f32, b: Self, wb: f32) -> Self {
+        a * wa + b * wb
+    }
+
+    fn difference(from: Self, to: Self) -> Self {
+        from - to
     }
 }
 
@@ -204,6 +219,24 @@ impl Interpolate for Color4 {
             a: f32::hermite(from.a, out_of_from.a, to.a, into_to.a, t),
         }
     }
+
+    fn weighted(a: Self, wa: f32, b: Self, wb: f32) -> Self {
+        Color4 {
+            r: a.r * wa + b.r * wb,
+            g: a.g * wa + b.g * wb,
+            b: a.b * wa + b.b * wb,
+            a: a.a * wa + b.a * wb,
+        }
+    }
+
+    fn difference(from: Self, to: Self) -> Self {
+        Color4 {
+            r: from.r - to.r,
+            g: from.g - to.g,
+            b: from.b - to.b,
+            a: from.a - to.a,
+        }
+    }
 }
 
 impl Interpolate for Vector3 {
@@ -220,6 +253,22 @@ impl Interpolate for Vector3 {
             x: f32::hermite(from.x, out_of_from.x, to.x, into_to.x, t),
             y: f32::hermite(from.y, out_of_from.y, to.y, into_to.y, t),
             z: f32::hermite(from.z, out_of_from.z, to.z, into_to.z, t),
+        }
+    }
+
+    fn weighted(a: Self, wa: f32, b: Self, wb: f32) -> Self {
+        Vector3 {
+            x: a.x * wa + b.x * wb,
+            y: a.y * wa + b.y * wb,
+            z: a.z * wa + b.z * wb,
+        }
+    }
+
+    fn difference(from: Self, to: Self) -> Self {
+        Vector3 {
+            x: from.x - to.x,
+            y: from.y - to.y,
+            z: from.z - to.z,
         }
     }
 }
@@ -539,8 +588,95 @@ where
                 _ => Some(T::lerp(from.value, to.value, t)),
             }
         }
+        Some(KeyType::Tbc) => {
+            let out_of_from = tbc_tangents(keys, at).1;
+            let into_to = tbc_tangents(keys, at + 1).0;
+            Some(T::hermite(from.value, out_of_from, to.value, into_to, t))
+        }
         _ => Some(T::lerp(from.value, to.value, t)),
     }
+}
+
+/// The pair of tangents a tension, continuity and bias key carries: the one a segment arrives on
+/// and the one it leaves on. Kochanek and Bartels, as the engine implements it.
+///
+/// The two are not the same wherever continuity or bias is non zero, which is the point of the
+/// parameterisation: continuity breaks the slope across a key and bias leans it toward one side.
+/// Both are then scaled for how far apart the neighbouring keys sit, so uneven spacing does not
+/// change the shape of the curve.
+///
+/// An end key has no neighbour on one side, so the engine mirrors the value it does have and
+/// treats both spans as equal, which makes the two tangents there depend only on the one real
+/// difference.
+fn tbc_tangents<T>(keys: &[Key<T>], at: usize) -> (T, T)
+where
+    T: Interpolate + Clone + binrw::BinRead + binrw::BinWrite + 'static,
+    T: for<'a> binrw::BinRead<Args<'a> = ()>,
+    T: for<'a> binrw::BinWrite<Args<'a> = ()>,
+{
+    let Some(key) = keys.get(at) else {
+        let zero = keys
+            .first()
+            .map(|key| T::difference(key.value, key.value))
+            .expect("a sampled group has keys");
+        return (zero, zero);
+    };
+    // a key with no tension, continuity or bias is an ordinary Catmull-Rom one, which is what
+    // all three at zero comes to
+    let (tension, bias, continuity) = match &key.tbc {
+        Some(tbc) => (tbc.tension, tbc.bias, tbc.continuity),
+        None => (0.0, 0.0, 0.0),
+    };
+
+    // the value before and after, mirrored at an end so the curve leaves it straight
+    let (previous, pre_len) = match at.checked_sub(1).and_then(|before| keys.get(before)) {
+        Some(before) => (before.value, key.time - before.time),
+        None => match keys.get(1) {
+            Some(after) => (T::weighted(key.value, 2.0, after.value, -1.0), 1.0),
+            None => (key.value, 1.0),
+        },
+    };
+    let (next, next_len) = match keys.get(at + 1) {
+        Some(after) => (after.value, after.time - key.time),
+        None => match at.checked_sub(1).and_then(|before| keys.get(before)) {
+            Some(before) => (T::weighted(key.value, 2.0, before.value, -1.0), 1.0),
+            None => (key.value, 1.0),
+        },
+    };
+
+    let behind = T::difference(key.value, previous);
+    let ahead = T::difference(next, key.value);
+
+    let half_tension = 0.5 * (1.0 - tension);
+    let with_continuity = half_tension * (1.0 + continuity);
+    let against_continuity = half_tension * (1.0 - continuity);
+    let with_bias = 1.0 + bias;
+    let against_bias = 1.0 - bias;
+
+    let incoming = T::weighted(
+        behind,
+        against_continuity * with_bias,
+        ahead,
+        with_continuity * against_bias,
+    );
+    let outgoing = T::weighted(
+        behind,
+        with_continuity * with_bias,
+        ahead,
+        against_continuity * against_bias,
+    );
+
+    // uneven spacing is compensated for, approximately
+    let spans = pre_len + next_len;
+    if spans <= 0.0 {
+        return (incoming, outgoing);
+    }
+    let scale = 2.0 / spans;
+    let zero = T::difference(key.value, key.value);
+    (
+        T::weighted(incoming, pre_len * scale, zero, 0.0),
+        T::weighted(outgoing, next_len * scale, zero, 0.0),
+    )
 }
 
 impl NiTransformData {
@@ -607,6 +743,115 @@ impl NiTransformInterpolator {
 
 #[cfg(test)]
 mod tests {
+    use crate::common::Tbc;
+
+    fn tbc_key(time: f32, value: f32, tension: f32, bias: f32, continuity: f32) -> Key<f32> {
+        Key {
+            time,
+            value,
+            in_tangent: None,
+            out_tangent: None,
+            tbc: Some(Tbc {
+                tension,
+                bias,
+                continuity,
+            }),
+        }
+    }
+
+    /// With tension, continuity and bias all zero, a tension key is an ordinary Catmull-Rom
+    /// spline: each tangent is half the span across the key. Worked from the engine's own
+    /// arithmetic rather than from a spline reference, since the two differ in the end handling.
+    #[test]
+    fn a_flat_tbc_key_gives_catmull_rom_tangents() {
+        // evenly spaced, so the length compensation is exactly 1
+        let keys = vec![
+            tbc_key(0.0, 0.0, 0.0, 0.0, 0.0),
+            tbc_key(1.0, 1.0, 0.0, 0.0, 0.0),
+            tbc_key(2.0, 3.0, 0.0, 0.0, 0.0),
+        ];
+
+        // the middle key: behind is 1, ahead is 2, and both tangents are half their sum
+        let (incoming, outgoing) = super::tbc_tangents(&keys, 1);
+        assert!((incoming - 1.5).abs() < 1e-5, "incoming {incoming}");
+        assert!((outgoing - 1.5).abs() < 1e-5, "outgoing {outgoing}");
+
+        // the first key mirrors its missing neighbour, so both differences are the real one
+        let (first_in, first_out) = super::tbc_tangents(&keys, 0);
+        assert!((first_in - 1.0).abs() < 1e-5, "{first_in}");
+        assert!((first_out - 1.0).abs() < 1e-5, "{first_out}");
+    }
+
+    /// Continuity is what makes a key a corner: it breaks the slope across it, so the tangent
+    /// arriving and the one leaving stop agreeing. A reading that used one tangent for both
+    /// would pass every flat test and be wrong for every shaped key.
+    #[test]
+    fn continuity_breaks_the_slope_across_a_key() {
+        let keys = vec![
+            tbc_key(0.0, 0.0, 0.0, 0.0, 0.0),
+            tbc_key(1.0, 1.0, 0.0, 0.0, 1.0),
+            tbc_key(2.0, 3.0, 0.0, 0.0, 0.0),
+        ];
+        let (incoming, outgoing) = super::tbc_tangents(&keys, 1);
+        // continuity 1 takes the incoming tangent entirely from the span ahead and the outgoing
+        // entirely from the span behind, which is the two swapping
+        assert!((incoming - 2.0).abs() < 1e-5, "incoming {incoming}");
+        assert!((outgoing - 1.0).abs() < 1e-5, "outgoing {outgoing}");
+    }
+
+    /// Tension flattens a key toward a corner, and at 1 it removes the tangent entirely, which
+    /// is the one value that is easy to check against by eye.
+    #[test]
+    fn full_tension_flattens_a_key() {
+        let keys = vec![
+            tbc_key(0.0, 0.0, 0.0, 0.0, 0.0),
+            tbc_key(1.0, 1.0, 1.0, 0.0, 0.0),
+            tbc_key(2.0, 3.0, 0.0, 0.0, 0.0),
+        ];
+        let (incoming, outgoing) = super::tbc_tangents(&keys, 1);
+        assert!(incoming.abs() < 1e-6, "incoming {incoming}");
+        assert!(outgoing.abs() < 1e-6, "outgoing {outgoing}");
+    }
+
+    /// A tension track sampled as if it were linear is wrong everywhere between its keys.
+    #[test]
+    fn a_tbc_track_departs_from_the_linear_reading() {
+        let keys = vec![
+            tbc_key(0.0, 0.0, 0.0, 0.0, 0.0),
+            tbc_key(1.0, 1.0, 0.0, 0.0, 0.0),
+            tbc_key(2.0, 0.0, 0.0, 0.0, 0.0),
+        ];
+        let same = || {
+            vec![
+                tbc_key(0.0, 0.0, 0.0, 0.0, 0.0),
+                tbc_key(1.0, 1.0, 0.0, 0.0, 0.0),
+                tbc_key(2.0, 0.0, 0.0, 0.0, 0.0),
+            ]
+        };
+        let group = KeyGroup {
+            keys,
+            interpolation: Some(KeyType::Tbc),
+        };
+        let linear = KeyGroup {
+            keys: same(),
+            interpolation: Some(KeyType::Linear),
+        };
+
+        // it still passes through every key, which is what makes it an interpolating spline
+        for at in [0.0, 1.0, 2.0] {
+            let curved = group.sample(at).expect("a value");
+            let straight = linear.sample(at).expect("a value");
+            assert!((curved - straight).abs() < 1e-5, "at {at}");
+        }
+
+        // and between them it does not, because the curve overshoots where the line corners
+        let curved = group.sample(0.5).expect("a value");
+        let straight = linear.sample(0.5).expect("a value");
+        assert!(
+            (curved - straight).abs() > 0.05,
+            "curved {curved} against straight {straight}"
+        );
+    }
     use super::*;
     use crate::common::{KeyType, Matrix33};
 
