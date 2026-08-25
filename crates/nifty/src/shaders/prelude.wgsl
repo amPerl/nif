@@ -24,6 +24,11 @@ struct Model {
     params: vec4<f32>,
     // the one colour attribute a shader can declare, at the value the shape supplies
     attribute_color: vec4<f32>,
+    // the material's other two channels, which the fixed function path folds into its light sum
+    // rather than uploading. A shader reading them as flat colours needs them separately.
+    ambient: vec4<f32>,
+    // rgb plus glossiness in w
+    specular: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: Camera;

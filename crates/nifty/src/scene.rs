@@ -37,7 +37,7 @@ const PARAMS_OFFSET: u64 = 64 * 4;
 
 /// The shader's `Model` and `Camera` structs, in floats. Every buffer bound as one has to be
 /// this long, the grid's included.
-const MODEL_FLOATS: u64 = 72;
+const MODEL_FLOATS: u64 = 80;
 const CAMERA_FLOATS: u64 = 40;
 
 /// Every addressing a map or a shader can ask for. A sampler is built per pair.
@@ -439,25 +439,33 @@ pub fn shader_slots(
     slots: [Option<shaders::Source>; BOUND_SLOTS],
 ) -> [Option<shaders::Source>; BOUND_SLOTS] {
     slots.map(|slot| match slot {
+        Some(shaders::Source::IndexedSlot { index, slot }) => Some(shaders::Source::Slot(
+            named_map(blocks, extra_data_refs, index)
+                .map(TextureSlot::Shader)
+                .unwrap_or(slot),
+        )),
         Some(shaders::Source::Attribute { index, file }) => {
-            let named = extra_data_refs
-                .iter()
-                .filter_map(|reference| reference.get(blocks))
-                .find_map(|block| match block {
-                    Block::NiIntegerExtraData(integer)
-                        if integer.name.as_bytes() == index.as_bytes() =>
-                    {
-                        Some(integer.value)
-                    }
-                    _ => None,
-                });
-            match named {
+            match named_map(blocks, extra_data_refs, index) {
                 Some(map) => Some(shaders::Source::Slot(TextureSlot::Shader(map))),
                 None => Some(shaders::Source::Named(file)),
             }
         }
         other => other,
     })
+}
+
+/// The shader map a shape points a texture attribute at, by the integer extra data named after
+/// it. None where the shape names none and the technique's own choice stands.
+fn named_map(blocks: &[Block], extra_data_refs: &[BlockRef], index: &str) -> Option<u32> {
+    extra_data_refs
+        .iter()
+        .filter_map(|reference| reference.get(blocks))
+        .find_map(|block| match block {
+            Block::NiIntegerExtraData(integer) if integer.name.as_bytes() == index.as_bytes() => {
+                Some(integer.value)
+            }
+            _ => None,
+        })
 }
 
 /// Whether a shape joins the back to front pass. The engine queues one only when it blends and
@@ -841,7 +849,7 @@ impl Gfx {
                 }
                 // resolved into one of the other two before this point, since which map an
                 // attribute texture reads is the shape's to say
-                shaders::Source::Attribute { .. } => continue,
+                shaders::Source::Attribute { .. } | shaders::Source::IndexedSlot { .. } => continue,
                 shaders::Source::Slot(slot) => {
                     let Some(desc) = property.and_then(|p| p.texture(*slot)) else {
                         continue;
@@ -1203,6 +1211,21 @@ impl Gfx {
                 ),
                 None => ([1.0; 4], [0.0; 4]),
             };
+            // the other two material channels, which the fixed function path folds into the
+            // light sum and never uploads. AGCar2 reads them as flat colours instead, so a
+            // shader that wants them has them.
+            let (ambient, specular) = match material {
+                Some(m) => (
+                    [m.color_ambient.r, m.color_ambient.g, m.color_ambient.b, 1.0],
+                    [
+                        m.color_specular.r,
+                        m.color_specular.g,
+                        m.color_specular.b,
+                        m.glossiness,
+                    ],
+                ),
+                None => ([1.0; 4], [1.0; 4]),
+            };
 
             // NiVertexColorProperty selects which source supplies each D3D material channel
             // rather than tinting. LightMode::Emissive uploads no lights, and with SourceEmissive
@@ -1375,6 +1398,8 @@ impl Gfx {
                 &geometry.extra_data_refs,
                 shader,
             ));
+            model_uniform[72..76].copy_from_slice(&ambient);
+            model_uniform[76..80].copy_from_slice(&specular);
             model_uniform[68..72].copy_from_slice(&shader_color(
                 &nif.blocks,
                 &geometry.extra_data_refs,
@@ -2183,6 +2208,47 @@ mod tests {
         assert_eq!(bound[0], shader.params[0]);
         assert_eq!(bound[1], 8.0);
         assert_eq!(bound[2..], shader.params[2..]);
+    }
+
+    /// A technique can bind a texture to a shader map by index rather than by naming a file, and
+    /// the shape moves it with the same `<attribute>Index` extra data. Falling back to a file
+    /// there would resolve to nothing, so the technique's own index has to be the default.
+    #[test]
+    fn an_indexed_slot_falls_back_to_the_map_the_technique_names() {
+        let shaders = Shaders::default();
+        let shader = shaders.get("AGCar2").expect("built in");
+        let declared = shader.passes[0].slots;
+        assert!(matches!(
+            declared[2],
+            Some(super::shaders::Source::IndexedSlot {
+                index: "MaskTex0Index",
+                slot: nif::blocks::TextureSlot::Shader(1),
+            })
+        ));
+
+        // a shape naming no map keeps the technique's own choice
+        let bare = super::shader_slots(&[], &[], declared);
+        assert_eq!(
+            bare[2],
+            Some(super::shaders::Source::Slot(
+                nif::blocks::TextureSlot::Shader(1)
+            ))
+        );
+
+        // and one that names a different map is followed
+        let blocks = vec![Block::NiIntegerExtraData(nif::blocks::NiIntegerExtraData {
+            name: NiString::from("MaskTex0Index"),
+            value: 2,
+        })];
+        let moved = super::shader_slots(&blocks, &[BlockRef::Index(0)], declared);
+        assert_eq!(
+            moved[2],
+            Some(super::shaders::Source::Slot(
+                nif::blocks::TextureSlot::Shader(2)
+            ))
+        );
+        // the base slot beside it is the file's own either way
+        assert_eq!(moved[0], declared[0]);
     }
 
     /// A colour attribute takes a whole vec4 rather than a lane, and it binds by name the same

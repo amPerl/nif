@@ -68,6 +68,13 @@ pub enum Source {
         /// What to resolve by name where the shape names no map.
         file: &'static str,
     },
+    /// The same, for a texture the technique binds to a shader map by index rather than naming a
+    /// file. The slot is the index the technique itself declares, used where the shape carries
+    /// no override of its own.
+    IndexedSlot {
+        index: &'static str,
+        slot: TextureSlot,
+    },
 }
 
 /// Sampling a shader pins for a slot, since a pass sets its own sampler state and that beats the
@@ -401,6 +408,30 @@ fn built_ins() -> Vec<Shader> {
             color_name: "MaterialColor",
             origin: Origin::BuiltIn,
         },
+        Shader::single(
+            "AGCar2",
+            Pass {
+                source: include_str!("AGCar2.wgsl").into(),
+                // the body decal is the base slot, and the technique binds the window decal and
+                // the mask to shader maps by index, which the shape can move
+                slots: [
+                    Some(Source::Slot(TextureSlot::Base)),
+                    Some(Source::IndexedSlot {
+                        index: "DecalTex2Index",
+                        slot: TextureSlot::Shader(0),
+                    }),
+                    Some(Source::IndexedSlot {
+                        index: "MaskTex0Index",
+                        slot: TextureSlot::Shader(1),
+                    }),
+                    None,
+                ],
+                // a shape with no mask is all body, which the red and green being zero would
+                // otherwise turn entirely into glass
+                absent: [Absent::White, Absent::White, Absent::White, Absent::White],
+                ..Pass::default()
+            },
+        ),
         Shader::single(
             "VCAlphaTextureBlender",
             Pass {
