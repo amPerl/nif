@@ -921,13 +921,22 @@ impl Viewer<'_> {
         // The far plane cannot: it has to clear everything drawn, and the floor is sized to the
         // scene rather than to the zoom. Tying it to the distance alone cut the grid off as soon
         // as you closed in on a small shape.
-        let reach =
-            (eye.length() + scene.grid.half).max(eye.distance(scene.center) + scene.radius) * 1.25;
+        //
+        // Both terms are measured from the eye to the thing they cover, so a scene far from the
+        // world origin no longer drags the far plane out to it. That distance was buying nothing
+        // and costing the depth precision that keeps coincident surfaces apart.
+        // The scene bounds come from the static walk, so an animated node can carry a shape
+        // beyond them. The grid term is exact and stays tight; the scene term keeps a few radii
+        // of headroom for that motion, which costs almost nothing here because the grid is the
+        // larger of the two on most files.
+        let reach = (eye.distance(scene.grid.center) + scene.grid.half)
+            .max(eye.distance(scene.center) + scene.radius * 3.0)
+            * 1.25;
         let projection = perspective(
             fov,
             rect.width() / rect.height(),
             (distance * 0.01).max(1e-5),
-            (distance * 50.0).max(reach),
+            reach,
         );
         let view_proj = projection * view;
 

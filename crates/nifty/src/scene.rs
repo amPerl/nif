@@ -265,7 +265,11 @@ pub struct Grid {
     model: wgpu::BindGroup,
     texture: wgpu::BindGroup,
     pub spacing: f32,
-    /// How far the floor reaches from the origin. The far plane has to clear it, or the grid is
+    /// Where the floor is centred, which is under the scene rather than at the world origin. A
+    /// model far from the origin used to drag the grid all the way back to it, and the far plane
+    /// had to clear that, which cost the depth precision coincident surfaces need.
+    pub center: Vec3,
+    /// How far the floor reaches from its own centre. The far plane has to clear it, or the grid is
     /// cut off rather than merely small when the camera closes in on something.
     pub half: f32,
 }
@@ -1479,12 +1483,16 @@ impl Gfx {
         });
         // the floor has to reach the geometry as well as the origin, which a chunk sitting
         // far out is nowhere near
-        let (lines, spacing, half) = grid_lines(center.length() + radius);
+        // sized to the scene, not to how far the scene is from the origin, and placed on the
+        // ground below it. The z stays at the world's own floor so height still reads truthfully.
+        let ground = Vec3::new(center.x, center.y, 0.0);
+        let (lines, spacing, half) = grid_lines(radius);
         let mut identity = [0f32; MODEL_FLOATS as usize];
-        identity[..16].copy_from_slice(&Mat4::IDENTITY.to_cols_array());
+        identity[..16].copy_from_slice(&Mat4::from_translation(ground).to_cols_array());
         identity[32..64].copy_from_slice(&slot_uv_rows(&[], None, DEFAULT_SLOTS, 0.0));
         let grid = Grid {
             half,
+            center: ground,
             count: (lines.len() / VERTEX_FLOATS) as u32,
             vertices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("nifty grid"),
