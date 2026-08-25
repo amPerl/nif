@@ -59,6 +59,15 @@ pub enum Source {
     /// reference is. Nothing in the NIF says which file is meant, and more than one of that name
     /// can be installed, so root order decides which is found.
     Named(&'static str),
+    /// A texture the shader declares as an attribute. The shape points it at one of its own
+    /// shader maps by carrying an integer extra data called `<attribute>Index`, and the file
+    /// the shader declares is only the fallback for a shape that does not.
+    Attribute {
+        /// The extra data whose value is the shader map to read.
+        index: &'static str,
+        /// What to resolve by name where the shape names no map.
+        file: &'static str,
+    },
 }
 
 /// Sampling a shader pins for a slot, since a pass sets its own sampler state and that beats the
@@ -201,7 +210,10 @@ fn toon_shading_pass() -> Pass {
         // resolved through the texture library, so root order decides which copy wins
         slots: [
             Some(Source::Slot(TextureSlot::Base)),
-            Some(Source::Named("ToonRamp.bmp")),
+            Some(Source::Attribute {
+                index: "ToonRampIndex",
+                file: "ToonRamp.bmp",
+            }),
             None,
             None,
         ],
@@ -278,12 +290,18 @@ fn built_ins() -> Vec<Shader> {
             name: "OilyFilm".into(),
             passes: vec![Pass {
                 source: include_str!("OilyFilm.wgsl").into(),
-                // the interference ramp and the warp map are the shader's own attributes, at
-                // shader map 0 and 1; a shape that supplies neither falls back to their files
+                // the interference ramp and the warp map are the shader's own attributes, and
+                // the shape names which of its shader maps each reads
                 slots: [
                     Some(Source::Slot(TextureSlot::Base)),
-                    Some(Source::Slot(TextureSlot::Shader(0))),
-                    Some(Source::Slot(TextureSlot::Shader(1))),
+                    Some(Source::Attribute {
+                        index: "filmRampIndex",
+                        file: "thinFilmRamp.bmp",
+                    }),
+                    Some(Source::Attribute {
+                        index: "warpEffectIndex",
+                        file: "WarpEffects.tga",
+                    }),
                     None,
                 ],
                 // the base multiplies the diffuse, and the other two are added
@@ -431,7 +449,9 @@ impl Shaders {
                 .iter()
                 .flat_map(|pass| pass.slots.iter())
                 .filter_map(move |slot| match slot {
-                    Some(Source::Named(file)) => Some((shader.name.as_str(), *file)),
+                    Some(Source::Named(file)) | Some(Source::Attribute { file, .. }) => {
+                        Some((shader.name.as_str(), *file))
+                    }
                     _ => None,
                 })
         })

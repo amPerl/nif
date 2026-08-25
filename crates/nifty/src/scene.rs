@@ -397,6 +397,37 @@ impl DrawState {
     }
 }
 
+/// Which texture each of a pass's bindings actually reads, for one shape. A shader declares a
+/// texture attribute with a file name, and a shape redirects it to one of its own shader maps by
+/// carrying an integer extra data named after it. So the map in the file wins, exactly as a float
+/// attribute does, and the declared file is what a shape that names none falls back to.
+pub fn shader_slots(
+    blocks: &[Block],
+    extra_data_refs: &[BlockRef],
+    slots: [Option<shaders::Source>; BOUND_SLOTS],
+) -> [Option<shaders::Source>; BOUND_SLOTS] {
+    slots.map(|slot| match slot {
+        Some(shaders::Source::Attribute { index, file }) => {
+            let named = extra_data_refs
+                .iter()
+                .filter_map(|reference| reference.get(blocks))
+                .find_map(|block| match block {
+                    Block::NiIntegerExtraData(integer)
+                        if integer.name.as_bytes() == index.as_bytes() =>
+                    {
+                        Some(integer.value)
+                    }
+                    _ => None,
+                });
+            match named {
+                Some(map) => Some(shaders::Source::Slot(TextureSlot::Shader(map))),
+                None => Some(shaders::Source::Named(file)),
+            }
+        }
+        other => other,
+    })
+}
+
 /// Whether a shape joins the back to front pass. The engine queues one only when it blends and
 /// its alpha property does not ask to be left out, and draws everything else where the traversal
 /// reaches it. So an unsorted blended shape still blends, but lands among the opaque geometry in
@@ -742,6 +773,7 @@ impl Gfx {
         &self,
         nif: &Nif,
         pass: &shaders::Pass,
+        slots: [Option<shaders::Source>; BOUND_SLOTS],
         property: Option<&nif::blocks::NiTexturingProperty>,
         texturing_block: Option<usize>,
         library: &TextureLibrary,
@@ -762,7 +794,7 @@ impl Gfx {
             self.sampler(pass.address[position].unwrap_or(default_sampling))
         });
 
-        for (position, slot) in pass.slots.iter().enumerate() {
+        for (position, slot) in slots.iter().enumerate() {
             let Some(slot) = slot else { continue };
             match slot {
                 // a texture the shader names itself rather than one the file points at, so
@@ -775,6 +807,9 @@ impl Gfx {
                             .clone();
                     }
                 }
+                // resolved into one of the other two before this point, since which map an
+                // attribute texture reads is the shape's to say
+                shaders::Source::Attribute { .. } => continue,
                 shaders::Source::Slot(slot) => {
                     let Some(desc) = property.and_then(|p| p.texture(*slot)) else {
                         continue;
@@ -801,7 +836,7 @@ impl Gfx {
         // every frame a flip controller can reach, uploaded once each and shared by block
         let mut flip_frames = HashMap::new();
         let base_slot_flips =
-            pass.slots.first() == Some(&Some(shaders::Source::Slot(TextureSlot::Base)));
+            slots.first() == Some(&Some(shaders::Source::Slot(TextureSlot::Base)));
         for block in nif.blocks.iter().filter(|_| base_slot_flips) {
             let Block::NiFlipController(flip) = block else {
                 continue;
@@ -1224,10 +1259,14 @@ impl Gfx {
             // the uv rows in the uniform are one pass's, so they belong to the first pass that
             // samples anything. A shader whose passes read different slots with different
             // transforms is not expressible yet, and none of them does.
-            let bound = shader
+            let resolved: Vec<[Option<shaders::Source>; BOUND_SLOTS]> = shader
                 .passes
                 .iter()
-                .map(|pass| pass.slots)
+                .map(|pass| shader_slots(&nif.blocks, &geometry.extra_data_refs, pass.slots))
+                .collect();
+            let bound = resolved
+                .iter()
+                .copied()
                 .find(|slots| slots.iter().any(Option::is_some))
                 .unwrap_or([None; BOUND_SLOTS]);
 
@@ -1271,6 +1310,7 @@ impl Gfx {
                 let (texture, flip_frames) = self.pass_textures(
                     nif,
                     pass,
+                    resolved[index],
                     property,
                     texturing_block,
                     library,
@@ -2087,6 +2127,41 @@ mod tests {
         assert_eq!(bound[0], shader.params[0]);
         assert_eq!(bound[1], 8.0);
         assert_eq!(bound[2..], shader.params[2..]);
+    }
+
+    /// A shader declares its toon ramp with a file name, and nearly every shape redirects it to
+    /// one of its own maps. Reading the declared name instead resolves to nothing without a
+    /// texture root, the slot stands in white, and the whole ramp flattens out.
+    #[test]
+    fn a_texture_attribute_reads_the_map_the_shape_names() {
+        let shaders = Shaders::default();
+        let shader = shaders.get("ToonShading").expect("built in");
+        let declared = shader.passes[0].slots;
+        assert!(matches!(
+            declared[1],
+            Some(super::shaders::Source::Attribute {
+                index: "ToonRampIndex",
+                ..
+            })
+        ));
+
+        let blocks = vec![Block::NiIntegerExtraData(nif::blocks::NiIntegerExtraData {
+            name: NiString::from("ToonRampIndex"),
+            value: 2,
+        })];
+        let bound = super::shader_slots(&blocks, &[BlockRef::Index(0)], declared);
+        assert_eq!(
+            bound[1],
+            Some(super::shaders::Source::Slot(
+                nif::blocks::TextureSlot::Shader(2)
+            ))
+        );
+        // the base slot beside it is the file's own and is left alone
+        assert_eq!(bound[0], declared[0]);
+
+        // a shape naming no map falls back to the file the shader declares
+        let bare = super::shader_slots(&[], &[], declared);
+        assert_eq!(bare[1], Some(super::shaders::Source::Named("ToonRamp.bmp")));
     }
 
     /// `Reflection` is the exponent the specular band raises its cosine to, so a default left in
