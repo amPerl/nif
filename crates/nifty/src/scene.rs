@@ -9,7 +9,7 @@ use nif::{
         AlphaFunction, ApplyMode, Block, LightMode, NiGeometry, NiGeometryData, StencilDrawMode,
         TestFunction, TextureSlot, VertMode, ZCompareMode,
     },
-    common::Triangle,
+    common::{BlockRef, Triangle},
     Nif,
 };
 use wgpu::util::DeviceExt as _;
@@ -1208,7 +1208,11 @@ impl Gfx {
             ]);
             model_uniform[28..32].copy_from_slice(&[alpha_threshold, alpha_test, 0.0, 0.0]);
             model_uniform[32..64].copy_from_slice(&slot_uv_rows(&nif.blocks, property, bound, 0.0));
-            model_uniform[64..68].copy_from_slice(&shader.params);
+            model_uniform[64..68].copy_from_slice(&shader_params(
+                &nif.blocks,
+                &geometry.extra_data_refs,
+                shader,
+            ));
 
             let mut indices: Vec<u16> = Vec::with_capacity(triangles.len() * 3);
             let mut edges: Vec<u16> = Vec::with_capacity(triangles.len() * 6);
@@ -1365,6 +1369,32 @@ pub fn uv_rows(transform: Option<nif::blocks::TextureTransform>, uv_set: u32) ->
     let m = transform.matrix();
     let (x, y) = (m.x_axis, m.y_axis);
     [x.x, y.x, m.z_axis.x, set, x.y, y.y, m.z_axis.y, 0.0]
+}
+
+/// What a shader's attributes resolve to for one shape. An attribute is bound from an extra data
+/// block on the shape itself whose name matches, and falls back to the value the shader declares
+/// only where the shape carries none. A shape's own float is therefore what the engine drew with,
+/// so a shell asking for a fifth of its opacity has to be read rather than defaulted.
+pub fn shader_params(blocks: &[Block], extra_data_refs: &[BlockRef], shader: &Shader) -> [f32; 4] {
+    let mut params = shader.params;
+    for (lane, attribute) in shader.param_names.iter().enumerate() {
+        if attribute.is_empty() {
+            continue;
+        }
+        let supplied = extra_data_refs
+            .iter()
+            .filter_map(|reference| reference.get(blocks))
+            .find_map(|block| match block {
+                Block::NiFloatExtraData(float) if float.name.as_bytes() == attribute.as_bytes() => {
+                    Some(float.value)
+                }
+                _ => None,
+            });
+        if let Some(value) = supplied {
+            params[lane] = value;
+        }
+    }
+    params
 }
 
 /// Every drawn slot's uv rows at `time`, in `DEFAULT_SLOTS` order. Both the scene build and the
@@ -1877,8 +1907,66 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
 
 #[cfg(test)]
 mod tests {
-    use super::{grid_lines, Light};
+    use super::{grid_lines, shader_params, Light, Shaders};
+    use nif::blocks::{Block, NiFloatExtraData, NiString};
+    use nif::common::BlockRef;
     use nif::glam::Vec3;
+
+    fn float_extra(name: &str, value: f32) -> Block {
+        Block::NiFloatExtraData(NiFloatExtraData {
+            name: NiString::from(name),
+            value,
+        })
+    }
+
+    /// A shape's own float beats the shader's declared default, which is what the engine does and
+    /// is the difference between the snowglobe drawing opaque and drawing at the fifth of an
+    /// opacity its shell asks for.
+    #[test]
+    fn a_shape_supplies_its_own_attributes_by_name() {
+        let shaders = Shaders::default();
+        let shader = shaders.get("OilyFilm").expect("OilyFilm is built in");
+        assert_eq!(shader.param_names[..2], ["WarpAlpha", "Exponent"]);
+        assert_eq!(shader.params[..2], [1.0, 48.0]);
+
+        let blocks = vec![
+            float_extra("Exponent", 51.5),
+            float_extra("Unrelated", 9.0),
+            float_extra("WarpAlpha", 0.2),
+        ];
+        let refs = [BlockRef::Index(0), BlockRef::Index(1), BlockRef::Index(2)];
+        let bound = shader_params(&blocks, &refs, shader);
+
+        assert_eq!(bound[0], 0.2);
+        assert_eq!(bound[1], 51.5);
+    }
+
+    /// A lane no attribute names, and a shape carrying nothing, both keep the declared default.
+    #[test]
+    fn an_attribute_a_shape_does_not_carry_keeps_its_default() {
+        let shaders = Shaders::default();
+        let shader = shaders.get("OilyFilm").expect("built in");
+        let blocks = vec![float_extra("Exponent", 8.0)];
+        let bound = shader_params(&blocks, &[BlockRef::Index(0)], shader);
+
+        assert_eq!(bound[0], shader.params[0]);
+        assert_eq!(bound[1], 8.0);
+        assert_eq!(bound[2..], shader.params[2..]);
+    }
+
+    /// `Reflection` is the exponent the specular band raises its cosine to, so a default left in
+    /// place where the file overrides it is the difference between a pinpoint and a sweep.
+    #[test]
+    fn the_specular_band_reads_its_exponent_from_the_shape() {
+        let shaders = Shaders::default();
+        let shader = shaders.get("ActionSpecularBand").expect("built in");
+        assert_eq!(shader.param_names[0], "Reflection");
+        assert_eq!(shader.params[0], 100.0);
+
+        let blocks = vec![float_extra("Reflection", 10.0)];
+        let bound = shader_params(&blocks, &[BlockRef::Index(0)], shader);
+        assert_eq!(bound[0], 10.0);
+    }
 
     /// The light replaced constants baked into the fragment shader. If the defaults drift, every
     /// file in the viewer changes appearance, so they are pinned to what those constants were.

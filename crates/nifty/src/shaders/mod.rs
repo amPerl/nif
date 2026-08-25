@@ -99,9 +99,12 @@ pub struct Shader {
     /// Sampling a shader pins for a slot. `None` leaves the map's own clamp mode and linear.
     pub address: [Option<Sampling>; SLOTS],
     /// Whatever the shader wants told, reaching it as `model.params`. These are the declared
-    /// defaults of its own attributes: a file supplies its own only through shader extra data,
-    /// which nothing in this game carries.
+    /// defaults of its own attributes, used where a shape supplies nothing.
     pub params: [f32; 4],
+    /// The attribute each lane of `params` carries, parallel to it. A shape overrides one by
+    /// carrying an extra data block of that name, so the name is what does the binding. An
+    /// empty name is a lane no attribute reaches.
+    pub param_names: [&'static str; 4],
     /// Where it came from, for the UI to say so.
     pub origin: Origin,
 }
@@ -135,6 +138,7 @@ fn fixed() -> Shader {
         state: RenderState::default(),
         address: [None; SLOTS],
         params: [0.0; 4],
+        param_names: [""; 4],
         origin: Origin::BuiltIn,
     }
 }
@@ -151,6 +155,7 @@ fn built_ins() -> Vec<Shader> {
             state: RenderState::default(),
             address: [None; SLOTS],
             params: [0.0; 4],
+            param_names: [""; 4],
             origin: Origin::BuiltIn,
         },
         Shader {
@@ -173,8 +178,10 @@ fn built_ins() -> Vec<Shader> {
                 Some(Sampling::clamped(wgpu::FilterMode::Linear)),
                 None,
             ],
-            // WarpAlpha then Exponent, both the values the source declares
+            // WarpAlpha then Exponent, at the values the source declares. A shape carrying a
+            // float of either name overrides it, and a low WarpAlpha is what fades the surface.
             params: [1.0, 48.0, 0.0, 0.0],
+            param_names: ["WarpAlpha", "Exponent", "", ""],
             origin: Origin::BuiltIn,
         },
         Shader {
@@ -199,6 +206,7 @@ fn built_ins() -> Vec<Shader> {
                 None,
             ],
             params: [0.0; 4],
+            param_names: [""; 4],
             origin: Origin::BuiltIn,
         },
         Shader {
@@ -224,7 +232,10 @@ fn built_ins() -> Vec<Shader> {
                 None,
                 None,
             ],
-            params: [0.0; 4],
+            // the exponent the source names Reflection. A shape usually carries its own, and a
+            // smaller one spreads the band across the panel rather than pinning it to a point.
+            params: [100.0, 0.0, 0.0, 0.0],
+            param_names: ["Reflection", "", "", ""],
             origin: Origin::BuiltIn,
         },
         Shader {
@@ -238,6 +249,7 @@ fn built_ins() -> Vec<Shader> {
             state: RenderState::default(),
             address: [None; SLOTS],
             params: [0.0; 4],
+            param_names: [""; 4],
             origin: Origin::BuiltIn,
         },
         Shader {
@@ -259,6 +271,7 @@ fn built_ins() -> Vec<Shader> {
             },
             address: [None; SLOTS],
             params: [0.0; 4],
+            param_names: [""; 4],
             origin: Origin::BuiltIn,
         },
     ]
@@ -325,6 +338,20 @@ impl Shaders {
         })
     }
 
+    /// Every attribute a shader declares, with the default it falls back to. A shape overrides
+    /// one by carrying extra data of that name, and nothing else in the viewer says which names
+    /// a shader is looking for.
+    pub fn attributes(&self) -> impl Iterator<Item = (&str, &'static str, f32)> {
+        self.by_name.values().flat_map(|shader| {
+            shader
+                .param_names
+                .iter()
+                .enumerate()
+                .filter(|(_, name)| !name.is_empty())
+                .map(move |(lane, name)| (shader.name.as_str(), *name, shader.params[lane]))
+        })
+    }
+
     /// Indexes `<root>/<TechniqueName>.wgsl`. A later root wins, so a user's own copy overrides
     /// a built in of the same name, which is what makes this worth pointing at a directory.
     /// Returns whether anything changed.
@@ -356,13 +383,15 @@ impl Shaders {
             // a supplied shader inherits the slot mapping of the built in it replaces, since
             // nothing in a WGSL file says which map it wants. An unknown name gets the shader
             // maps, which is what a custom shader reads in every case measured so far.
-            let (slots, absent, state, address, params) = match self.by_name.get(&name) {
+            let (slots, absent, state, address, params, param_names) = match self.by_name.get(&name)
+            {
                 Some(existing) => (
                     existing.slots,
                     existing.absent,
                     existing.state,
                     existing.address,
                     existing.params,
+                    existing.param_names,
                 ),
                 None => (
                     [
@@ -375,6 +404,7 @@ impl Shaders {
                     RenderState::default(),
                     [None; SLOTS],
                     [0.0; 4],
+                    [""; SLOTS],
                 ),
             };
             self.by_name.insert(
@@ -387,6 +417,7 @@ impl Shaders {
                     state,
                     address,
                     params,
+                    param_names,
                     origin: Origin::Directory(path),
                 },
             );

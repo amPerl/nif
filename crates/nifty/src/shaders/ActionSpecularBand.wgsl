@@ -7,12 +7,9 @@
 // The pass is additive, `SRCBLEND = ONE, DESTBLEND = ONE`, so this draws on top of whatever
 // already shaded the surface and can only add light.
 //
-// `Reflection` is an `ATTRIBUTE` defaulting to 100, and a shape supplies one only through shader
-// extra data, which none carries, so 100 is what it resolves to: a very tight highlight that sits
-// at the 0.1 floor across most of the body.
-
-// the exponent the source names Reflection
-const REFLECTION: f32 = 100.0;
+// `Reflection` is an `ATTRIBUTE` defaulting to 100, which is a very tight highlight sitting at
+// the 0.1 floor across most of the body. A shape overrides it by carrying a float of that name,
+// and most do, with a much smaller exponent that spreads the band right around the panel.
 
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
@@ -33,8 +30,9 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let normal = normalize((inverse_rotation * surface_normal(in)).xy);
     let to_eye = normalize((inverse_rotation * (camera.eye.xyz - in.world)).xy);
 
+    let reflection = model.params.x;
     // the 0.1 floor is the source's, and it is what the body reads at away from the highlight
-    let band = max(0.1, pow(max(0.0, dot(normal, to_eye)), REFLECTION));
+    let band = max(0.1, pow(max(0.0, dot(normal, to_eye)), reflection));
 
     // the u coordinate is the band, the v is the map's own. The sampler mirrors in u, which the
     // shader pins rather than taking from the map's clamp mode.

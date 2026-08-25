@@ -1225,6 +1225,26 @@ impl eframe::App for Nifty {
                         });
                     }
 
+                    // an attribute is bound from extra data on the shape rather than from
+                    // anything the file names, so which names a shader looks for is otherwise
+                    // invisible
+                    let attributes: Vec<(&str, &str, f32)> = self.shaders.attributes().collect();
+                    if !attributes.is_empty() {
+                        ui.separator();
+                        ui.label("attributes a shape can supply as float extra data:");
+                        egui::Grid::new("shader attributes").striped(true).show(
+                            ui,
+                            |ui| {
+                                for (shader, attribute, default) in attributes {
+                                    ui.label(shader);
+                                    ui.label(attribute);
+                                    ui.weak(format!("default {default}"));
+                                    ui.end_row();
+                                }
+                            },
+                        );
+                    }
+
                     if self.shaders.roots().is_empty() {
                         ui.weak("no shader directories added");
                     } else {

@@ -10,8 +10,9 @@
 // The original lights with two directional lights and scales each specular term by the light's
 // green channel, because green carries most of the luminance. Only one light exists here.
 //
-// `Exponent` and `WarpAlpha` are attributes with declared defaults, and a shape supplies its own
-// only through shader extra data, which none carries.
+// `Exponent` and `WarpAlpha` are attributes with declared defaults, and a shape overrides either
+// by carrying a float of that name. A shell that asks for a low WarpAlpha is asking to be seen
+// through, since that value is what the fragment writes as its alpha.
 
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
