@@ -19,8 +19,8 @@ struct Model {
     // two rows per bound slot. The third row is always (0, 0, 1), and row0.w names which uv
     // set the slot reads. Which slots these are is the shape's shader's choice.
     uv: array<vec4<f32>, 8>,
-    // whatever the shape's shader wants to be told. Unread by the shaders that only combine
-    // textures; the toon and outline family declares its own attributes and will need it.
+    // whatever the shape's shader wants to be told, which is its own attributes at the values
+    // the shape supplies. Unread by the shaders that only combine textures.
     params: vec4<f32>,
 };
 
@@ -36,6 +36,10 @@ struct Model {
 @group(2) @binding(5) var slot2_sampler: sampler;
 @group(2) @binding(6) var slot3_texture: texture_2d<f32>;
 @group(2) @binding(7) var slot3_sampler: sampler;
+
+// A pass that moves the vertex has its own `displace` spliced in here, above the vertex stage
+// that calls it. WGSL has no forward declarations, so the order matters.
+// <displacement>
 
 struct VertexOut {
     @builtin(position) clip: vec4<f32>,
@@ -57,16 +61,19 @@ fn vs_main(
     @location(5) uv2: vec2<f32>,
 ) -> VertexOut {
     let world = model.model * vec4<f32>(position, 1.0);
+    // the model matrix is a rigid transform plus a uniform scale, so
+    // rotating the normal by it is enough and an inverse transpose would be the same direction
+    let world_normal = (model.model * vec4<f32>(normal, 0.0)).xyz;
+    // a pass that draws a hull moves the vertex here; every other pass leaves it alone
+    let moved = displace(world.xyz, world_normal);
     var out: VertexOut;
-    out.clip = camera.view_proj * world;
-    out.world = world.xyz;
+    out.clip = camera.view_proj * vec4<f32>(moved, 1.0);
+    out.world = moved;
     out.color = color;
     out.uv = uv;
     out.uv1 = uv1;
     out.uv2 = uv2;
-    // the model matrix is a rigid transform plus a uniform scale in every file measured, so
-    // rotating the normal by it is enough and an inverse transpose would be the same direction
-    out.normal = (model.model * vec4<f32>(normal, 0.0)).xyz;
+    out.normal = world_normal;
     return out;
 }
 

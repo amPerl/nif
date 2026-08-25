@@ -18,6 +18,13 @@ use nif::blocks::TextureSlot;
 /// Declarations every shader is written against, prepended to each one before compiling.
 const PRELUDE: &str = include_str!("prelude.wgsl");
 
+/// Where a pass's vertex displacement is spliced into the contract. It has to land above the
+/// vertex stage that calls it, since WGSL has no forward declarations.
+const HOOK: &str = "// <displacement>";
+
+/// What a pass that moves no vertex gets in its place.
+const NO_DISPLACEMENT: &str = include_str!("no_displacement.wgsl");
+
 /// How many texture slots one shape binds. Which maps those hold is the shader's choice.
 pub const SLOTS: usize = 4;
 
@@ -84,13 +91,20 @@ pub struct RenderState {
     pub depth_write: Option<bool>,
     /// Whether the alpha test the file asks for still applies.
     pub alpha_test: Option<bool>,
+    /// `Some(None)` draws both faces, `Some(Some(face))` culls that one, `None` leaves the
+    /// file's own stencil property to decide. An outline pass culls the front, so only the far
+    /// side of its expanded shell survives and the shell reads as a rim.
+    pub cull: Option<Option<wgpu::Face>>,
 }
 
-/// One shader nifty can draw with.
-pub struct Shader {
-    pub name: String,
+/// One draw a shader makes. Most shaders are a single pass; an outline draws an expanded shell
+/// first and the surface over it, and the two want different state and different maps.
+pub struct Pass {
     /// The fragment source, without the prelude.
     pub source: String,
+    /// A pass that moves the vertex supplies its own `displace`, which the contract's vertex
+    /// stage calls before projecting. None leaves the position where the geometry put it.
+    pub vertex: Option<String>,
     /// Where each of the four bindings gets its texture.
     pub slots: [Option<Source>; SLOTS],
     /// What each unread slot stands in with.
@@ -98,6 +112,26 @@ pub struct Shader {
     pub state: RenderState,
     /// Sampling a shader pins for a slot. `None` leaves the map's own clamp mode and linear.
     pub address: [Option<Sampling>; SLOTS],
+}
+
+impl Default for Pass {
+    fn default() -> Self {
+        Pass {
+            source: String::new(),
+            vertex: None,
+            slots: [None; SLOTS],
+            absent: [Absent::White; SLOTS],
+            state: RenderState::default(),
+            address: [None; SLOTS],
+        }
+    }
+}
+
+/// One shader nifty can draw with.
+pub struct Shader {
+    pub name: String,
+    /// What it draws, in order. Never empty.
+    pub passes: Vec<Pass>,
     /// Whatever the shader wants told, reaching it as `model.params`. These are the declared
     /// defaults of its own attributes, used where a shape supplies nothing.
     pub params: [f32; 4],
@@ -115,165 +149,226 @@ pub enum Origin {
     Directory(PathBuf),
 }
 
-impl Shader {
-    /// The whole module source, which is the contract followed by this shader's own fragment.
+impl Pass {
+    /// The whole module source for one pass: the contract, the displacement the pass asks for
+    /// and its own fragment.
     pub fn module_source(&self) -> String {
-        format!("{PRELUDE}\n{}", self.source)
+        let (head, tail) = PRELUDE
+            .split_once(HOOK)
+            .expect("the contract says where a displacement goes");
+        let displace = self.vertex.as_deref().unwrap_or(NO_DISPLACEMENT);
+        [head, displace, tail, &self.source].join("\n")
+    }
+}
+
+impl Shader {
+    /// A shader that draws once, which is all of them but the outline family.
+    fn single(name: &str, pass: Pass) -> Shader {
+        Shader {
+            name: name.into(),
+            passes: vec![pass],
+            params: [0.0; 4],
+            param_names: [""; 4],
+            origin: Origin::BuiltIn,
+        }
     }
 }
 
 /// The fixed function stand in, used by every shape whose geometry names no shader.
 fn fixed() -> Shader {
-    Shader {
-        name: "fixed function".into(),
-        source: include_str!("fixed.wgsl").into(),
+    Shader::single(
+        "fixed function",
+        Pass {
+            source: include_str!("fixed.wgsl").into(),
+            slots: [
+                Some(Source::Slot(TextureSlot::Base)),
+                Some(Source::Slot(TextureSlot::Dark)),
+                Some(Source::Slot(TextureSlot::Glow)),
+                None,
+            ],
+            // dark multiplies, glow adds
+            absent: [Absent::White, Absent::White, Absent::Black, Absent::White],
+            ..Pass::default()
+        },
+    )
+}
+
+/// The toon shading pass, which two techniques draw after an outline and one draws alone.
+fn toon_shading_pass() -> Pass {
+    Pass {
+        source: include_str!("ToonShading.wgsl").into(),
+        // the base map comes from the file; the ramp is named by the shader itself and is
+        // resolved through the texture library, so root order decides which copy wins
         slots: [
             Some(Source::Slot(TextureSlot::Base)),
-            Some(Source::Slot(TextureSlot::Dark)),
-            Some(Source::Slot(TextureSlot::Glow)),
+            Some(Source::Named("ToonRamp.bmp")),
+            None,
             None,
         ],
-        // dark multiplies, glow adds
-        absent: [Absent::White, Absent::White, Absent::Black, Absent::White],
-        state: RenderState::default(),
+        // clamped and point sampled, which is what keeps the bands hard
+        address: [
+            None,
+            Some(Sampling::clamped(wgpu::FilterMode::Nearest)),
+            None,
+            None,
+        ],
+        ..Pass::default()
+    }
+}
+
+/// An outline drawn as a hull: the surface expanded along its own normal with the front faces
+/// culled, so only the far side of the shell survives and reads as a rim, and the surface then
+/// draws over it. The original has no pixel shader and passes the colour in as the vertex
+/// diffuse, which is what this fragment stands in for.
+fn toon_outline_pass() -> Pass {
+    Pass {
+        source: include_str!("ToonOutline.wgsl").into(),
+        vertex: Some(include_str!("ToonOutline.vertex.wgsl").into()),
+        // it samples nothing
+        slots: [None; SLOTS],
+        absent: [Absent::White; SLOTS],
+        state: RenderState {
+            blend: None,
+            alpha_test: None,
+            depth_write: Some(true),
+            cull: Some(Some(wgpu::Face::Front)),
+        },
         address: [None; SLOTS],
-        params: [0.0; 4],
-        param_names: [""; 4],
+    }
+}
+
+/// The two techniques that outline. Their own descriptions differ in nothing this renderer can
+/// see: the same two passes over the same two programs.
+fn outlined_toon(name: &str) -> Shader {
+    // the shading pass here sets its own cull and depth, which standalone ToonShading does not:
+    // there the file's own properties decide. Same program, different state around it.
+    let surface = Pass {
+        state: RenderState {
+            blend: None,
+            alpha_test: None,
+            depth_write: Some(true),
+            cull: Some(Some(wgpu::Face::Back)),
+        },
+        ..toon_shading_pass()
+    };
+    Shader {
+        name: name.into(),
+        passes: vec![toon_outline_pass(), surface],
+        // outlineThickness, at the value the source declares. outlineColor is a colour
+        // attribute, which nothing binds yet, and black is what it declares.
+        params: [0.1, 0.0, 0.0, 0.0],
+        param_names: ["outlineThickness", "", "", ""],
         origin: Origin::BuiltIn,
     }
 }
 
 fn built_ins() -> Vec<Shader> {
     vec![
-        Shader {
-            name: "ActionGameTree".into(),
-            source: include_str!("ActionGameTree.wgsl").into(),
-            // reads the base slot alone, and carries no shader map
-            slots: [Some(Source::Slot(TextureSlot::Base)), None, None, None],
-            absent: [Absent::White; SLOTS],
-            // the technique sets no blend or alpha state, so the file's own properties stand
-            state: RenderState::default(),
-            address: [None; SLOTS],
-            params: [0.0; 4],
-            param_names: [""; 4],
-            origin: Origin::BuiltIn,
-        },
+        Shader::single(
+            "ActionGameTree",
+            Pass {
+                source: include_str!("ActionGameTree.wgsl").into(),
+                // reads the base slot alone, and carries no shader map
+                slots: [Some(Source::Slot(TextureSlot::Base)), None, None, None],
+                // the technique sets no blend or alpha state, so the file's own properties stand
+                ..Pass::default()
+            },
+        ),
         Shader {
             name: "OilyFilm".into(),
-            source: include_str!("OilyFilm.wgsl").into(),
-            // the interference ramp and the warp map are the shader's own attributes, at shader
-            // map 0 and 1; a shape that supplies neither falls back to their declared files
-            slots: [
-                Some(Source::Slot(TextureSlot::Base)),
-                Some(Source::Slot(TextureSlot::Shader(0))),
-                Some(Source::Slot(TextureSlot::Shader(1))),
-                None,
-            ],
-            // the base multiplies the diffuse, and the other two are added
-            absent: [Absent::White, Absent::Black, Absent::Black, Absent::White],
-            state: RenderState::default(),
-            address: [
-                None,
-                Some(Sampling::clamped(wgpu::FilterMode::Linear)),
-                Some(Sampling::clamped(wgpu::FilterMode::Linear)),
-                None,
-            ],
+            passes: vec![Pass {
+                source: include_str!("OilyFilm.wgsl").into(),
+                // the interference ramp and the warp map are the shader's own attributes, at
+                // shader map 0 and 1; a shape that supplies neither falls back to their files
+                slots: [
+                    Some(Source::Slot(TextureSlot::Base)),
+                    Some(Source::Slot(TextureSlot::Shader(0))),
+                    Some(Source::Slot(TextureSlot::Shader(1))),
+                    None,
+                ],
+                // the base multiplies the diffuse, and the other two are added
+                absent: [Absent::White, Absent::Black, Absent::Black, Absent::White],
+                address: [
+                    None,
+                    Some(Sampling::clamped(wgpu::FilterMode::Linear)),
+                    Some(Sampling::clamped(wgpu::FilterMode::Linear)),
+                    None,
+                ],
+                ..Pass::default()
+            }],
             // WarpAlpha then Exponent, at the values the source declares. A shape carrying a
             // float of either name overrides it, and a low WarpAlpha is what fades the surface.
             params: [1.0, 48.0, 0.0, 0.0],
             param_names: ["WarpAlpha", "Exponent", "", ""],
             origin: Origin::BuiltIn,
         },
-        Shader {
-            name: "ToonShading".into(),
-            source: include_str!("ToonShading.wgsl").into(),
-            // the base map comes from the file; the ramp is named by the shader itself and is
-            // resolved through the texture library, so root order decides which copy wins
-            slots: [
-                Some(Source::Slot(TextureSlot::Base)),
-                Some(Source::Named("ToonRamp.bmp")),
-                None,
-                None,
-            ],
-            absent: [Absent::White; SLOTS],
-            // the NSF sets no blend or alpha state, so the file's own properties stand
-            state: RenderState::default(),
-            // TSAMP_AddressU/V = TADDR_Clamp with TEXF_Point, which is what keeps the bands hard
-            address: [
-                None,
-                Some(Sampling::clamped(wgpu::FilterMode::Nearest)),
-                None,
-                None,
-            ],
-            params: [0.0; 4],
-            param_names: [""; 4],
-            origin: Origin::BuiltIn,
-        },
+        Shader::single("ToonShading", toon_shading_pass()),
+        outlined_toon("ActionGameCartoon"),
+        outlined_toon("JiCartoon"),
         Shader {
             name: "ActionSpecularBand".into(),
-            source: include_str!("ActionSpecularBand.wgsl").into(),
-            // the gloss map is the base slot, and there is no shader map
-            slots: [Some(Source::Slot(TextureSlot::Base)), None, None, None],
-            absent: [Absent::White; SLOTS],
-            // the pass is additive and draws over whatever already shaded the surface. It sets
-            // no alpha test or depth state, so the file's own properties still govern those.
-            state: RenderState {
-                blend: Some(Some((wgpu::BlendFactor::One, wgpu::BlendFactor::One))),
-                alpha_test: None,
-                depth_write: None,
-            },
-            // the sampler mirrors in u, which is the shader's own state rather than the map's
-            address: [
-                Some(Sampling {
-                    address: (wgpu::AddressMode::MirrorRepeat, wgpu::AddressMode::Repeat),
-                    filter: wgpu::FilterMode::Linear,
-                }),
-                None,
-                None,
-                None,
-            ],
+            passes: vec![Pass {
+                source: include_str!("ActionSpecularBand.wgsl").into(),
+                // the gloss map is the base slot, and there is no shader map
+                slots: [Some(Source::Slot(TextureSlot::Base)), None, None, None],
+                // the pass is additive and draws over whatever already shaded the surface. It
+                // sets no alpha test or depth state, so the file's own properties govern those.
+                state: RenderState {
+                    blend: Some(Some((wgpu::BlendFactor::One, wgpu::BlendFactor::One))),
+                    alpha_test: None,
+                    depth_write: None,
+                    cull: None,
+                },
+                // the sampler mirrors in u, which is the shader's state rather than the map's
+                address: [
+                    Some(Sampling {
+                        address: (wgpu::AddressMode::MirrorRepeat, wgpu::AddressMode::Repeat),
+                        filter: wgpu::FilterMode::Linear,
+                    }),
+                    None,
+                    None,
+                    None,
+                ],
+                ..Pass::default()
+            }],
             // the exponent the source names Reflection. A shape usually carries its own, and a
             // smaller one spreads the band across the panel rather than pinning it to a point.
             params: [100.0, 0.0, 0.0, 0.0],
             param_names: ["Reflection", "", "", ""],
             origin: Origin::BuiltIn,
         },
-        Shader {
-            name: "ActionGameCartoonFX".into(),
-            source: include_str!("ActionGameCartoonFX.wgsl").into(),
-            // the decal is the base slot. A ramp is often left in shader map 0 from the
-            // deprecated outline path, and this technique does not sample it.
-            slots: [Some(Source::Slot(TextureSlot::Base)), None, None, None],
-            absent: [Absent::White; SLOTS],
-            // the technique sets no blend or alpha state, so the file's own properties stand
-            state: RenderState::default(),
-            address: [None; SLOTS],
-            params: [0.0; 4],
-            param_names: [""; 4],
-            origin: Origin::BuiltIn,
-        },
-        Shader {
-            name: "VCAlphaTextureBlender".into(),
-            source: include_str!("VCAlphaTextureBlender.wgsl").into(),
-            slots: [
-                Some(Source::Slot(TextureSlot::Shader(0))),
-                Some(Source::Slot(TextureSlot::Shader(1))),
-                Some(Source::Slot(TextureSlot::Shader(2))),
-                None,
-            ],
-            // the detail stage is Modulate2x, so an absent detail map is a half not a white
-            absent: [Absent::White, Absent::White, Absent::Half, Absent::White],
-            // the vertex alpha is a blend weight rather than an opacity, so both go off
-            state: RenderState {
-                blend: Some(None),
-                alpha_test: Some(false),
-                depth_write: None,
+        Shader::single(
+            "ActionGameCartoonFX",
+            Pass {
+                source: include_str!("ActionGameCartoonFX.wgsl").into(),
+                // the decal is the base slot. A ramp is often left in shader map 0 from the
+                // deprecated outline path, and this technique does not sample it.
+                slots: [Some(Source::Slot(TextureSlot::Base)), None, None, None],
+                ..Pass::default()
             },
-            address: [None; SLOTS],
-            params: [0.0; 4],
-            param_names: [""; 4],
-            origin: Origin::BuiltIn,
-        },
+        ),
+        Shader::single(
+            "VCAlphaTextureBlender",
+            Pass {
+                source: include_str!("VCAlphaTextureBlender.wgsl").into(),
+                slots: [
+                    Some(Source::Slot(TextureSlot::Shader(0))),
+                    Some(Source::Slot(TextureSlot::Shader(1))),
+                    Some(Source::Slot(TextureSlot::Shader(2))),
+                    None,
+                ],
+                // the detail stage is Modulate2x, so an absent detail map is a half not a white
+                absent: [Absent::White, Absent::White, Absent::Half, Absent::White],
+                // the vertex alpha is a blend weight rather than an opacity, so both go off
+                state: RenderState {
+                    blend: Some(None),
+                    alpha_test: Some(false),
+                    depth_write: None,
+                    cull: None,
+                },
+                ..Pass::default()
+            },
+        ),
     ]
 }
 
@@ -331,10 +426,14 @@ impl Shaders {
     /// without listing them there is no way to see which copy the library picked.
     pub fn named_textures(&self) -> impl Iterator<Item = (&str, &'static str)> {
         self.by_name.values().flat_map(|shader| {
-            shader.slots.iter().filter_map(move |slot| match slot {
-                Some(Source::Named(file)) => Some((shader.name.as_str(), *file)),
-                _ => None,
-            })
+            shader
+                .passes
+                .iter()
+                .flat_map(|pass| pass.slots.iter())
+                .filter_map(move |slot| match slot {
+                    Some(Source::Named(file)) => Some((shader.name.as_str(), *file)),
+                    _ => None,
+                })
         })
     }
 
@@ -380,19 +479,19 @@ impl Shaders {
             let Ok(source) = std::fs::read_to_string(&path) else {
                 continue;
             };
-            // a supplied shader inherits the slot mapping of the built in it replaces, since
-            // nothing in a WGSL file says which map it wants. An unknown name gets the shader
-            // maps, which is what a custom shader reads in every case measured so far.
-            let (slots, absent, state, address, params, param_names) = match self.by_name.get(&name)
-            {
-                Some(existing) => (
-                    existing.slots,
-                    existing.absent,
-                    existing.state,
-                    existing.address,
-                    existing.params,
-                    existing.param_names,
-                ),
+            // A supplied shader inherits the slot mapping and the attributes of the built in it
+            // replaces, since nothing in a WGSL file says which map it wants. An unknown name
+            // gets the shader maps, which is what a custom shader reads.
+            //
+            // It replaces the whole shader, passes included, so a file dropped in over an
+            // outlining technique draws once rather than twice. Nothing in a `.wgsl` can say
+            // otherwise yet, and a manifest is what that would take.
+            let existing = self.by_name.get(&name);
+            let (slots, absent, state, address) = match existing {
+                Some(existing) => {
+                    let pass = &existing.passes[0];
+                    (pass.slots, pass.absent, pass.state, pass.address)
+                }
                 None => (
                     [
                         Some(Source::Slot(TextureSlot::Shader(0))),
@@ -403,19 +502,24 @@ impl Shaders {
                     [Absent::White; SLOTS],
                     RenderState::default(),
                     [None; SLOTS],
-                    [0.0; 4],
-                    [""; SLOTS],
                 ),
+            };
+            let (params, param_names) = match existing {
+                Some(existing) => (existing.params, existing.param_names),
+                None => ([0.0; 4], [""; 4]),
             };
             self.by_name.insert(
                 name.clone(),
                 Shader {
                     name,
-                    source,
-                    slots,
-                    absent,
-                    state,
-                    address,
+                    passes: vec![Pass {
+                        source,
+                        vertex: None,
+                        slots,
+                        absent,
+                        state,
+                        address,
+                    }],
                     params,
                     param_names,
                     origin: Origin::Directory(path),

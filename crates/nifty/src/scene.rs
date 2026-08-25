@@ -176,10 +176,9 @@ pub struct Mesh {
     /// The NiTexturingProperty this shape draws with, which is what a texture transform
     /// controller targets.
     pub texturing_block: Option<usize>,
-    /// Every source a flip controller can swap into the base slot, by its own block. Empty
-    /// unless one drives this shape.
-    flip_frames: HashMap<usize, wgpu::BindGroup>,
-    /// Which texture slots this shape's three bindings hold, which its shader decides.
+    /// Which texture slots this shape's bindings hold, which its shader decides. The uv rows
+    /// in the model uniform belong to these, so where a shader draws more than one pass, they
+    /// are the bindings of the first pass that samples anything.
     pub bound: [Option<shaders::Source>; BOUND_SLOTS],
     pub radius: f32,
     /// The NiLODNode this shape sits under, and which of its levels, if any.
@@ -187,9 +186,8 @@ pub struct Mesh {
     /// Whether this goes in the back to front pass. A shape that blends but whose alpha property
     /// asks for no sorter is drawn where the traversal reaches it instead, among the opaque ones.
     sorted: bool,
-    pipeline: wgpu::RenderPipeline,
-    pipeline_unculled: wgpu::RenderPipeline,
-    texture: wgpu::BindGroup,
+    /// What this shape draws, in order. One entry unless its shader outlines.
+    passes: Vec<MeshPass>,
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
     count: u32,
@@ -197,7 +195,19 @@ pub struct Mesh {
     edge_count: u32,
     bind_group: wgpu::BindGroup,
     /// Rewritten when an animated pose moves the shape. The model matrix is its first 16 floats.
+    /// One per shape rather than one per pass: every pass reads the same pose, material and
+    /// attributes, and the uv rows in it are the ones `bound` names.
     model_buffer: wgpu::Buffer,
+}
+
+/// One draw a shape makes, which is one pass of its shader.
+struct MeshPass {
+    pipeline: wgpu::RenderPipeline,
+    pipeline_unculled: wgpu::RenderPipeline,
+    texture: wgpu::BindGroup,
+    /// Every source a flip controller can swap into this pass's first binding, by its own block.
+    /// Empty unless one drives this shape and this pass reads the base slot.
+    flip_frames: HashMap<usize, wgpu::BindGroup>,
 }
 
 /// A particle system's drawing side. The geometry is generated per frame rather than stored, so
@@ -523,7 +533,9 @@ impl Gfx {
 
         // the wire, highlight and grid passes are the contract's own entry points, so they
         // come from the fixed function module rather than from whichever shader a shape names
-        let shader = compile(device, Shaders::default().fixed())
+        let fixed = Shaders::default();
+        let fixed = fixed.fixed();
+        let shader = compile(device, &fixed.name, &fixed.passes[0])
             .expect("the built in fixed function shader has to compile");
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("nifty"),
@@ -722,6 +734,106 @@ impl Gfx {
     /// A draw per shape, each carrying its own transform, not one merged mesh.
     /// Buffers for one particle system, sized once for its capacity. The vertices are rewritten
     /// every frame from the simulation, so the contents here are only a starting size.
+    /// One pass's texture bindings: a group holding the maps it reads, plus a group per frame a
+    /// flip controller can swap into its first binding. A slot the pass leaves unread gets the
+    /// neutral texel for the way that slot combines.
+    #[allow(clippy::too_many_arguments)]
+    fn pass_textures(
+        &self,
+        nif: &Nif,
+        pass: &shaders::Pass,
+        property: Option<&nif::blocks::NiTexturingProperty>,
+        texturing_block: Option<usize>,
+        library: &TextureLibrary,
+        neutral: &[wgpu::TextureView; 3],
+        cache: &mut HashMap<usize, wgpu::TextureView>,
+        named_textures: &mut HashMap<&'static str, wgpu::TextureView>,
+        missing: &wgpu::TextureView,
+    ) -> (wgpu::BindGroup, HashMap<usize, wgpu::BindGroup>) {
+        // a slot the shape does not use has to change nothing, and what that means depends
+        // on how the slot is combined
+        let mut views: [wgpu::TextureView; BOUND_SLOTS] =
+            std::array::from_fn(|position| neutral[pass.absent[position] as usize].clone());
+        let default_sampling = shaders::Sampling {
+            address: (wgpu::AddressMode::Repeat, wgpu::AddressMode::Repeat),
+            filter: wgpu::FilterMode::Linear,
+        };
+        let mut samplers: [wgpu::Sampler; BOUND_SLOTS] = std::array::from_fn(|position| {
+            self.sampler(pass.address[position].unwrap_or(default_sampling))
+        });
+
+        for (position, slot) in pass.slots.iter().enumerate() {
+            let Some(slot) = slot else { continue };
+            match slot {
+                // a texture the shader names itself rather than one the file points at, so
+                // it resolves by name through the library and root order picks the copy
+                shaders::Source::Named(name) => {
+                    if let Some((width, height, rgba)) = library.load(name) {
+                        views[position] = named_textures
+                            .entry(*name)
+                            .or_insert_with(|| self.upload_texture(width, height, &rgba))
+                            .clone();
+                    }
+                }
+                shaders::Source::Slot(slot) => {
+                    let Some(desc) = property.and_then(|p| p.texture(*slot)) else {
+                        continue;
+                    };
+                    if let Some(key) = desc.source_ref.index() {
+                        views[position] = cache
+                            .entry(key)
+                            .or_insert_with(|| {
+                                self.source_texture(nif, desc.source_ref, library)
+                                    .unwrap_or_else(|| missing.clone())
+                            })
+                            .clone();
+                    }
+                    // the shader's own sampler state beats the map's clamp mode
+                    samplers[position] =
+                        self.sampler(pass.address[position].unwrap_or(shaders::Sampling {
+                            address: address_of(&desc.clamp_mode),
+                            filter: wgpu::FilterMode::Linear,
+                        }));
+                }
+            }
+        }
+        let texture = self.slot_group(std::array::from_fn(|i| (&views[i], &samplers[i])));
+        // every frame a flip controller can reach, uploaded once each and shared by block
+        let mut flip_frames = HashMap::new();
+        let base_slot_flips =
+            pass.slots.first() == Some(&Some(shaders::Source::Slot(TextureSlot::Base)));
+        for block in nif.blocks.iter().filter(|_| base_slot_flips) {
+            let Block::NiFlipController(flip) = block else {
+                continue;
+            };
+            if flip.target_ref.index() != texturing_block
+                || TextureSlot::from_flip_index(flip.texture_slot) != Some(TextureSlot::Base)
+            {
+                continue;
+            }
+            for source_ref in &flip.source_refs {
+                let Some(index) = source_ref.index() else {
+                    continue;
+                };
+                let view = cache
+                    .entry(index)
+                    .or_insert_with(|| {
+                        self.source_texture(nif, *source_ref, library)
+                            .unwrap_or_else(|| missing.clone())
+                    })
+                    .clone();
+                // the other two slots keep whatever the shape itself carries
+                let group = self.slot_group(std::array::from_fn(|i| {
+                    // only the first binding is swapped; the rest stay as the shape's own
+                    let view = if i == 0 { &view } else { &views[i] };
+                    (view, &samplers[i])
+                }));
+                flip_frames.insert(index, group);
+            }
+        }
+        (texture, flip_frames)
+    }
+
     fn particle_mesh(
         &self,
         nif: &Nif,
@@ -886,9 +998,13 @@ impl Gfx {
         };
         let mut cache: HashMap<usize, wgpu::TextureView> = HashMap::new();
         let mut named_textures: HashMap<&'static str, wgpu::TextureView> = HashMap::new();
-        let mut pipelines: HashMap<(String, DrawState), wgpu::RenderPipeline> = HashMap::new();
-        let mut modules: HashMap<String, Result<wgpu::ShaderModule, String>> = HashMap::new();
-        let fixed_module = compile(device, shaders.fixed())
+        // keyed by shader name and pass index, since a shader's passes are separate modules
+        let mut pipelines: HashMap<((String, usize), DrawState), wgpu::RenderPipeline> =
+            HashMap::new();
+        let mut modules: HashMap<(String, usize), Result<wgpu::ShaderModule, String>> =
+            HashMap::new();
+        let fixed = shaders.fixed();
+        let fixed_module = compile(device, &fixed.name, &fixed.passes[0])
             .expect("the built in fixed function shader has to compile");
         let mut unhandled: Vec<String> = Vec::new();
         let mut meshes = Vec::new();
@@ -1087,8 +1203,11 @@ impl Gfx {
                     blend_factor(&a.destination_blend_mode(), true),
                 )
             });
-            let blend = shader.state.blend.unwrap_or(from_file);
-            let tested = alpha.filter(|_| shader.state.alpha_test != Some(false));
+            // the last pass decides how the shape blends and sorts, since that is the one whose
+            // result lands over the others. Every pass a shader draws is state of its own.
+            let last = shader.passes.last().expect("a shader draws at least once");
+            let blend = last.state.blend.unwrap_or(from_file);
+            let tested = alpha.filter(|_| last.state.alpha_test != Some(false));
             // the shader implements TestGreater only. TestAlways never discards.
             let (alpha_test, alpha_threshold) = match tested {
                 Some(a) if a.alpha_test() && a.test_func() != TestFunction::TestAlways => {
@@ -1096,124 +1215,77 @@ impl Gfx {
                 }
                 _ => (0.0, 0.0),
             };
-            let state = DrawState {
-                cull: cull_of(stencil.map(|p| &p.draw_mode)),
-                depth_write: shader
-                    .state
-                    .depth_write
-                    .unwrap_or_else(|| zbuffer.is_none_or(|z| z.depth_write())),
-                depth: depth_of(zbuffer),
-                blend,
-            };
-            let module = modules
-                .entry(shader.name.clone())
-                .or_insert_with(|| compile(device, shader));
-            // a shader that failed to compile falls back rather than taking the viewer down
-            let module = match module {
-                Ok(module) => module,
-                Err(_) => &fixed_module,
-            };
-            let pipeline = pipelines
-                .entry((shader.name.clone(), state))
-                .or_insert_with(|| self.pipeline(state, module))
-                .clone();
-            let unculled = DrawState {
-                cull: None,
-                ..state
-            };
-            let pipeline_unculled = pipelines
-                .entry((shader.name.clone(), unculled))
-                .or_insert_with(|| self.pipeline(unculled, module))
-                .clone();
 
             // one upload per source texture, not per shape that uses it
             let texture_key = texturing.and_then(|p| p.base_texture.as_ref()?.source_ref.index());
             let property = texturing;
             let texturing_block = in_force.texturing.index();
 
-            let bound = shader.slots;
-            // a slot the shape does not use has to change nothing, and what that means depends
-            // on how the slot is combined
-            let mut views: [wgpu::TextureView; BOUND_SLOTS] =
-                std::array::from_fn(|position| neutral[shader.absent[position] as usize].clone());
-            let default_sampling = shaders::Sampling {
-                address: (wgpu::AddressMode::Repeat, wgpu::AddressMode::Repeat),
-                filter: wgpu::FilterMode::Linear,
-            };
-            let mut samplers: [wgpu::Sampler; BOUND_SLOTS] = std::array::from_fn(|position| {
-                self.sampler(shader.address[position].unwrap_or(default_sampling))
-            });
+            // the uv rows in the uniform are one pass's, so they belong to the first pass that
+            // samples anything. A shader whose passes read different slots with different
+            // transforms is not expressible yet, and none of them does.
+            let bound = shader
+                .passes
+                .iter()
+                .map(|pass| pass.slots)
+                .find(|slots| slots.iter().any(Option::is_some))
+                .unwrap_or([None; BOUND_SLOTS]);
 
-            for (position, slot) in bound.iter().enumerate() {
-                let Some(slot) = slot else { continue };
-                match slot {
-                    // a texture the shader names itself rather than one the file points at, so
-                    // it resolves by name through the library and root order picks the copy
-                    shaders::Source::Named(name) => {
-                        if let Some((width, height, rgba)) = library.load(name) {
-                            views[position] = named_textures
-                                .entry(*name)
-                                .or_insert_with(|| self.upload_texture(width, height, &rgba))
-                                .clone();
-                        }
-                    }
-                    shaders::Source::Slot(slot) => {
-                        let Some(desc) = property.and_then(|p| p.texture(*slot)) else {
-                            continue;
-                        };
-                        if let Some(key) = desc.source_ref.index() {
-                            views[position] = cache
-                                .entry(key)
-                                .or_insert_with(|| {
-                                    self.source_texture(nif, desc.source_ref, library)
-                                        .unwrap_or_else(|| missing.clone())
-                                })
-                                .clone();
-                        }
-                        // the shader's own sampler state beats the map's clamp mode
-                        samplers[position] =
-                            self.sampler(shader.address[position].unwrap_or(shaders::Sampling {
-                                address: address_of(&desc.clamp_mode),
-                                filter: wgpu::FilterMode::Linear,
-                            }));
-                    }
-                }
-            }
-            let texture = self.slot_group(std::array::from_fn(|i| (&views[i], &samplers[i])));
-            // every frame a flip controller can reach, uploaded once each and shared by block
-            let mut flip_frames = HashMap::new();
-            let base_slot_flips =
-                bound.first() == Some(&Some(shaders::Source::Slot(TextureSlot::Base)));
-            for block in nif.blocks.iter().filter(|_| base_slot_flips) {
-                let Block::NiFlipController(flip) = block else {
-                    continue;
+            let mut mesh_passes: Vec<MeshPass> = Vec::with_capacity(shader.passes.len());
+            for (index, pass) in shader.passes.iter().enumerate() {
+                let state = DrawState {
+                    // a pass can set its own cull, which is how an outline hull shows only its
+                    // far side, and that beats the file's own stencil property
+                    cull: pass
+                        .state
+                        .cull
+                        .unwrap_or_else(|| cull_of(stencil.map(|p| &p.draw_mode))),
+                    depth_write: pass
+                        .state
+                        .depth_write
+                        .unwrap_or_else(|| zbuffer.is_none_or(|z| z.depth_write())),
+                    depth: depth_of(zbuffer),
+                    blend: pass.state.blend.unwrap_or(from_file),
                 };
-                if flip.target_ref.index() != texturing_block
-                    || TextureSlot::from_flip_index(flip.texture_slot) != Some(TextureSlot::Base)
-                {
-                    continue;
-                }
-                for source_ref in &flip.source_refs {
-                    let Some(index) = source_ref.index() else {
-                        continue;
-                    };
-                    let view = cache
-                        .entry(index)
-                        .or_insert_with(|| {
-                            self.source_texture(nif, *source_ref, library)
-                                .unwrap_or_else(|| missing.clone())
-                        })
-                        .clone();
-                    // the other two slots keep whatever the shape itself carries
-                    let group = self.slot_group(std::array::from_fn(|i| {
-                        // only the first binding is swapped; the rest stay as the shape's own
-                        let view = if i == 0 { &view } else { &views[i] };
-                        (view, &samplers[i])
-                    }));
-                    flip_frames.insert(index, group);
-                }
+                let key = (shader.name.clone(), index);
+                let module = modules
+                    .entry(key.clone())
+                    .or_insert_with(|| compile(device, &shader.name, pass));
+                // a shader that failed to compile falls back rather than taking the viewer down
+                let module = match module {
+                    Ok(module) => module,
+                    Err(_) => &fixed_module,
+                };
+                let pipeline = pipelines
+                    .entry((key.clone(), state))
+                    .or_insert_with(|| self.pipeline(state, module))
+                    .clone();
+                let unculled = DrawState {
+                    cull: None,
+                    ..state
+                };
+                let pipeline_unculled = pipelines
+                    .entry((key, unculled))
+                    .or_insert_with(|| self.pipeline(unculled, module))
+                    .clone();
+                let (texture, flip_frames) = self.pass_textures(
+                    nif,
+                    pass,
+                    property,
+                    texturing_block,
+                    library,
+                    &neutral,
+                    &mut cache,
+                    &mut named_textures,
+                    &missing,
+                );
+                mesh_passes.push(MeshPass {
+                    pipeline,
+                    pipeline_unculled,
+                    texture,
+                    flip_frames,
+                });
             }
-
             let mut model_uniform = [0f32; MODEL_FLOATS as usize];
             model_uniform[..16].copy_from_slice(&model.to_cols_array());
             model_uniform[16..20].copy_from_slice(&diffuse);
@@ -1250,17 +1322,14 @@ impl Gfx {
                 shape_block: visit.index,
                 lod: lod_of.get(&visit.index).copied(),
                 sorted: sorts(blend.is_some(), alpha),
-                pipeline,
-                pipeline_unculled,
+                passes: mesh_passes,
                 center: (shape_min + shape_max) * 0.5,
                 local_center: (local_min + local_max) * 0.5,
                 material_block: material_index,
                 texturing_block,
-                flip_frames,
                 bound,
                 radius: ((shape_max - shape_min).length() * 0.5).max(0.001),
                 data_block: geometry.data_ref.index().unwrap_or(usize::MAX),
-                texture,
                 vertices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("nifty vertices"),
                     contents: bytemuck::cast_slice(&attributes),
@@ -1587,11 +1656,15 @@ fn build_pipeline(
 /// fallen behind the struct fail when the bind group is built, rather than once per draw call.
 /// Compiles one shader against the contract. A shader out of a user's directory can fail to
 /// compile and a panic is not an option, so the error comes back for the UI to report.
-fn compile(device: &wgpu::Device, shader: &Shader) -> Result<wgpu::ShaderModule, String> {
+fn compile(
+    device: &wgpu::Device,
+    name: &str,
+    pass: &shaders::Pass,
+) -> Result<wgpu::ShaderModule, String> {
     let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some(&shader.name),
-        source: wgpu::ShaderSource::Wgsl(shader.module_source().into()),
+        label: Some(name),
+        source: wgpu::ShaderSource::Wgsl(pass.module_source().into()),
     });
     match pollster::block_on(scope.pop()) {
         Some(error) => Err(error.to_string()),
@@ -1656,12 +1729,12 @@ impl PreviewCall {
         }
     }
 
-    /// The base texture as of this frame, which a flip controller may have swapped.
-    fn texture_of<'a>(&'a self, mesh: &'a Mesh) -> &'a wgpu::BindGroup {
+    /// One pass's textures as of this frame, which a flip controller may have swapped.
+    fn texture_of<'a>(&'a self, mesh: &'a Mesh, pass: &'a MeshPass) -> &'a wgpu::BindGroup {
         mesh.texturing_block
             .and_then(|block| self.frame.flip.get(&block))
-            .and_then(|source| mesh.flip_frames.get(source))
-            .unwrap_or(&mesh.texture)
+            .and_then(|source| pass.flip_frames.get(source))
+            .unwrap_or(&pass.texture)
     }
 
     fn visible(&self, mesh: &Mesh) -> bool {
@@ -1672,7 +1745,9 @@ impl PreviewCall {
     }
 }
 
-fn draw_mesh(
+/// One pass of one shape. A shape's passes draw together and in order, since an outline is only
+/// an outline while the surface that hides its near side follows it immediately.
+fn draw_pass(
     render_pass: &mut wgpu::RenderPass<'static>,
     mesh: &Mesh,
     pipeline: &wgpu::RenderPipeline,
@@ -1794,7 +1869,7 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
             render_pass.set_pipeline(&preview.wire);
             for mesh in self.scene.meshes.iter().filter(|m| self.visible(m)) {
                 render_pass.set_bind_group(1, &mesh.bind_group, &[]);
-                render_pass.set_bind_group(2, self.texture_of(mesh), &[]);
+                render_pass.set_bind_group(2, self.texture_of(mesh, &mesh.passes[0]), &[]);
                 render_pass.set_vertex_buffer(0, mesh.vertices.slice(..));
                 render_pass.set_index_buffer(mesh.edges.slice(..), wgpu::IndexFormat::Uint16);
                 render_pass.draw_indexed(0..mesh.edge_count, 0, 0..1);
@@ -1849,12 +1924,14 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
             for item in immediate.into_iter().chain(sorted) {
                 match item {
                     Sorted::Shape(mesh) => {
-                        let pipeline = if self.cull {
-                            &mesh.pipeline
-                        } else {
-                            &mesh.pipeline_unculled
-                        };
-                        draw_mesh(render_pass, mesh, pipeline, self.texture_of(mesh));
+                        for pass in &mesh.passes {
+                            let pipeline = if self.cull {
+                                &pass.pipeline
+                            } else {
+                                &pass.pipeline_unculled
+                            };
+                            draw_pass(render_pass, mesh, pipeline, self.texture_of(mesh, pass));
+                        }
                     }
                     Sorted::Particles(mesh, quads) => {
                         render_pass.set_pipeline(&mesh.pipeline);
@@ -1900,7 +1977,7 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
                 continue;
             }
             render_pass.set_bind_group(1, &mesh.bind_group, &[]);
-            render_pass.set_bind_group(2, self.texture_of(mesh), &[]);
+            render_pass.set_bind_group(2, self.texture_of(mesh, &mesh.passes[0]), &[]);
             render_pass.set_vertex_buffer(0, mesh.vertices.slice(..));
             render_pass.set_index_buffer(mesh.edges.slice(..), wgpu::IndexFormat::Uint16);
             render_pass.draw_indexed(0..mesh.edge_count, 0, 0..1);
@@ -2024,6 +2101,71 @@ mod tests {
         let blocks = vec![float_extra("Reflection", 10.0)];
         let bound = shader_params(&blocks, &[BlockRef::Index(0)], shader);
         assert_eq!(bound[0], 10.0);
+    }
+
+    /// The outline family draws twice, and the order and the culling are the whole technique: an
+    /// expanded shell with its front faces dropped, then the surface over it. Getting either
+    /// wrong turns the shell from a rim into a coat of paint over the whole object.
+    #[test]
+    fn the_outlining_techniques_draw_a_culled_hull_first() {
+        let shaders = Shaders::default();
+        for name in ["ActionGameCartoon", "JiCartoon"] {
+            let shader = shaders
+                .get(name)
+                .unwrap_or_else(|| panic!("{name} is built in"));
+            assert_eq!(shader.passes.len(), 2, "{name}");
+
+            let hull = &shader.passes[0];
+            assert_eq!(
+                hull.state.cull,
+                Some(Some(eframe::egui_wgpu::wgpu::Face::Front)),
+                "{name} hull has to drop its near side"
+            );
+            assert!(
+                hull.vertex.is_some(),
+                "{name} hull has to move its vertices"
+            );
+            assert!(
+                hull.slots.iter().all(Option::is_none),
+                "{name} hull samples nothing"
+            );
+
+            let surface = &shader.passes[1];
+            assert!(surface.vertex.is_none(), "{name} surface stays put");
+            assert_eq!(
+                surface.state.cull,
+                Some(Some(eframe::egui_wgpu::wgpu::Face::Back)),
+                "{name} surface culls the way any solid does"
+            );
+            // the thickness is the shape's to set, and the source's default stands in for it
+            assert_eq!(shader.param_names[0], "outlineThickness");
+        }
+    }
+
+    /// Every shader is one module per pass, and a pass that moves no vertex still has to get a
+    /// `displace` to call, or the contract fails to compile for the six shaders that have none.
+    #[test]
+    fn every_pass_declares_exactly_one_displacement() {
+        let shaders = Shaders::default();
+        let all = shaders
+            .names()
+            .map(|(name, _)| name.to_string())
+            .collect::<Vec<_>>();
+        assert!(all.contains(&"ActionGameCartoon".to_string()));
+
+        for name in all {
+            let shader = shaders.get(&name).expect("listed");
+            for (index, pass) in shader.passes.iter().enumerate() {
+                let source = pass.module_source();
+                assert_eq!(
+                    source.matches("fn displace(").count(),
+                    1,
+                    "{name} pass {index}"
+                );
+                assert!(source.contains("fn vs_main("), "{name} pass {index}");
+                assert!(source.contains("fn fs_main("), "{name} pass {index}");
+            }
+        }
     }
 
     /// The light replaced constants baked into the fragment shader. If the defaults drift, every
