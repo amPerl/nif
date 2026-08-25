@@ -241,6 +241,9 @@ pub struct ParticleMesh {
     edges: wgpu::Buffer,
     /// Whether this goes in the back to front pass, on the same terms as a shape.
     sorted: bool,
+    /// The NiLODNode this system sits under, and which of its levels, if any. A system carries
+    /// no stored geometry, so a path keyed on that skips it.
+    lod: Option<(usize, usize)>,
 }
 
 /// Something drawn in the back to front pass, which sorts across both kinds.
@@ -288,6 +291,10 @@ pub struct Grid {
 /// A NiLODNode's switching distances, and the point they are measured from.
 pub struct Lod {
     pub center: Vec3,
+    /// The same point before the node's transform, so an animated node measures from where it
+    /// now is rather than from where the file left it. A node that moves would otherwise switch
+    /// level at the wrong distances, which is the same drift the particle transform had.
+    pub local_center: Vec3,
     pub ranges: Vec<(f32, f32)>,
 }
 
@@ -356,8 +363,15 @@ pub enum LodMode {
 
 impl Scene {
     /// Whether a mesh's LOD level is the one being shown.
-    pub fn shows(&self, mesh: &Mesh, mode: LodMode, distance: f32, eye: Vec3) -> bool {
-        let Some((node, level)) = mesh.lod else {
+    pub fn shows(
+        &self,
+        lod: Option<(usize, usize)>,
+        mode: LodMode,
+        distance: f32,
+        eye: Vec3,
+        poses: &HashMap<usize, Mat4>,
+    ) -> bool {
+        let Some((node, level)) = lod else {
             return true;
         };
         let Some(lod) = self.lods.get(&node) else {
@@ -365,22 +379,47 @@ impl Scene {
         };
         match mode {
             LodMode::All => true,
-            LodMode::Auto => level == lod.level_at(lod.center.distance(eye)),
+            LodMode::Auto => level == lod.level_at(lod.center_at(poses, node).distance(eye)),
             LodMode::Manual => level == lod.level_at(distance),
         }
     }
 
-    /// The shape blocks currently drawn, which is what picking may select.
-    pub fn visible_shapes(&self, mode: LodMode, distance: f32, eye: Vec3) -> HashSet<usize> {
+    /// The shape blocks currently drawn, which is what picking may select. The poses are the
+    /// frame's, so a LOD node that animates is measured from where it now is and picking agrees
+    /// with what is on screen.
+    pub fn visible_shapes(
+        &self,
+        mode: LodMode,
+        distance: f32,
+        eye: Vec3,
+        poses: &HashMap<usize, Mat4>,
+    ) -> HashSet<usize> {
         self.meshes
             .iter()
-            .filter(|mesh| self.shows(mesh, mode, distance, eye))
+            .filter(|mesh| self.shows(mesh.lod, mode, distance, eye, poses))
             .map(|mesh| mesh.shape_block)
+            // a particle system is drawn and picked like anything else, so a hidden level of one
+            // must not be selectable either
+            .chain(
+                self.particles
+                    .iter()
+                    .filter(|mesh| self.shows(mesh.lod, mode, distance, eye, poses))
+                    .map(|mesh| mesh.block),
+            )
             .collect()
     }
 }
 
 impl Lod {
+    /// Where the switching distances are measured from as of this frame. The pose is the node's
+    /// own, so a LOD node under an animated parent follows it.
+    pub fn center_at(&self, poses: &HashMap<usize, Mat4>, node: usize) -> Vec3 {
+        match poses.get(&node) {
+            Some(pose) => pose.transform_point3(self.local_center),
+            None => self.center,
+        }
+    }
+
     /// The level whose range covers `distance`, falling back to the first, which is what
     /// `nif::walk`'s distance policy does.
     pub fn level_at(&self, distance: f32) -> usize {
@@ -1043,6 +1082,8 @@ impl Gfx {
             model: Mat4::from(&visit.transform),
             capacity,
             sorted,
+            // filled by the caller, which is where the LOD ancestry is known
+            lod: None,
             reach: reach * visit.transform.scale.abs(),
             pipeline: self.pipeline(state, module),
             texture: self.slot_group(std::array::from_fn(|_| (&view, &sampler))),
@@ -1080,7 +1121,7 @@ impl Gfx {
         nif: &Nif,
         library: &TextureLibrary,
         shaders: &Shaders,
-    ) -> (Scene, Vec<String>) {
+    ) -> (Scene, Vec<String>, Vec<String>) {
         let lod_of = lod_ancestry(nif);
         let device = &self.render_state.device;
         // one per Absent variant, since what an unread slot stands in with depends on how the
@@ -1110,6 +1151,10 @@ impl Gfx {
         let fixed_module = compile(device, &fixed.name, &fixed.passes[0])
             .expect("the built in fixed function shader has to compile");
         let mut unhandled: Vec<String> = Vec::new();
+        // A technique that is drawn but not wholly. Reporting only the ones nothing can draw
+        // leaves a partial reading looking finished, which is the same trap the fixed function
+        // fallback was: it is the not saying that makes it wrong.
+        let mut partial: Vec<String> = Vec::new();
         let mut meshes = Vec::new();
         let mut particles = Vec::new();
         let mut lods: HashMap<usize, Lod> = HashMap::new();
@@ -1139,6 +1184,7 @@ impl Gfx {
                         visit.index,
                         Lod {
                             center: Mat4::from(&visit.transform).transform_point3(local),
+                            local_center: local,
                             ranges: data
                                 .lod_levels
                                 .iter()
@@ -1154,7 +1200,8 @@ impl Gfx {
             // which only resolves the shapes that store triangles.
             if let Block::NiParticleSystem(psys) = visit.block {
                 let mesh = self.particle_mesh(nif, &visit, &psys.base, library, &fixed_module);
-                if let Some(mesh) = mesh {
+                if let Some(mut mesh) = mesh {
+                    mesh.lod = lod_of.get(&visit.index).copied();
                     let centre = mesh.model.transform_point3(Vec3::ZERO);
                     min = min.min(centre - Vec3::splat(mesh.reach));
                     max = max.max(centre + Vec3::splat(mesh.reach));
@@ -1324,6 +1371,12 @@ impl Gfx {
                     shaders.fixed()
                 }
             };
+            // the technique name is declared twice and the other one is normal mapped. Nothing
+            // at the technique level tells them apart, so a shape carrying tangent space gets
+            // this one with its normal map unread
+            if shader.name == "AGCar2" && data.nbt_method() != 0 {
+                partial.push("AGCar2 normal mapping".into());
+            }
             // A shader's own pass state beats what the file's properties ask for, and the two
             // are separate: turning the alpha test off must not also decide the blending, and a
             // shader that forces blending on has to be sorted as blended even when the file
@@ -1571,6 +1624,8 @@ impl Gfx {
 
         unhandled.sort();
         unhandled.dedup();
+        partial.sort();
+        partial.dedup();
         (
             Scene {
                 origin,
@@ -1582,6 +1637,7 @@ impl Gfx {
                 grid,
             },
             unhandled,
+            partial,
         )
     }
 }
@@ -1909,11 +1965,27 @@ impl PreviewCall {
             .unwrap_or(&pass.texture)
     }
 
+    /// The same question for a particle system, which carries its level like any other shape.
+    fn visible_particles(&self, mesh: &ParticleMesh) -> bool {
+        !self.frame.hidden.contains(&mesh.block)
+            && self.scene.shows(
+                mesh.lod,
+                self.lod_mode,
+                self.lod_distance,
+                self.eye,
+                &self.frame.poses,
+            )
+    }
+
     fn visible(&self, mesh: &Mesh) -> bool {
         !self.frame.hidden.contains(&mesh.shape_block)
-            && self
-                .scene
-                .shows(mesh, self.lod_mode, self.lod_distance, self.eye)
+            && self.scene.shows(
+                mesh.lod,
+                self.lod_mode,
+                self.lod_distance,
+                self.eye,
+                &self.frame.poses,
+            )
     }
 }
 
@@ -1978,7 +2050,12 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
             }
         }
         // the quads are generated here rather than stored, since a particle moves every frame
-        for mesh in &self.scene.particles {
+        for mesh in self
+            .scene
+            .particles
+            .iter()
+            .filter(|m| self.visible_particles(m))
+        {
             let Some(particles) = self.frame.particles.get(&mesh.block) else {
                 continue;
             };
@@ -2072,7 +2149,12 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
             // depth, which is why particles inside a transparent shell vanished.
             let mut sorted: Vec<Sorted> = Vec::new();
             let mut immediate: Vec<Sorted> = Vec::new();
-            for mesh in &self.scene.particles {
+            for mesh in self
+                .scene
+                .particles
+                .iter()
+                .filter(|m| self.visible_particles(m))
+            {
                 let quads = self
                     .frame
                     .particles
@@ -2134,7 +2216,12 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
             }
         }
 
-        for mesh in &self.scene.particles {
+        for mesh in self
+            .scene
+            .particles
+            .iter()
+            .filter(|m| self.visible_particles(m))
+        {
             let Some(particles) = self.frame.particles.get(&mesh.block) else {
                 continue;
             };
@@ -2172,7 +2259,12 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
         }
         // a selected particle system outlines its quads the same way, so picking one shows what
         // was picked rather than leaving the selection invisible
-        for mesh in &self.scene.particles {
+        for mesh in self
+            .scene
+            .particles
+            .iter()
+            .filter(|m| self.visible_particles(m))
+        {
             if mesh.block != selected {
                 continue;
             }

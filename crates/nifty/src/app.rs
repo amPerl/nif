@@ -61,6 +61,9 @@ struct State {
     /// Technique names this file asked for that no shader could draw, so the viewer can say the
     /// render is wrong rather than quietly showing the fixed function stand in.
     unhandled: Vec<String>,
+    /// Techniques drawn but not in full, which have to be said as plainly as the ones nothing
+    /// draws at all.
+    partial: Vec<String>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -164,6 +167,7 @@ impl Default for State {
             openness: Vec::new(),
             previews: Details::default(),
             unhandled: Vec::new(),
+            partial: Vec::new(),
         }
     }
 }
@@ -211,9 +215,11 @@ impl Nifty {
             let Some(loaded) = &document.state.loaded else {
                 continue;
             };
-            let (scene, unhandled) = gfx.build_scene(&loaded.nif, &self.library, &self.shaders);
+            let (scene, unhandled, partial) =
+                gfx.build_scene(&loaded.nif, &self.library, &self.shaders);
             document.state.scene = Some(Arc::new(scene));
             document.state.unhandled = unhandled;
+            document.state.partial = partial;
             document.state.previews.clear();
         }
     }
@@ -242,11 +248,13 @@ impl Nifty {
         let mut state = State::default();
         state.status = Some(match &self.gfx {
             Some(gfx) => {
-                let (scene, unhandled) = gfx.build_scene(&nif, &self.library, &self.shaders);
+                let (scene, unhandled, partial) =
+                    gfx.build_scene(&nif, &self.library, &self.shaders);
                 let shapes = scene.meshes.len();
                 let systems = scene.particles.len();
                 state.scene = Some(Arc::new(scene));
                 state.unhandled = unhandled;
+                state.partial = partial;
                 match systems {
                     0 => format!("{} blocks, {} shapes", nif.blocks.len(), shapes),
                     n => format!(
@@ -955,8 +963,12 @@ impl Viewer<'_> {
                 (response.interact_pointer_pos(), &self.state.loaded)
             {
                 // only what is drawn can be picked, so a hidden LOD level is not selectable
-                let mut visible =
-                    scene.visible_shapes(self.state.lod_mode, self.state.lod_distance, eye);
+                let mut visible = scene.visible_shapes(
+                    self.state.lod_mode,
+                    self.state.lod_distance,
+                    eye,
+                    &frame.poses,
+                );
                 visible.retain(|shape| !frame.hidden.contains(shape));
                 let hits = pick::ray_through(view_proj, scene.origin, rect, pointer)
                     .map(|ray| pick::hits(&loaded.nif, &ray, &visible, viewpoint, &frame))
@@ -1479,6 +1491,10 @@ impl eframe::App for Nifty {
                     .get(*active)
                     .map(|d| d.state.unhandled.as_slice())
                     .unwrap_or_default();
+                let partial = documents
+                    .get(*active)
+                    .map(|d| d.state.partial.as_slice())
+                    .unwrap_or_default();
                 if !unhandled.is_empty() {
                     ui.colored_label(
                         egui::Color32::from_rgb(230, 170, 70),
@@ -1487,6 +1503,13 @@ impl eframe::App for Nifty {
                     .on_hover_text(
                         "drawn with the fixed function stand in, which is wrong for these",
                     );
+                }
+                if !partial.is_empty() {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(200, 190, 120),
+                        format!("partly drawn: {}", partial.join(", ")),
+                    )
+                    .on_hover_text("the technique draws, but not everything it asks for");
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

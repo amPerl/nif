@@ -93,6 +93,12 @@ pub fn hits(
         // simulated rather than anything in the file. Each is treated as a sphere of its own
         // radius, which is what a camera facing quad covers from any angle.
         if let Block::NiParticleSystem(_) = visit.block {
+            // a hidden LOD level is not on screen, so it is not selectable either. The set
+            // covers particle systems as well as shapes, which is what makes this the same
+            // check rather than a second one.
+            if !visible.contains(&visit.index) {
+                continue;
+            }
             let Some(particles) = frame.particles.get(&visit.index) else {
                 continue;
             };
@@ -125,7 +131,7 @@ pub fn hits(
         };
         // the properties in force, a parent node's included, so what can be clicked matches
         // what is drawn
-        if invisible(nif, visit.properties) {
+        if invisible(nif, visit.properties, frame) {
             continue;
         }
 
@@ -182,16 +188,25 @@ fn stencil_draw_mode(
 }
 
 /// A blended shape whose material alpha is zero contributes nothing to the image.
-fn invisible(nif: &Nif, properties: nif::walk::Properties) -> bool {
+///
+/// The alpha is the one the frame is drawing with, not the one the file stores, because a
+/// controller replaces it. Reading the stored value leaves a shape that has faded out still
+/// clickable, and picks up one that has faded in as if it were not there.
+fn invisible(nif: &Nif, properties: nif::walk::Properties, frame: &crate::scene::Frame) -> bool {
     let blends = matches!(
         properties.alpha.get(&nif.blocks),
         Some(Block::NiAlphaProperty(a)) if a.alpha_blend()
     );
-    let clear = matches!(
-        properties.material.get(&nif.blocks),
-        Some(Block::NiMaterialProperty(m)) if m.alpha == 0.0
-    );
-    blends && clear
+    let Some(Block::NiMaterialProperty(material)) = properties.material.get(&nif.blocks) else {
+        return false;
+    };
+    let alpha = properties
+        .material
+        .index()
+        .and_then(|block| frame.alpha.get(&block))
+        .copied()
+        .unwrap_or(material.alpha);
+    blends && alpha == 0.0
 }
 
 /// Moller-Trumbore. The sign of the determinant gives the facing, which drives culling.
