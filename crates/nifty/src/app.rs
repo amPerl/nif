@@ -971,7 +971,12 @@ impl Viewer<'_> {
                 );
                 visible.retain(|shape| !frame.hidden.contains(shape));
                 let hits = pick::ray_through(view_proj, scene.origin, rect, pointer)
-                    .map(|ray| pick::hits(&loaded.nif, &ray, &visible, viewpoint, &frame))
+                    .map(|ray| {
+                        // the same axes the renderer spans a quad with, so a particle is picked
+                        // as the square it draws rather than a sphere around it
+                        let axes = (view.row(0).truncate(), view.row(1).truncate());
+                        pick::hits(&loaded.nif, &ray, &visible, viewpoint, &frame, axes)
+                    })
                     .unwrap_or_default();
                 let repeat = self
                     .state

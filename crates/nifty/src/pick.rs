@@ -19,25 +19,6 @@ pub struct Ray {
     pub direction: Vec3,
 }
 
-/// Where a ray first meets a sphere, or None when it misses or the sphere is behind it.
-fn sphere_hit(ray: &Ray, centre: Vec3, radius: f32) -> Option<f32> {
-    if radius <= 0.0 {
-        return None;
-    }
-    let to_centre = centre - ray.origin;
-    let along = to_centre.dot(ray.direction);
-    let closest = to_centre - ray.direction * along;
-    let gap = radius * radius - closest.length_squared();
-    if gap < 0.0 {
-        return None;
-    }
-    let half = gap.sqrt();
-    // the near intersection, unless the ray starts inside, where the far one is what it meets
-    let near = along - half;
-    let distance = if near >= 0.0 { near } else { along + half };
-    (distance >= 0.0).then_some(distance)
-}
-
 /// The ray under the cursor, in the file's own world space. The projection is DirectX style, so
 /// near is depth 0.
 ///
@@ -85,6 +66,7 @@ pub fn hits(
     visible: &HashSet<usize>,
     viewpoint: Viewpoint,
     frame: &crate::scene::Frame,
+    quad_axes: (Vec3, Vec3),
 ) -> Vec<Hit> {
     let mut out = Vec::new();
 
@@ -109,7 +91,8 @@ pub fn hits(
                 .iter()
                 .filter_map(|particle| {
                     let centre = model.transform_point3(Vec3::from(&particle.position));
-                    sphere_hit(ray, centre, particle.drawn_radius().max(0.0) * scale)
+                    let half = particle.drawn_radius().max(0.0) * scale;
+                    quad_hit(ray, centre, half, particle.rotation, quad_axes)
                 })
                 .fold(f32::MAX, f32::min);
             if nearest < f32::MAX {
@@ -209,6 +192,34 @@ fn invisible(nif: &Nif, properties: nif::walk::Properties, frame: &crate::scene:
     blends && alpha == 0.0
 }
 
+/// The quad a particle draws as, built the way the renderer builds it: the camera's own axes,
+/// turned by the particle's own rotation, at its drawn radius. Testing the square rather than a
+/// sphere around it is what makes a sprite's corners clickable and its gaps not.
+fn quad_hit(ray: &Ray, centre: Vec3, half: f32, rotation: f32, axes: (Vec3, Vec3)) -> Option<f32> {
+    if half <= 0.0 {
+        return None;
+    }
+    let (right, up) = axes;
+    let (sin, cos) = rotation.sin_cos();
+    let corner = |x: f32, y: f32| {
+        let (x, y) = (x * cos - y * sin, x * sin + y * cos);
+        centre + right * (x * half) + up * (y * half)
+    };
+    let (a, b, c, d) = (
+        corner(-1.0, -1.0),
+        corner(1.0, -1.0),
+        corner(1.0, 1.0),
+        corner(-1.0, 1.0),
+    );
+    // a quad faces the camera, so neither triangle is culled: it can be met from either side
+    let first = intersect(ray.origin, ray.direction, a, b, c, None);
+    let second = intersect(ray.origin, ray.direction, a, c, d, None);
+    match (first, second) {
+        (Some(one), Some(two)) => Some(one.min(two)),
+        (hit, None) | (None, hit) => hit,
+    }
+}
+
 /// Moller-Trumbore. The sign of the determinant gives the facing, which drives culling.
 fn intersect(
     origin: Vec3,
@@ -285,33 +296,56 @@ mod tests {
         }
     }
 
+    /// A quad spanned by x and y, which is what the camera's own axes come to when it looks
+    /// down z.
+    const AXES: (Vec3, Vec3) = (Vec3::new(1.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0));
+
     #[test]
-    fn a_particle_is_hit_at_its_near_side() {
+    fn a_particle_is_hit_where_its_quad_is() {
         let centre = Vec3::new(0.0, 0.0, 10.0);
-        let hit = sphere_hit(&ray(Vec3::ZERO, centre), centre, 2.0);
-        // the near surface, not the centre, so a nearer particle wins the sort
-        assert!(hit.is_some_and(|d| (d - 8.0).abs() < 1e-4), "got {hit:?}");
+        let hit = quad_hit(&ray(Vec3::ZERO, centre), centre, 2.0, 0.0, AXES);
+        // the quad is flat and faces the camera, so it is met at its own depth
+        assert!(hit.is_some_and(|d| (d - 10.0).abs() < 1e-4), "got {hit:?}");
     }
 
     #[test]
     fn a_ray_that_passes_beside_a_particle_misses() {
         let centre = Vec3::new(0.0, 0.0, 10.0);
         let beside = ray(Vec3::ZERO, Vec3::new(5.0, 0.0, 10.0));
-        assert!(sphere_hit(&beside, centre, 1.0).is_none());
+        assert!(quad_hit(&beside, centre, 1.0, 0.0, AXES).is_none());
     }
 
     #[test]
     fn a_particle_behind_the_camera_is_not_hit() {
         let behind = Vec3::new(0.0, 0.0, -10.0);
         let forward = ray(Vec3::ZERO, Vec3::new(0.0, 0.0, 1.0));
-        assert!(sphere_hit(&forward, behind, 2.0).is_none());
+        assert!(quad_hit(&forward, behind, 2.0, 0.0, AXES).is_none());
     }
 
+    /// The reason this is a quad and not a sphere: a corner sits at the half width times root
+    /// two, so a sphere of the half width does not reach it and the sprite's corners were not
+    /// clickable. The same test the other way round is what stops the quad over-reaching.
     #[test]
-    fn a_ray_starting_inside_a_particle_leaves_through_the_far_side() {
-        let forward = ray(Vec3::ZERO, Vec3::new(0.0, 0.0, 1.0));
-        let hit = sphere_hit(&forward, Vec3::ZERO, 3.0);
-        assert!(hit.is_some_and(|d| (d - 3.0).abs() < 1e-4), "got {hit:?}");
+    fn a_sprites_corner_is_clickable_and_the_space_past_it_is_not() {
+        let centre = Vec3::new(0.0, 0.0, 10.0);
+        let corner = Vec3::new(0.99, 0.99, 10.0);
+        assert!(quad_hit(&ray(Vec3::ZERO, corner), centre, 1.0, 0.0, AXES).is_some());
+
+        // just outside the same corner, which no sphere or square should catch
+        let past = Vec3::new(1.02, 1.02, 10.0);
+        assert!(quad_hit(&ray(Vec3::ZERO, past), centre, 1.0, 0.0, AXES).is_none());
+    }
+
+    /// A spinning sprite is picked where it now is. Turning the quad an eighth of a turn puts a
+    /// corner where an edge was, so a point beyond the edge comes inside it.
+    #[test]
+    fn a_turned_quad_is_picked_turned() {
+        let centre = Vec3::new(0.0, 0.0, 10.0);
+        let beyond = Vec3::new(1.3, 0.0, 10.0);
+        let eighth = std::f32::consts::FRAC_PI_4;
+
+        assert!(quad_hit(&ray(Vec3::ZERO, beyond), centre, 1.0, 0.0, AXES).is_none());
+        assert!(quad_hit(&ray(Vec3::ZERO, beyond), centre, 1.0, eighth, AXES).is_some());
     }
 
     // counter-clockwise seen from +Z, which is the NIF front face
