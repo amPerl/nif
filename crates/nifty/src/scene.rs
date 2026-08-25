@@ -184,8 +184,9 @@ pub struct Mesh {
     pub radius: f32,
     /// The NiLODNode this shape sits under, and which of its levels, if any.
     lod: Option<(usize, usize)>,
-    /// Blended shapes draw after the opaque ones, back to front.
-    blended: bool,
+    /// Whether this goes in the back to front pass. A shape that blends but whose alpha property
+    /// asks for no sorter is drawn where the traversal reaches it instead, among the opaque ones.
+    sorted: bool,
     pipeline: wgpu::RenderPipeline,
     pipeline_unculled: wgpu::RenderPipeline,
     texture: wgpu::BindGroup,
@@ -219,10 +220,12 @@ pub struct ParticleMesh {
     indices: wgpu::Buffer,
     /// The quad outlines, so a particle shows in wireframe like any other geometry.
     edges: wgpu::Buffer,
+    /// Whether this goes in the back to front pass, on the same terms as a shape.
+    sorted: bool,
 }
 
-/// Something drawn in the blended pass, which sorts back to front across both kinds.
-enum Blended<'a> {
+/// Something drawn in the back to front pass, which sorts across both kinds.
+enum Sorted<'a> {
     Shape(&'a Mesh),
     /// The system and how many of its quads are alive this frame.
     Particles(&'a ParticleMesh, usize),
@@ -382,6 +385,18 @@ impl DrawState {
             blend: None,
         }
     }
+}
+
+/// Whether a shape joins the back to front pass. The engine queues one only when it blends and
+/// its alpha property does not ask to be left out, and draws everything else where the traversal
+/// reaches it. So an unsorted blended shape still blends, but lands among the opaque geometry in
+/// file order rather than after all of it.
+///
+/// `blends` is what the shape ends up drawing with, a shader's override included, while the hint
+/// is read from the file's own property. The two are separate concerns: a shader forcing blending
+/// on says nothing about how the result should be ordered.
+pub fn sorts(blends: bool, alpha: Option<&nif::blocks::NiAlphaProperty>) -> bool {
+    blends && !alpha.is_some_and(|a| a.no_sorter())
 }
 
 /// A z buffer property's own comparison. `LessEqual` is also the default a shape without one
@@ -754,6 +769,8 @@ impl Gfx {
                 blend_factor(&a.destination_blend_mode(), true),
             )
         });
+        // a system is blended geometry like any other, so it leaves the sort on the same terms
+        let sorted = sorts(blend.is_some(), alpha);
         let state = DrawState {
             // a quad already faces the camera, so culling it would only ever hide it
             cull: None,
@@ -810,6 +827,7 @@ impl Gfx {
             block: visit.index,
             model: Mat4::from(&visit.transform),
             capacity,
+            sorted,
             reach: reach * visit.transform.scale.abs(),
             pipeline: self.pipeline(state, module),
             texture: self.slot_group(std::array::from_fn(|_| (&view, &sampler))),
@@ -1231,7 +1249,7 @@ impl Gfx {
             meshes.push(Mesh {
                 shape_block: visit.index,
                 lod: lod_of.get(&visit.index).copied(),
-                blended: blend.is_some(),
+                sorted: sorts(blend.is_some(), alpha),
                 pipeline,
                 pipeline_unculled,
                 center: (shape_min + shape_max) * 0.5,
@@ -1782,36 +1800,40 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
                 render_pass.draw_indexed(0..mesh.edge_count, 0, 0..1);
             }
         } else {
-            // opaque first, then blended back to front
+            // Everything that is not sorted draws first, in traversal order, and the sorted
+            // shapes follow back to front. That is the engine's split: it queues the sortable
+            // ones and draws the rest immediately as it meets them, so an unsorted blended
+            // shape lands among the opaque geometry rather than after it.
             // A particle system is blended geometry like any other, so it sorts with the rest
             // rather than after it. Drawing it last put it behind anything blended that writes
             // depth, which is why particles inside a transparent shell vanished.
-            let mut blended: Vec<Blended> = Vec::new();
+            let mut sorted: Vec<Sorted> = Vec::new();
+            let mut immediate: Vec<Sorted> = Vec::new();
             for mesh in &self.scene.particles {
                 let quads = self
                     .frame
                     .particles
                     .get(&mesh.block)
                     .map_or(0, |p| p.len().min(mesh.capacity));
-                if quads > 0 {
-                    blended.push(Blended::Particles(mesh, quads));
+                if quads == 0 {
+                    continue;
+                }
+                if mesh.sorted {
+                    sorted.push(Sorted::Particles(mesh, quads));
+                } else {
+                    immediate.push(Sorted::Particles(mesh, quads));
                 }
             }
             for mesh in self.scene.meshes.iter().filter(|m| self.visible(m)) {
-                if mesh.blended {
-                    blended.push(Blended::Shape(mesh));
-                    continue;
-                }
-                let pipeline = if self.cull {
-                    &mesh.pipeline
+                if mesh.sorted {
+                    sorted.push(Sorted::Shape(mesh));
                 } else {
-                    &mesh.pipeline_unculled
-                };
-                draw_mesh(render_pass, mesh, pipeline, self.texture_of(mesh));
+                    immediate.push(Sorted::Shape(mesh));
+                }
             }
-            let centre = |item: &Blended| match item {
-                Blended::Shape(mesh) => self.center(mesh),
-                Blended::Particles(mesh, _) => self
+            let centre = |item: &Sorted| match item {
+                Sorted::Shape(mesh) => self.center(mesh),
+                Sorted::Particles(mesh, _) => self
                     .frame
                     .poses
                     .get(&mesh.block)
@@ -1819,14 +1841,14 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
                     .unwrap_or(mesh.model)
                     .transform_point3(Vec3::ZERO),
             };
-            blended.sort_by(|a, b| {
+            sorted.sort_by(|a, b| {
                 centre(b)
                     .distance_squared(self.eye)
                     .total_cmp(&centre(a).distance_squared(self.eye))
             });
-            for item in blended {
+            for item in immediate.into_iter().chain(sorted) {
                 match item {
-                    Blended::Shape(mesh) => {
+                    Sorted::Shape(mesh) => {
                         let pipeline = if self.cull {
                             &mesh.pipeline
                         } else {
@@ -1834,7 +1856,7 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
                         };
                         draw_mesh(render_pass, mesh, pipeline, self.texture_of(mesh));
                     }
-                    Blended::Particles(mesh, quads) => {
+                    Sorted::Particles(mesh, quads) => {
                         render_pass.set_pipeline(&mesh.pipeline);
                         render_pass.set_bind_group(1, &mesh.bind_group, &[]);
                         render_pass.set_bind_group(2, &mesh.texture, &[]);
@@ -1907,10 +1929,46 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
 
 #[cfg(test)]
 mod tests {
-    use super::{grid_lines, shader_params, Light, Shaders};
-    use nif::blocks::{Block, NiFloatExtraData, NiString};
+    use super::{grid_lines, shader_params, sorts, Light, Shaders};
+    use nif::blocks::{Block, NiAlphaProperty, NiFloatExtraData, NiObjectNET, NiString};
     use nif::common::BlockRef;
     use nif::glam::Vec3;
+
+    fn alpha_property(flags: u16) -> NiAlphaProperty {
+        NiAlphaProperty {
+            base: NiObjectNET {
+                name: NiString::from("alpha"),
+                extra_data_refs: Vec::new(),
+                controller_ref: BlockRef::None,
+            },
+            flags,
+            threshold: 0,
+        }
+    }
+
+    /// The blend flag and the no sorter hint are different bits and mean different things: one
+    /// decides how the shape is drawn, the other only where in the order. Reading the hint as
+    /// "opaque" would drop the blending, and ignoring it puts the shape in the wrong pass.
+    #[test]
+    fn a_no_sorter_shape_blends_but_leaves_the_sort() {
+        let blending = alpha_property(0x0001);
+        let no_sorter = alpha_property(0x0001 | 0x2000);
+        assert!(blending.alpha_blend() && !blending.no_sorter());
+        assert!(no_sorter.alpha_blend() && no_sorter.no_sorter());
+
+        assert!(sorts(true, Some(&blending)));
+        assert!(!sorts(true, Some(&no_sorter)));
+    }
+
+    /// An opaque shape is never in the sorted pass, whatever the hint says, and a shape with no
+    /// alpha property at all takes the sort when a shader forces blending on.
+    #[test]
+    fn only_a_blending_shape_can_be_sorted() {
+        assert!(!sorts(false, Some(&alpha_property(0x0001))));
+        assert!(!sorts(false, Some(&alpha_property(0x2000))));
+        assert!(!sorts(false, None));
+        assert!(sorts(true, None));
+    }
 
     fn float_extra(name: &str, value: f32) -> Block {
         Block::NiFloatExtraData(NiFloatExtraData {
