@@ -62,6 +62,9 @@ pub struct Particle {
     /// How fast that turn advances, which is fixed for a particle's whole life.
     pub rotation_speed: f32,
     pub color: Color4,
+    /// How many times this particle has been spawned from another. A spawn modifier refuses to
+    /// go past its own generation count, which is the only thing stopping a chain reaction.
+    pub generation: u16,
     /// When it was last advanced. Everything in a step measures against this, and only the
     /// move at the end of the step carries it forward.
     last_update: f32,
@@ -209,7 +212,7 @@ impl System {
                 Some(Block::NiPSysGravityModifier(m)) => self.pull(blocks, m, now),
                 Some(Block::NiPSysColorModifier(m)) => self.tint(blocks, m),
                 _ => match order {
-                    order::AGE_DEATH => self.age_and_die(now),
+                    order::AGE_DEATH => self.age_and_die(blocks, index, now),
                     order::EMIT => self.emit_from(blocks, index, last, now),
                     order::POSITION => self.integrate(now),
                     _ => {}
@@ -322,13 +325,87 @@ impl System {
         }
     }
 
-    /// Age each particle by the delta it last saw, then drop the ones past their span.
-    fn age_and_die(&mut self, now: f32) {
+    /// Age each particle by the delta it last saw, then drop the ones past their span. A
+    /// modifier that spawns on death gets to see them first, since what it spawns is born from
+    /// where the parent got to rather than from the emitter.
+    fn age_and_die(&mut self, blocks: &[Block], index: usize, now: f32) {
         for particle in &mut self.particles {
             particle.age += now - particle.last_update;
         }
+        let spawner = match blocks.get(index) {
+            Some(Block::NiPSysAgeDeathModifier(m)) if m.spawn_on_death => m
+                .spawn_modifier_ref
+                .index()
+                .filter(|i| matches!(blocks.get(*i), Some(Block::NiPSysSpawnModifier(_)))),
+            _ => None,
+        };
+        if let Some(spawner) = spawner {
+            let dying: Vec<Particle> = self
+                .particles
+                .iter()
+                .filter(|p| p.age > p.life_span)
+                .copied()
+                .collect();
+            for parent in dying {
+                self.spawn_from(blocks, spawner, &parent, now);
+            }
+        }
         self.particles
             .retain(|particle| particle.age <= particle.life_span);
+    }
+
+    /// What one dying particle leaves behind. The children start where it ended, keep its colour
+    /// and size, and take its speed and heading with the modifier's own chaos applied to both.
+    fn spawn_from(&mut self, blocks: &[Block], index: usize, parent: &Particle, now: f32) {
+        let Some(Block::NiPSysSpawnModifier(modifier)) = blocks.get(index) else {
+            return;
+        };
+        if parent.generation >= modifier.num_spawn_generations
+            || self.rng.unit() > modifier.percentage_spawned
+        {
+            return;
+        }
+        let spread = modifier
+            .max_num_to_spawn
+            .saturating_sub(modifier.min_num_to_spawn);
+        let count = modifier.min_num_to_spawn + (self.rng.unit() * spread as f32).round() as u16;
+        let count = count.max(1);
+
+        let heading = Vec3::from(&parent.velocity);
+        let speed = heading.length();
+        // +z turned onto the parent's heading. The engine builds that rotation by hand; the
+        // roll it leaves unspecified does not matter, since the planar angle below is uniform
+        // over the full turn and absorbs it.
+        let onto = glam::Quat::from_rotation_arc(Vec3::Z, heading.normalize_or(Vec3::Z));
+        for _ in 0..count {
+            if self.particles.len() >= self.capacity {
+                return;
+            }
+            let declination = self.rng.unit() * modifier.spawn_dir_variation * std::f32::consts::PI;
+            let planar = self.rng.unit() * std::f32::consts::TAU;
+            let chaos = Vec3::new(
+                declination.sin() * planar.cos(),
+                declination.sin() * planar.sin(),
+                declination.cos(),
+            );
+            let faster = 1.0 + modifier.spawn_speed_variation * self.rng.unit();
+            let life_span =
+                modifier.life_span + modifier.life_span_variation * (self.rng.unit() - 0.5);
+            self.particles.push(Particle {
+                position: parent.position,
+                velocity: (onto * chaos * speed * faster).into(),
+                // born as its parent died, which is within this step
+                age: 0.0,
+                life_span,
+                radius: parent.radius,
+                size: parent.size,
+                rotation: parent.rotation,
+                rotation_speed: parent.rotation_speed,
+                color: parent.color,
+                generation: parent.generation + 1,
+                last_update: now,
+            });
+        }
     }
 
     /// Move by the velocity over the delta, and take the delta up so nothing counts it twice.
@@ -598,6 +675,7 @@ fn emit(emitter: &NiPSysEmitter, age: f32, rng: &mut Rng) -> Option<Particle> {
         rotation: 0.0,
         rotation_speed: 0.0,
         color: emitter.initial_color,
+        generation: 0,
         last_update: 0.0,
     })
 }
@@ -1009,6 +1087,7 @@ mod tests {
             rotation,
             rotation_speed: speed,
             color: Color4::default(),
+            generation: 0,
             last_update: 0.0,
         };
         let mut system = System {
@@ -1276,6 +1355,7 @@ mod tests {
             rotation: 0.0,
             rotation_speed: 0.0,
             color: Color4::default(),
+            generation: 0,
             last_update: 0.0,
         };
         let mut system = System {
@@ -1323,6 +1403,7 @@ mod tests {
             rotation: 0.0,
             rotation_speed: 0.0,
             color: Color4::default(),
+            generation: 0,
             last_update: 0.0,
         };
         let modifier = |grow: f32, fade: f32| NiPSysGrowFadeModifier {
