@@ -1088,8 +1088,9 @@ impl Gfx {
     fn slot_group(
         &self,
         slots: [(&wgpu::TextureView, &wgpu::Sampler); GROUP_SLOTS],
+        cube: (&wgpu::TextureView, &wgpu::Sampler),
     ) -> wgpu::BindGroup {
-        let entries: Vec<wgpu::BindGroupEntry> = slots
+        let mut entries: Vec<wgpu::BindGroupEntry> = slots
             .iter()
             .enumerate()
             .flat_map(|(i, (view, sampler))| {
@@ -1105,6 +1106,14 @@ impl Gfx {
                 ]
             })
             .collect();
+        entries.push(wgpu::BindGroupEntry {
+            binding: (GROUP_SLOTS * 2) as u32,
+            resource: wgpu::BindingResource::TextureView(cube.0),
+        });
+        entries.push(wgpu::BindGroupEntry {
+            binding: (GROUP_SLOTS * 2 + 1) as u32,
+            resource: wgpu::BindingResource::Sampler(cube.1),
+        });
         self.render_state
             .device
             .create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1142,6 +1151,84 @@ impl Gfx {
         Some(self.upload_texture(width, height, &rgba))
     }
 
+    /// Six faces as one cube texture. Every cube map in this game is one mipmap level, so only
+    /// the top of each face is read, and they share a format and a size the way the device
+    /// requires.
+    fn upload_cube(&self, size: u32, faces: &[Vec<u8>; 6]) -> wgpu::TextureView {
+        let device = &self.render_state.device;
+        let extent = wgpu::Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 6,
+        };
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("nifty cube"),
+            size: extent,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        for (at, face) in faces.iter().enumerate() {
+            self.render_state.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d {
+                        x: 0,
+                        y: 0,
+                        z: at as u32,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                face,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(size * 4),
+                    rows_per_image: Some(size),
+                },
+                wgpu::Extent3d {
+                    width: size,
+                    height: size,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+        texture.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::Cube),
+            ..Default::default()
+        })
+    }
+
+    /// The cube map an effect names, or `None` where it names none or the faces do not agree.
+    fn cube_texture(&self, nif: &Nif, source_ref: nif::common::BlockRef) -> Option<wgpu::TextureView> {
+        let Some(Block::NiSourceCubeMap(source)) = source_ref.get(&nif.blocks) else {
+            return None;
+        };
+        let Some(Block::NiPixelData(pixels)) = source.base.pixel_data_ref.get(&nif.blocks) else {
+            return None;
+        };
+        let palette = match pixels.palette_ref.get(&nif.blocks) {
+            Some(Block::NiPalette(palette)) => Some(palette),
+            _ => None,
+        };
+        let mut size = 0;
+        let mut collected: Vec<Vec<u8>> = Vec::with_capacity(6);
+        for at in 0..6 {
+            let (width, height, rgba) = crate::texture::decode_face(pixels, palette, at)?;
+            // a cube face is square and every face matches, which the device insists on
+            if width != height || (size != 0 && width != size) {
+                return None;
+            }
+            size = width;
+            collected.push(rgba);
+        }
+        let faces: [Vec<u8>; 6] = collected.try_into().ok()?;
+        (size > 0).then(|| self.upload_cube(size, &faces))
+    }
+
     /// A draw per shape, each carrying its own transform, not one merged mesh.
     /// Buffers for one particle system, sized once for its capacity. The vertices are rewritten
     /// every frame from the simulation, so the contents here are only a starting size.
@@ -1158,6 +1245,7 @@ impl Gfx {
         texturing_block: Option<usize>,
         library: &TextureLibrary,
         environment: nif::common::BlockRef,
+        blank_cube: &wgpu::TextureView,
         neutral: &[wgpu::TextureView; 3],
         cache: &mut HashMap<usize, wgpu::TextureView>,
         named_textures: &mut HashMap<&'static str, wgpu::TextureView>,
@@ -1230,12 +1318,36 @@ impl Gfx {
         }
         // A sphere map reflects whatever the effect names. Every one in this game asks for the
         // same filtering and clamping, so only the source varies.
+        // A cube map is a second binding kind rather than another slot, so it is resolved
+        // separately and the blank one stands in wherever a shape reflects nothing.
+        let mut cube_view = blank_cube.clone();
+        let cube_sampler = self.sampler(shaders::Sampling {
+            address: (
+                wgpu::AddressMode::ClampToEdge,
+                wgpu::AddressMode::ClampToEdge,
+            ),
+            filter: wgpu::FilterMode::Linear,
+        });
         if let Some(Block::NiTextureEffect(effect)) = environment.get(&nif.blocks) {
-            if let Some(view) = self.source_texture(nif, effect.source_texture_ref, library) {
-                views[ENV_SLOT] = view;
+            match effect.coordinate_generation_type {
+                // a cube is indexed by the reflection itself, a sphere by two of its components
+                3 => {
+                    if let Some(view) = self.cube_texture(nif, effect.source_texture_ref) {
+                        cube_view = view;
+                    }
+                }
+                _ => {
+                    if let Some(view) = self.source_texture(nif, effect.source_texture_ref, library)
+                    {
+                        views[ENV_SLOT] = view;
+                    }
+                }
             }
         }
-        let texture = self.slot_group(std::array::from_fn(|i| (&views[i], &samplers[i])));
+        let texture = self.slot_group(
+            std::array::from_fn(|i| (&views[i], &samplers[i])),
+            (&cube_view, &cube_sampler),
+        );
         // every frame a flip controller can reach, uploaded once each and shared by block
         let mut flip_frames = HashMap::new();
         let base_slot_flips =
@@ -1261,11 +1373,14 @@ impl Gfx {
                     })
                     .clone();
                 // the other two slots keep whatever the shape itself carries
-                let group = self.slot_group(std::array::from_fn(|i| {
-                    // only the first binding is swapped; the rest stay as the shape's own
-                    let view = if i == 0 { &view } else { &views[i] };
-                    (view, &samplers[i])
-                }));
+                let group = self.slot_group(
+                    std::array::from_fn(|i| {
+                        // only the first binding is swapped; the rest stay as the shape's own
+                        let view = if i == 0 { &view } else { &views[i] };
+                        (view, &samplers[i])
+                    }),
+                    (&cube_view, &cube_sampler),
+                );
                 flip_frames.insert(index, group);
             }
         }
@@ -1388,7 +1503,14 @@ impl Gfx {
             lod: None,
             reach: reach * visit.transform.scale.abs(),
             pipeline: self.pipeline(state, module),
-            texture: self.slot_group(std::array::from_fn(|_| (&view, &sampler))),
+            texture: self.slot_group(
+                std::array::from_fn(|_| (&view, &sampler)),
+                // a particle reflects nothing, so its cube is the black one
+                (
+                    &self.upload_cube(1, &std::array::from_fn(|_| vec![0u8, 0, 0, 255])),
+                    &sampler,
+                ),
+            ),
             bind_group: device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("nifty particles"),
                 layout: &self.model_layout,
@@ -1428,6 +1550,8 @@ impl Gfx {
         let device = &self.render_state.device;
         // one per Absent variant, since what an unread slot stands in with depends on how the
         // slot combines: white where it multiplies, black where it adds, half where it doubles
+        // a shape reflecting nothing samples a black cube, since the reflection adds
+        let blank_cube = self.upload_cube(1, &std::array::from_fn(|_| vec![0u8, 0, 0, 255]));
         let neutral: [wgpu::TextureView; 3] = std::array::from_fn(|i| {
             let texel = match i {
                 0 => shaders::Absent::White,
@@ -1885,6 +2009,7 @@ impl Gfx {
                     texturing_block,
                     library,
                     visit.effects.environment(),
+                    &blank_cube,
                     &neutral,
                     &mut cache,
                     &mut named_textures,
@@ -2069,7 +2194,10 @@ impl Gfx {
                 }],
             }),
             // the layout carries a texture group whether the shader samples it or not
-            texture: self.slot_group(std::array::from_fn(|_| (&white, &samplers_for_grid))),
+            texture: self.slot_group(
+                std::array::from_fn(|_| (&white, &samplers_for_grid)),
+                (&blank_cube, &samplers_for_grid),
+            ),
             spacing,
         };
 
@@ -2411,14 +2539,18 @@ fn compile(
 }
 
 /// A texture and sampler pair per bound slot, in binding order.
-fn slot_layout_entries() -> [wgpu::BindGroupLayoutEntry; GROUP_SLOTS * 2] {
+fn slot_layout_entries() -> [wgpu::BindGroupLayoutEntry; GROUP_SLOTS * 2 + 2] {
     std::array::from_fn(|i| wgpu::BindGroupLayoutEntry {
         binding: i as u32,
         visibility: wgpu::ShaderStages::FRAGMENT,
         ty: if i % 2 == 0 {
             wgpu::BindingType::Texture {
                 sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                view_dimension: wgpu::TextureViewDimension::D2,
+                // the last pair is the cube map, which a reflection vector indexes directly
+                view_dimension: match i == GROUP_SLOTS * 2 {
+                    true => wgpu::TextureViewDimension::Cube,
+                    false => wgpu::TextureViewDimension::D2,
+                },
                 multisampled: false,
             }
         } else {

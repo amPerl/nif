@@ -6,8 +6,18 @@ pub fn decode_texture(
     pixels: &NiPixelData,
     palette: Option<&NiPalette>,
 ) -> Option<(u32, u32, Vec<u8>)> {
+    decode_face(pixels, palette, 0)
+}
+
+/// One face of a texture. A plain texture has the one; a cube map has six, in the order the
+/// device wants them, and every one shares the mipmap table and the format.
+pub fn decode_face(
+    pixels: &NiPixelData,
+    palette: Option<&NiPalette>,
+    face: usize,
+) -> Option<(u32, u32, Vec<u8>)> {
     let mip = pixels.mipmaps.first()?;
-    let face = pixels.pixel_data.first()?;
+    let face = pixels.pixel_data.get(face)?;
     let (width, height) = (mip.width.max(1), mip.height.max(1));
     let count = (width as usize) * (height as usize);
     let data = face.data.get(mip.offset as usize..)?;
