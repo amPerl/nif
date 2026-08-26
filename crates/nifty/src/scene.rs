@@ -76,6 +76,13 @@ const VERTEX_FLOATS: usize = 3 + 3 + 4 + 2 + 2 + 2;
 /// How many texture slots one shape binds. Which maps those are is the shader's choice.
 const BOUND_SLOTS: usize = shaders::SLOTS;
 
+/// The environment map rides after the shader's own slots. It carries no uv rows of its own,
+/// since a reflection generates its own coordinates rather than reading a set.
+const ENV_SLOT: usize = BOUND_SLOTS;
+
+/// The slots a bind group holds: the shader's, plus the environment map.
+const GROUP_SLOTS: usize = BOUND_SLOTS + 1;
+
 /// What the fixed function path binds, in the order their uv transforms sit in the uniform.
 const DEFAULT_SLOTS: [Option<shaders::Source>; BOUND_SLOTS] = [
     Some(shaders::Source::Slot(TextureSlot::Base)),
@@ -1065,7 +1072,7 @@ impl Gfx {
     /// nothing: white for dark, since it multiplies, and black for glow, since it adds.
     fn slot_group(
         &self,
-        slots: [(&wgpu::TextureView, &wgpu::Sampler); BOUND_SLOTS],
+        slots: [(&wgpu::TextureView, &wgpu::Sampler); GROUP_SLOTS],
     ) -> wgpu::BindGroup {
         let entries: Vec<wgpu::BindGroupEntry> = slots
             .iter()
@@ -1135,6 +1142,7 @@ impl Gfx {
         property: Option<&nif::blocks::NiTexturingProperty>,
         texturing_block: Option<usize>,
         library: &TextureLibrary,
+        environment: nif::common::BlockRef,
         neutral: &[wgpu::TextureView; 3],
         cache: &mut HashMap<usize, wgpu::TextureView>,
         named_textures: &mut HashMap<&'static str, wgpu::TextureView>,
@@ -1142,14 +1150,29 @@ impl Gfx {
     ) -> (wgpu::BindGroup, HashMap<usize, wgpu::BindGroup>) {
         // a slot the shape does not use has to change nothing, and what that means depends
         // on how the slot is combined
-        let mut views: [wgpu::TextureView; BOUND_SLOTS] =
-            std::array::from_fn(|position| neutral[pass.absent[position] as usize].clone());
+        // the environment map defaults to black, since it adds rather than multiplies
+        let mut views: [wgpu::TextureView; GROUP_SLOTS] = std::array::from_fn(|position| {
+            match position < BOUND_SLOTS {
+                true => neutral[pass.absent[position] as usize].clone(),
+                false => neutral[shaders::Absent::Black as usize].clone(),
+            }
+        });
         let default_sampling = shaders::Sampling {
             address: (wgpu::AddressMode::Repeat, wgpu::AddressMode::Repeat),
             filter: wgpu::FilterMode::Linear,
         };
-        let mut samplers: [wgpu::Sampler; BOUND_SLOTS] = std::array::from_fn(|position| {
-            self.sampler(pass.address[position].unwrap_or(default_sampling))
+        let mut samplers: [wgpu::Sampler; GROUP_SLOTS] = std::array::from_fn(|position| {
+            match position < BOUND_SLOTS {
+                true => self.sampler(pass.address[position].unwrap_or(default_sampling)),
+                // a reflection runs off the edge of its map, so it clamps rather than wrapping
+                false => self.sampler(shaders::Sampling {
+                    address: (
+                        wgpu::AddressMode::ClampToEdge,
+                        wgpu::AddressMode::ClampToEdge,
+                    ),
+                    filter: wgpu::FilterMode::Linear,
+                }),
+            }
         });
 
         for (position, slot) in slots.iter().enumerate() {
@@ -1188,6 +1211,13 @@ impl Gfx {
                             filter: wgpu::FilterMode::Linear,
                         }));
                 }
+            }
+        }
+        // A sphere map reflects whatever the effect names. Every one in this game asks for the
+        // same filtering and clamping, so only the source varies.
+        if let Some(Block::NiTextureEffect(effect)) = environment.get(&nif.blocks) {
+            if let Some(view) = self.source_texture(nif, effect.source_texture_ref, library) {
+                views[ENV_SLOT] = view;
             }
         }
         let texture = self.slot_group(std::array::from_fn(|i| (&views[i], &samplers[i])));
@@ -1839,6 +1869,7 @@ impl Gfx {
                     property,
                     texturing_block,
                     library,
+                    visit.effects.environment(),
                     &neutral,
                     &mut cache,
                     &mut named_textures,
@@ -2365,7 +2396,7 @@ fn compile(
 }
 
 /// A texture and sampler pair per bound slot, in binding order.
-fn slot_layout_entries() -> [wgpu::BindGroupLayoutEntry; BOUND_SLOTS * 2] {
+fn slot_layout_entries() -> [wgpu::BindGroupLayoutEntry; GROUP_SLOTS * 2] {
     std::array::from_fn(|i| wgpu::BindGroupLayoutEntry {
         binding: i as u32,
         visibility: wgpu::ShaderStages::FRAGMENT,

@@ -10,7 +10,9 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let replace = model.sources.w * camera.flags.x;
     let base = texel.rgb * slot1.rgb;
     // the glow map is added in a ONE,ONE pass after everything, so it is unlit
-    let shaded = mix(lit * base, base, replace) + slot2.rgb;
+    // the glow map and the environment map both add after the base modulates, which is where
+    // the engine puts them: a stage each, both D3DTOP_ADD, neither touched by the lighting
+    let shaded = mix(lit * base, base, replace) + slot2.rgb + environment(in);
 
     // alpha follows the same source as diffuse, and the texture modulates it like the colour
     let alpha_src = mix(model.diffuse.a, in.color.a, model.sources.y);

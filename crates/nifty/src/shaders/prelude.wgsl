@@ -52,6 +52,9 @@ struct Model {
 @group(2) @binding(5) var slot2_sampler: sampler;
 @group(2) @binding(6) var slot3_texture: texture_2d<f32>;
 @group(2) @binding(7) var slot3_sampler: sampler;
+// the environment map a texture effect names, black where a shape has none since it adds
+@group(2) @binding(8) var env_texture: texture_2d<f32>;
+@group(2) @binding(9) var env_sampler: sampler;
 
 // A pass that moves the vertex has its own `displace` spliced in here, above the vertex stage
 // that calls it. WGSL has no forward declarations, so the order matters.
@@ -194,6 +197,20 @@ fn scene_lights(normal: vec3<f32>, to_eye: vec3<f32>, world: vec3<f32>) -> vec4<
         sum.w = sum.w + dot(gleam.rgb, vec3<f32>(1.0)) * gleam_amount * attenuation / 3.0;
     }
     return sum;
+}
+
+/// What a sphere mapped environment adds at this point.
+///
+/// The engine hands the device a camera space reflection vector and a texture matrix built from
+/// the effect's own matrix times the inverse view, taking the first two components as the
+/// coordinates. Every effect in this game carries an identity matrix and no translation, so that
+/// product is the inverse view alone, which takes the reflection back to world space: the
+/// coordinates are the world reflection's x and y, and there is no matrix to upload.
+fn environment(in: VertexOut) -> vec3<f32> {
+    let normal = surface_normal(in);
+    let to_eye = normalize(camera.eye.xyz - in.world);
+    let reflected = reflect(-to_eye, normal);
+    return textureSample(env_texture, env_sampler, reflected.xy).rgb;
 }
 
 fn lit_colour(in: VertexOut) -> vec3<f32> {
