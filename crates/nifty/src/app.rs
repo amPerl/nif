@@ -43,6 +43,9 @@ struct State {
     scene: Option<Arc<Scene>>,
     camera: Camera,
     wireframe: bool,
+    /// Draw from the camera the file carries rather than the pan and orbit rig. Ignored by a
+    /// file that has none.
+    scene_camera: bool,
     cull: bool,
     colors: bool,
     textures: bool,
@@ -140,7 +143,8 @@ pub struct Nifty {
     library: TextureLibrary,
     show_library: bool,
     root_input: String,
-    /// The viewer's own light. A NIF carries no scene lighting, so every shading path reads this.
+    /// The viewer's own light, which stands in for a file that carries none of its own. 92
+    /// corpus files do carry lights, and those replace this.
     light: Light,
     show_light: bool,
     /// Built in shaders, plus any a user supplied from a directory.
@@ -157,6 +161,7 @@ impl Default for State {
             scene: None,
             camera: Camera::default(),
             wireframe: false,
+            scene_camera: false,
             cull: true,
             colors: true,
             textures: true,
@@ -875,6 +880,28 @@ impl Viewer<'_> {
             if ui.button("reset view").clicked() {
                 self.state.camera = Camera::default();
             }
+            // a file carries at most one camera, so this is a choice between two rather than a
+            // list. The picker is left out entirely for a file that carries none.
+            if let Some(cam) = scene.camera {
+                let mut through = self.state.scene_camera;
+                egui::ComboBox::from_id_salt("camera")
+                    .selected_text(match through {
+                        true => "scene camera",
+                        false => "orbit",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut through, false, "orbit");
+                        ui.selectable_value(&mut through, true, "scene camera");
+                    });
+                self.state.scene_camera = through;
+                if through {
+                    ui.label(format!(
+                        "{:.0} deg at {:.2}:1",
+                        cam.fov.to_degrees(),
+                        cam.aspect
+                    ));
+                }
+            }
             ui.separator();
             ui.label(format!(
                 "{} shapes, radius {:.1}, grid {}  ·  F frames the selection",
@@ -982,10 +1009,33 @@ impl Viewer<'_> {
 
         // NIF is Z-up; only the camera rig needs to know that
         let target = scene.center + camera.pan;
-        let eye = target + direction * distance;
+        let mut eye = target + direction * distance;
+
+        // A file's own camera replaces the rig outright: where it sits, which way it points and
+        // the shape of its frustum all come from the file. Its own near and far are kept rather
+        // than fitted to the scene, since the point of looking through it is to see what the
+        // game framed.
+        let through = self.state.scene_camera.then_some(scene.camera).flatten();
+        let posed = through.and_then(|cam| {
+            let loaded = self.state.loaded.as_ref()?;
+            let mut walk = match time {
+                Some(at) => loaded.nif.walk().at_time(at),
+                None => loaded.nif.walk(),
+            };
+            let world = walk
+                .find(|visit| visit.index == cam.block)
+                .map(|visit| Mat4::from(&visit.transform))?;
+            Some((cam, cam.view(world)))
+        });
         // the scene is drawn near zero, so the view is built there too. Bounds, LOD distances
         // and the pick ray all stay in the file's own space
-        let view = look_at_mat4(eye - scene.origin, target - scene.origin, Vec3::Z);
+        let view = match posed {
+            Some((_, (at, forward, up))) => {
+                eye = at;
+                look_at_mat4(at - scene.origin, at + forward - scene.origin, up)
+            }
+            None => look_at_mat4(eye - scene.origin, target - scene.origin, Vec3::Z),
+        };
         // the near plane tracks the distance so precision stays where the camera looks. The far
         // plane cannot: it has to clear the floor, which is sized to the scene. Both terms are
         // measured from the eye rather than from the world origin, and the scene term uses the
@@ -993,12 +1043,21 @@ impl Viewer<'_> {
         let reach = (eye.distance(scene.grid.center) + scene.grid.half)
             .max(eye.distance(scene.center) + scene.animated_radius)
             * 1.25;
-        let projection = perspective(
-            fov,
-            rect.width() / rect.height(),
-            (distance * 0.01).max(1e-5),
-            reach,
-        );
+        // the file's camera is drawn into a rectangle of its own shape, so nothing is stretched
+        // into an aspect the game never used
+        let rect = match posed {
+            Some((cam, _)) => letterbox(rect, cam.aspect),
+            None => rect,
+        };
+        let projection = match posed {
+            Some((cam, _)) => perspective(cam.fov, cam.aspect, cam.near, cam.far),
+            None => perspective(
+                fov,
+                rect.width() / rect.height(),
+                (distance * 0.01).max(1e-5),
+                reach,
+            ),
+        };
         let view_proj = projection * view;
 
         // the view matrix rows are the camera's own axes in world space, which is what a
@@ -1115,6 +1174,61 @@ impl Viewer<'_> {
                 up: view.row(1).truncate(),
             },
         ));
+    }
+}
+
+/// The largest rectangle of the given shape that fits inside `within`, centred in it. The bars
+/// left over are what the preview does not draw into.
+fn letterbox(within: egui::Rect, aspect: f32) -> egui::Rect {
+    if aspect <= 0.0 || within.width() <= 0.0 || within.height() <= 0.0 {
+        return within;
+    }
+    let (w, h) = match within.width() / within.height() > aspect {
+        // wider than it should be, so the height decides
+        true => (within.height() * aspect, within.height()),
+        false => (within.width(), within.width() / aspect),
+    };
+    egui::Rect::from_center_size(within.center(), egui::vec2(w, h))
+}
+
+#[cfg(test)]
+mod camera_tests {
+    use super::letterbox;
+    use eframe::egui;
+
+    fn rect(w: f32, h: f32) -> egui::Rect {
+        egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(w, h))
+    }
+
+    /// The file's camera draws into a rectangle of its own shape, so what the game framed is not
+    /// stretched into the panel's aspect. The bars land on whichever pair of sides is spare.
+    #[test]
+    fn a_letterbox_keeps_the_shape_and_fits_inside() {
+        // a panel wider than the camera leaves bars at the sides
+        let inner = letterbox(rect(400.0, 100.0), 1.0);
+        assert!((inner.width() - inner.height()).abs() < 1e-3);
+        assert!((inner.height() - 100.0).abs() < 1e-3, "height was given away");
+
+        // and one taller than the camera leaves them above and below
+        let inner = letterbox(rect(100.0, 400.0), 1.0);
+        assert!((inner.width() - 100.0).abs() < 1e-3);
+
+        // the common frustum here is about four to three, and it keeps that
+        let inner = letterbox(rect(800.0, 800.0), 1.32);
+        assert!((inner.width() / inner.height() - 1.32).abs() < 1e-3);
+        assert!(inner.width() <= 800.0 && inner.height() <= 800.0);
+
+        // always centred in what it was given, and never larger than it
+        let outer = rect(640.0, 480.0);
+        for aspect in [0.5f32, 1.0, 1.32, 2.5] {
+            let inner = letterbox(outer, aspect);
+            assert!((inner.center() - outer.center()).length() < 1e-3);
+            assert!(inner.width() <= outer.width() + 1e-3);
+            assert!(inner.height() <= outer.height() + 1e-3);
+        }
+
+        // a nonsense aspect gives the rectangle back rather than an empty one
+        assert_eq!(letterbox(outer, 0.0), outer);
     }
 }
 

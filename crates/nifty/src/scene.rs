@@ -326,6 +326,8 @@ pub struct Scene {
     /// world magnitude made them fight for the same depth. Composing near zero keeps the
     /// shape's own geometry exact.
     pub origin: Vec3,
+    /// The camera the file carries, if it carries one. Never more than one in this game.
+    pub camera: Option<SceneCamera>,
     /// The lights the file itself carries, in the order the walk reaches them. Empty for nearly
     /// every file, and where it is empty the viewer's own light stands in.
     ///
@@ -472,6 +474,35 @@ pub struct Deformed {
     /// Rebuilt normals. `None` leaves the shape shaded as it rests, which is what the engine
     /// does for a morph that does not ask and for a shape storing none.
     pub normals: Option<Vec<nif::common::Vector3>>,
+}
+
+/// The camera a file carries of its own, as the viewer needs it. A file holds at most one.
+///
+/// The frustum is symmetric in every corpus file, so the vertical angle and the shape of the
+/// rectangle are all it takes to rebuild the projection the game used.
+#[derive(Debug, Clone, Copy)]
+pub struct SceneCamera {
+    /// The block, so a frame can find where it has moved to.
+    pub block: usize,
+    /// Vertical field of view, in radians.
+    pub fov: f32,
+    /// Width over height, which is what the preview is letterboxed to.
+    pub aspect: f32,
+    pub near: f32,
+    pub far: f32,
+}
+
+impl SceneCamera {
+    /// Where it sits and which way it points, from its world transform. The engine takes a
+    /// camera's basis from the columns of its rotation: the first is where it looks, the second
+    /// is its up, and the third its right.
+    pub fn view(&self, world: Mat4) -> (Vec3, Vec3, Vec3) {
+        (
+            world.w_axis.truncate(),
+            world.x_axis.truncate().normalize_or_zero(),
+            world.y_axis.truncate().normalize_or_zero(),
+        )
+    }
 }
 
 /// Which level of each LOD node to draw.
@@ -1430,6 +1461,23 @@ impl Gfx {
             }
         }
 
+        // a file carries at most one camera, so the first the walk reaches is it
+        let scene_camera = nif.walk().find_map(|visit| match visit.block {
+            Block::NiCamera(camera) => {
+                let height = camera.frustum_top - camera.frustum_bottom;
+                let width = camera.frustum_right - camera.frustum_left;
+                (height > 0.0 && width > 0.0 && camera.frustum_near > 0.0).then(|| SceneCamera {
+                    block: visit.index,
+                    // the frustum is given at the near plane, so the angle falls out of it
+                    fov: 2.0 * (camera.frustum_top / camera.frustum_near).atan(),
+                    aspect: width / height,
+                    near: camera.frustum_near,
+                    far: camera.frustum_far,
+                })
+            }
+            _ => None,
+        });
+
         // a light is resolved once and shapes name it by index afterwards. An ambient light
         // folds into the scene's ambient term instead of becoming one of these
         let mut scene_lights: Vec<nif::light::Lit> = Vec::new();
@@ -1985,6 +2033,7 @@ impl Gfx {
         partial.dedup();
         (
             Scene {
+                camera: scene_camera,
                 lights: scene_lights,
                 light_blocks,
                 ambient: scene_ambient,
