@@ -382,6 +382,24 @@ impl Block {
         )
     }
 
+    /// The light behind any of the four light blocks, which share everything but their falloff.
+    pub fn light(&self) -> Option<&NiLight> {
+        let light: &NiLight = match self {
+            Block::NiAmbientLight(b) => b,
+            Block::NiDirectionalLight(b) => b,
+            Block::NiPointLight(b) => b,
+            Block::NiSpotLight(b) => b,
+            _ => return None,
+        };
+        Some(light)
+    }
+
+    /// The effects a node holds. They reach everything under it, unlike a property, which the
+    /// nearest one of its kind replaces.
+    pub fn effect_refs(&self) -> Option<&[BlockRef]> {
+        Some(&self.node()?.effect_refs)
+    }
+
     pub fn property_refs(&self) -> Option<&[BlockRef]> {
         Some(&self.av_object()?.property_refs)
     }

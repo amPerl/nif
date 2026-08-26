@@ -12,10 +12,10 @@ pub struct NiDynamicEffect {
     #[bw(map = |x: &bool| u8::from(*x))]
     pub switch_state: bool,
     #[br(temp)]
-    #[bw(calc = affected_node_refs.len() as u32)]
-    num_affected_nodes: u32,
-    #[br(count = num_affected_nodes)]
-    pub affected_node_refs: Vec<BlockRef>,
+    #[bw(calc = unaffected_node_refs.len() as u32)]
+    num_unaffected_nodes: u32,
+    #[br(count = num_unaffected_nodes)]
+    pub unaffected_node_refs: Vec<BlockRef>,
 }
 
 impl std::ops::Deref for NiDynamicEffect {

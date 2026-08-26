@@ -20,6 +20,9 @@ pub mod walk;
 pub mod psys;
 
 #[cfg(feature = "glam")]
+pub mod light;
+
+#[cfg(feature = "glam")]
 pub mod skin;
 
 #[cfg(feature = "glam")]

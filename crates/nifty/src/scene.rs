@@ -37,8 +37,16 @@ const PARAMS_OFFSET: u64 = 64 * 4;
 
 /// The shader's `Model` and `Camera` structs, in floats. Every buffer bound as one has to be
 /// this long, the grid's included.
-const MODEL_FLOATS: u64 = 80;
-const CAMERA_FLOATS: u64 = 40;
+const MODEL_FLOATS: u64 = 84;
+/// The most of a file's own lights that reach the shader at once, which is the engine's own
+/// limit on how many it will gather.
+const SCENE_LIGHTS: usize = nif::walk::Lights::MAX;
+
+/// Four rows each: where it is and what kind, its cone, its colour, and its attenuation.
+const LIGHT_ROWS: usize = 4;
+
+/// View, eye, flags, the viewer's own light, then the count and the file's own lights.
+const CAMERA_FLOATS: u64 = 44 + (SCENE_LIGHTS * LIGHT_ROWS * 4) as u64;
 
 /// Every addressing a map or a shader can ask for. A sampler is built per pair.
 const ADDRESS_MODES: [wgpu::AddressMode; 3] = [
@@ -140,6 +148,7 @@ pub fn camera_uniform(
     colors: bool,
     textures: bool,
     light: &Light,
+    lights: &[nif::light::Lit],
 ) -> [f32; CAMERA_FLOATS as usize] {
     let mut out = [0.0; CAMERA_FLOATS as usize];
     out[..16].copy_from_slice(&view_proj.to_cols_array());
@@ -147,6 +156,42 @@ pub fn camera_uniform(
     out[20] = f32::from(colors);
     out[21] = f32::from(textures);
     out[24..40].copy_from_slice(&light.uniform());
+    // a file's own lights replace the viewer's, and where it has none the viewer's stands in,
+    // so the shader can tell the two apart by the count alone
+    out[40] = lights.len() as f32;
+    for (at, lit) in lights.iter().take(SCENE_LIGHTS).enumerate() {
+        let row = 44 + at * LIGHT_ROWS * 4;
+        let kind = match lit.falloff {
+            nif::light::Falloff::Directional => 0.0,
+            nif::light::Falloff::Point => 1.0,
+            nif::light::Falloff::Spot => 2.0,
+            // an ambient light is folded into the ambient term rather than reaching this
+            nif::light::Falloff::Ambient => continue,
+        };
+        let origin = match lit.falloff {
+            nif::light::Falloff::Directional => lit.direction,
+            _ => lit.position,
+        };
+        out[row..row + 4].copy_from_slice(&[origin.x, origin.y, origin.z, kind]);
+        out[row + 4..row + 8].copy_from_slice(&[
+            lit.direction.x,
+            lit.direction.y,
+            lit.direction.z,
+            lit.cos_cutoff,
+        ]);
+        out[row + 8..row + 12].copy_from_slice(&[
+            lit.diffuse.x,
+            lit.diffuse.y,
+            lit.diffuse.z,
+            lit.exponent,
+        ]);
+        out[row + 12..row + 16].copy_from_slice(&[
+            lit.attenuation.x,
+            lit.attenuation.y,
+            lit.attenuation.z,
+            0.0,
+        ]);
+    }
     out
 }
 
@@ -271,6 +316,11 @@ pub struct Scene {
     /// world magnitude made them fight for the same depth. Composing near zero keeps the
     /// shape's own geometry exact.
     pub origin: Vec3,
+    /// The lights the file itself carries, in the order the walk reaches them. Empty for nearly
+    /// every file, and where it is empty the viewer's own light stands in.
+    pub lights: Vec<nif::light::Lit>,
+    /// Every ambient light in the file, summed. `None` leaves the viewer's own ambient alone.
+    pub ambient: Option<Vec3>,
     pub meshes: Vec<Mesh>,
     pub particles: Vec<ParticleMesh>,
     pub center: Vec3,
@@ -1345,6 +1395,58 @@ impl Gfx {
             .walk()
             .map(|visit| (visit.index, Mat4::from(&visit.transform)))
             .collect();
+
+        // a light named only by an effect list is never reached by the walk, so it is placed
+        // by the node naming it, which is where it would have sat as a child
+        let mut light_world: HashMap<usize, Mat4> = HashMap::new();
+        for visit in nif.walk() {
+            for reference in visit.block.effect_refs().unwrap_or(&[]) {
+                let Some(index) = reference.index() else {
+                    continue;
+                };
+                let Some(local) = nif.blocks.get(index).and_then(Block::av_object) else {
+                    continue;
+                };
+                let placed = rest_pose.get(&index).copied().unwrap_or_else(|| {
+                    Mat4::from(&visit.transform) * Mat4::from(&nif::common::NiTransform::from(local))
+                });
+                light_world.insert(index, placed);
+            }
+        }
+
+        // a light is resolved once and shapes name it by index afterwards. An ambient light
+        // folds into the scene's ambient term instead of becoming one of these
+        let mut scene_lights: Vec<nif::light::Lit> = Vec::new();
+        let mut light_at: HashMap<usize, usize> = HashMap::new();
+        let mut ambient = Vec3::ZERO;
+        let mut any_ambient = false;
+        for visit in nif.walk() {
+            for reference in visit.lights.iter() {
+                let Some(index) = reference.index() else {
+                    continue;
+                };
+                if light_at.contains_key(&index) {
+                    continue;
+                }
+                let world = light_world.get(&index).copied().unwrap_or(Mat4::IDENTITY);
+                let Some(lit) = nif.blocks.get(index).and_then(|b| nif::light::resolve(b, world))
+                else {
+                    continue;
+                };
+                if lit.falloff == nif::light::Falloff::Ambient {
+                    ambient += lit.ambient;
+                    any_ambient = true;
+                    light_at.insert(index, usize::MAX);
+                    continue;
+                }
+                if scene_lights.len() >= SCENE_LIGHTS {
+                    continue;
+                }
+                light_at.insert(index, scene_lights.len());
+                scene_lights.push(lit);
+            }
+        }
+        let scene_ambient = any_ambient.then_some(ambient);
         for visit in nif.walk() {
             // the walk is the only place the node's world transform is known
             if let Block::NiLODNode(node) = visit.block {
@@ -1680,6 +1782,14 @@ impl Gfx {
                     flip_frames,
                 });
             }
+            // the bits name the scene's lights, so a shape lit by a subset carries a subset
+            let light_mask = visit
+                .lights
+                .iter()
+                .filter_map(|r| r.index())
+                .filter_map(|i| light_at.get(&i))
+                .filter(|at| **at != usize::MAX)
+                .fold(0u32, |mask, at| mask | (1 << at));
             let mut model_uniform = [0f32; MODEL_FLOATS as usize];
             model_uniform[..16].copy_from_slice(&drawn_at(origin, model).to_cols_array());
             model_uniform[16..20].copy_from_slice(&diffuse);
@@ -1705,6 +1815,7 @@ impl Gfx {
             ));
             model_uniform[72..76].copy_from_slice(&ambient);
             model_uniform[76..80].copy_from_slice(&specular);
+            model_uniform[80] = light_mask as f32;
             model_uniform[68..72].copy_from_slice(&shader_color(
                 &nif.blocks,
                 &geometry.extra_data_refs,
@@ -1848,6 +1959,8 @@ impl Gfx {
         partial.dedup();
         (
             Scene {
+                lights: scene_lights,
+                ambient: scene_ambient,
                 origin,
                 meshes,
                 particles,
@@ -2995,7 +3108,7 @@ mod tests {
     fn the_camera_uniform_carries_the_light_at_the_end() {
         let light = Light::default();
         let filled =
-            super::camera_uniform(nif::glam::Mat4::IDENTITY, Vec3::ZERO, true, true, &light);
+            super::camera_uniform(nif::glam::Mat4::IDENTITY, Vec3::ZERO, true, true, &light, &[]);
 
         assert_eq!(filled.len(), super::CAMERA_FLOATS as usize);
         assert_eq!(&filled[24..40], &light.uniform());

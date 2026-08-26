@@ -7,6 +7,12 @@ struct Camera {
     light_ambient: vec4<f32>,
     light_diffuse: vec4<f32>,
     light_specular: vec4<f32>,
+    // x is how many of the file's own lights follow. Zero means the file carries none and the
+    // viewer's own light above stands in for them.
+    light_count: vec4<f32>,
+    // four rows per light: where it is and what kind, the way it points and its cone, its
+    // colour and its cone exponent, and its three attenuation terms
+    lights: array<vec4<f32>, 32>,
 };
 struct Model {
     model: mat4x4<f32>,
@@ -29,6 +35,8 @@ struct Model {
     ambient: vec4<f32>,
     // rgb plus glossiness in w
     specular: vec4<f32>,
+    // x holds a bit per scene light, naming the ones that reach this shape
+    lights: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: Camera;
@@ -132,16 +140,69 @@ fn surface_normal(in: VertexOut) -> vec3<f32> {
     return derived;
 }
 
+/// What the file's own lights add at this point. The ambient term is not here: an ambient
+/// light is summed into `light_ambient` before anything reaches the shader.
+///
+/// `world` is where the surface is, which only the two attenuating kinds need.
+fn scene_lights(normal: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
+    var sum = vec3<f32>(0.0);
+    let count = i32(camera.light_count.x);
+    let mask = u32(model.lights.x);
+
+    for (var i = 0; i < count; i = i + 1) {
+        if ((mask & (1u << u32(i))) == 0u) {
+            continue;
+        }
+        let row = i * 4;
+        let origin = camera.lights[row];
+        let aim = camera.lights[row + 1];
+        let colour = camera.lights[row + 2];
+        let falloff = camera.lights[row + 3];
+
+        // a directional light carries its travel direction where the others carry a position
+        var to_light = -origin.xyz;
+        var attenuation = 1.0;
+        if (origin.w > 0.5) {
+            let offset = origin.xyz - world;
+            let distance = length(offset);
+            to_light = offset / max(distance, 1e-6);
+            attenuation = 1.0 / max(
+                falloff.x + falloff.y * distance + falloff.z * distance * distance,
+                1e-6
+            );
+        }
+
+        // a spot fades from its axis to the edge of its cone and stops there
+        if (origin.w > 1.5) {
+            let along = dot(normalize(aim.xyz), -to_light);
+            if (along < aim.w) {
+                continue;
+            }
+            attenuation = attenuation * pow(along, max(colour.w, 0.0));
+        }
+
+        let lambert = clamp(dot(normal, to_light), 0.0, 1.0);
+        sum = sum + colour.rgb * lambert * attenuation;
+    }
+    return sum;
+}
+
 fn lit_colour(in: VertexOut) -> vec3<f32> {
     let normal = surface_normal(in);
     let to_eye = normalize(camera.eye.xyz - in.world);
 
-    // the light travels away from its source, so the direction back to it is negated
-    let to_light = -camera.light_dir.xyz;
-    let lambert = clamp(dot(normal, to_light), 0.0, 1.0);
-    let fill = camera.light_dir.w * clamp(dot(normal, to_eye), 0.0, 1.0);
-
-    let shade = camera.light_ambient.rgb + camera.light_diffuse.rgb * lambert + vec3<f32>(fill);
+    // a file carrying its own lights is lit by those alone, and the viewer's key light and rim
+    // stand in only for one carrying none
+    var shade = camera.light_ambient.rgb;
+    if (camera.light_count.x < 0.5) {
+        // the light travels away from its source, so the direction back to it is negated
+        let to_light = -camera.light_dir.xyz;
+        let lambert = clamp(dot(normal, to_light), 0.0, 1.0);
+        let fill = camera.light_dir.w * clamp(dot(normal, to_eye), 0.0, 1.0);
+        shade = shade + camera.light_diffuse.rgb * lambert + vec3<f32>(fill);
+    } else {
+        shade = shade + scene_lights(normal, in.world);
+    }
 
     // the texture modulates the lit colour, so emissive is inside the multiply, not over it:
     // emissive 1,1,1 is a full brightness texture, not white. shade replaces the light sum.

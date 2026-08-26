@@ -1055,12 +1055,18 @@ impl Viewer<'_> {
             }
         }
 
+        // a file's own ambient replaces the viewer's, and its own lights replace the key light
+        let mut light_now = *self.light;
+        if let Some(ambient) = scene.ambient {
+            light_now.ambient = ambient;
+        }
         let uniform = crate::scene::camera_uniform(
             view_proj,
             eye - scene.origin,
             self.state.colors,
             self.state.textures,
-            self.light,
+            &light_now,
+            &scene.lights,
         );
         gfx.render_state
             .queue
