@@ -452,6 +452,21 @@ pub struct Frame {
 }
 
 impl Frame {
+    /// Where a shape sits this frame, which is not where the scene was built with it: a pose
+    /// moves it, a billboard turns it and a skin replaces its vertices outright.
+    ///
+    /// Everything that needs to point at a shape reads this. Framing it from the resting centre
+    /// instead sends the camera to where it was rather than where it is.
+    pub fn center_of(&self, mesh: &Mesh) -> Vec3 {
+        if mesh.skinned {
+            return self.deformed_center(mesh.shape_block, mesh.local_center);
+        }
+        match self.poses.get(&mesh.shape_block) {
+            Some(pose) => pose.transform_point3(mesh.local_center),
+            None => mesh.center,
+        }
+    }
+
     /// Where a deformed shape's geometry sits this frame, for a shape whose own node pose does
     /// not place it. Its resting centre stands until something has moved it.
     pub fn deformed_center(&self, at: usize, resting: Vec3) -> Vec3 {
@@ -2446,17 +2461,7 @@ impl PreviewCall {
     /// Where the shape's centre is this frame. A billboard turns and an animated node moves, so
     /// the centre the scene was built with is not where it is being drawn.
     fn center(&self, mesh: &Mesh) -> Vec3 {
-        // a skinned shape's node pose is not what places it, so where it deformed to is the
-        // only thing that knows where it is
-        if mesh.skinned {
-            return self
-                .frame
-                .deformed_center(mesh.shape_block, mesh.local_center);
-        }
-        match self.frame.poses.get(&mesh.shape_block) {
-            Some(model) => model.transform_point3(mesh.local_center),
-            None => mesh.center,
-        }
+        self.frame.center_of(mesh)
     }
 
     /// One pass's textures as of this frame, which a flip controller may have swapped.

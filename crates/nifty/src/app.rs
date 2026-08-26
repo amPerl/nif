@@ -41,6 +41,9 @@ struct State {
     status: Option<String>,
     selected: Option<usize>,
     scene: Option<Arc<Scene>>,
+    /// The frame the last draw built. Framing a shape happens outside the draw and still has to
+    /// ask where that shape is now, which only a frame knows.
+    last_frame: Arc<Frame>,
     camera: Camera,
     wireframe: bool,
     /// Draw from the camera the file carries rather than the pan and orbit rig. Ignored by a
@@ -113,7 +116,8 @@ impl Document {
 
         match mesh {
             Some(mesh) => {
-                self.state.camera.pan = mesh.center - scene.center;
+                // where it is at the moment being drawn, not where the file leaves it
+                self.state.camera.pan = self.state.last_frame.center_of(mesh) - scene.center;
                 self.state.camera.distance = Some(mesh.radius * 2.5);
             }
             None => {
@@ -159,6 +163,7 @@ impl Default for State {
             status: None,
             selected: None,
             scene: None,
+            last_frame: Arc::default(),
             camera: Camera::default(),
             wireframe: false,
             scene_camera: false,
@@ -1073,6 +1078,9 @@ impl Viewer<'_> {
             }),
         };
         let frame = self.frame(viewpoint);
+        // kept so framing a shape, which happens outside the draw, asks the same frame the draw
+        // used rather than the resting scene
+        self.state.last_frame = frame.clone();
 
         // clicking the same spot again selects the next hit behind the current one
         if response.clicked() {
