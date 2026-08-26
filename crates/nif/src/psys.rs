@@ -316,7 +316,11 @@ impl System {
             return;
         };
         let (start, stop) = rate.window;
-        if rate.per_second <= 0.0 || start >= stop || now <= start || last >= stop {
+        if rate.per_second <= 0.0 || start >= stop || now <= start {
+            return;
+        }
+        // past the end of its span an emitter is done, unless the span comes round again
+        if !rate.repeats && last >= stop {
             return;
         }
 
@@ -362,31 +366,67 @@ struct BirthRate {
     window: (f32, f32),
     /// When the emitter is switched on, in order and within the window.
     on: Vec<(f32, f32)>,
+    /// Whether the controller repeats its span, which brings the whole on and off pattern round
+    /// again. A burst emitter that clamps fires once and is done.
+    repeats: bool,
 }
 
 impl BirthRate {
+    /// How long one pass of the span leaves the emitter switched on.
+    fn per_cycle(&self) -> f32 {
+        self.on.iter().map(|(from, to)| to - from).sum()
+    }
+
+    fn duration(&self) -> f32 {
+        (self.window.1 - self.window.0).max(0.0)
+    }
+
+    /// Whether the pattern comes round again, which needs a span to come round in.
+    fn cycles(&self) -> bool {
+        self.repeats && self.duration() > 0.0 && self.per_cycle() > 0.0
+    }
+
     /// How long the emitter has been switched on by `time`, which is the clock emission counts
     /// against. A track that is on throughout makes this the plain elapsed time.
+    ///
+    /// A looping emitter counts every pass, not just the first. Stopping at the end of the span
+    /// leaves it firing once and then dark for the rest of the file, however long that is.
     fn emitting_before(&self, time: f32) -> f32 {
-        self.on
-            .iter()
-            .map(|(from, to)| (time.min(*to) - from).max(0.0))
-            .sum()
+        let within = |at: f32| -> f32 {
+            self.on
+                .iter()
+                .map(|(from, to)| (at.min(*to) - from).max(0.0))
+                .sum()
+        };
+        if !self.cycles() {
+            return within(time);
+        }
+        let duration = self.duration();
+        let elapsed = (time - self.window.0).max(0.0);
+        let passes = (elapsed / duration).floor();
+        passes * self.per_cycle() + within(self.window.0 + elapsed - passes * duration)
     }
 
     /// The moment an emitter that had been on for `elapsed` reached it, which is the inverse of
     /// `emitting_before`. Past the end of the last interval it holds there, since nothing is born
-    /// after that anyway.
+    /// after that anyway, unless the pattern repeats and it comes round again.
     fn moment_at(&self, elapsed: f32) -> f32 {
-        let mut left = elapsed;
+        let (passes, mut left) = match self.cycles() {
+            true => {
+                let passes = (elapsed / self.per_cycle()).floor();
+                (passes, elapsed - passes * self.per_cycle())
+            }
+            false => (0.0, elapsed),
+        };
+        let carried = passes * self.duration();
         for (from, to) in &self.on {
             let length = to - from;
             if left <= length {
-                return from + left;
+                return from + left + carried;
             }
             left -= length;
         }
-        self.on.last().map_or(self.window.0, |(_, to)| *to)
+        self.on.last().map_or(self.window.0, |(_, to)| *to) + carried
     }
 }
 
@@ -424,6 +464,7 @@ fn birth_rate(blocks: &[Block], system: usize, modifier: usize) -> Option<BirthR
             per_second: keyed.unwrap_or(0.0),
             window,
             on: switched_on(blocks, controller.visibility_interpolator_ref, window),
+            repeats: matches!(time.cycle_type_enum(), crate::anim::CycleType::Loop),
         });
     }
     None
@@ -835,6 +876,7 @@ mod tests {
             per_second: 300.0,
             window: (0.0, 3.3333333),
             on: vec![(0.0, 0.16666667)],
+            repeats: false,
         };
         assert!((burst.emitting_before(0.1) - 0.1).abs() < 1e-6);
         // past the end of the burst the total holds, so nothing more is ever born
@@ -848,11 +890,83 @@ mod tests {
             per_second: 30.0,
             window: (0.0, 3.3333333),
             on: vec![(0.0, 3.3333333)],
+            repeats: false,
         };
         assert!((steady.emitting_before(1.0) - 1.0).abs() < 1e-6);
     }
 
     /// A particle's age is real elapsed time, so the moment it was due has to come back out of
+    /// The window guard is what actually stops a looping emitter: it returns before the birth
+    /// clock is ever consulted, so getting `emitting_before` right on its own changes nothing.
+    /// This drives a whole system past its emitter's span and asks whether anything is alive.
+    #[test]
+    fn a_looping_emitter_keeps_a_population_past_its_own_span() {
+        let bytes = std::fs::read("tests/20.nif").expect("fixture");
+        let nif = crate::Nif::parse(&mut std::io::Cursor::new(&bytes)).expect("parse");
+
+        let mut looping = 0;
+        for block in nif.blocks.iter() {
+            let Block::NiPSysEmitterCtlr(_) = block else {
+                continue;
+            };
+            let time = block.as_time_controller().expect("a time controller");
+            if matches!(time.cycle_type_enum(), crate::anim::CycleType::Loop) && time.is_active() {
+                looping += 1;
+            }
+        }
+        assert!(looping > 0, "the fixture has no looping emitter to drive");
+
+        // well past any emitter span in the fixture, where the old guard had gone quiet
+        let mut alive = 0;
+        for mut system in systems(&nif.blocks) {
+            system.seek(&nif.blocks, 30.0);
+            alive += system.particles().len();
+        }
+        assert!(alive > 0, "a looping emitter emitted nothing past its own span");
+    }
+
+    /// A looping emitter fires again every time its span comes round. Counting only the first
+    /// pass leaves it dark for the rest of the file, which on a long one is nearly all of it:
+    /// the pattern here is on for a third of a span that repeats for ten times its length.
+    #[test]
+    fn a_looping_emitter_fires_again_every_pass() {
+        let blinking = BirthRate {
+            per_second: 9.0,
+            window: (0.0, 3.0),
+            on: vec![(0.0, 1.0)],
+            repeats: true,
+        };
+
+        // one second of emitting per pass, so the total climbs by one every three seconds
+        assert!((blinking.emitting_before(1.0) - 1.0).abs() < 1e-5);
+        assert!((blinking.emitting_before(3.0) - 1.0).abs() < 1e-5);
+        assert!((blinking.emitting_before(4.0) - 2.0).abs() < 1e-5);
+        assert!((blinking.emitting_before(30.0) - 10.0).abs() < 1e-5);
+
+        // the same emitter clamped stops after its one pass, however long the file runs
+        let once = BirthRate {
+            repeats: false,
+            ..BirthRate {
+                per_second: 9.0,
+                window: (0.0, 3.0),
+                on: vec![(0.0, 1.0)],
+                repeats: true,
+            }
+        };
+        assert!((once.emitting_before(30.0) - 1.0).abs() < 1e-5);
+
+        // and the two directions still invert each other across many passes, or a particle born
+        // late is aged by every gap it slept through
+        for tenth in 0..=100 {
+            let elapsed = tenth as f32 * 0.1;
+            let moment = blinking.moment_at(elapsed);
+            assert!(
+                (blinking.emitting_before(moment) - elapsed).abs() < 1e-4,
+                "elapsed {elapsed} came back as {moment}"
+            );
+        }
+    }
+
     /// emitting time. Getting this wrong ages a particle by the gaps between bursts.
     #[test]
     fn a_due_moment_converts_back_out_of_emitting_time() {
@@ -860,6 +974,7 @@ mod tests {
             per_second: 10.0,
             window: (0.0, 4.0),
             on: vec![(0.0, 1.0), (2.0, 3.0)],
+            repeats: false,
         };
         // the gap contributes nothing to either direction
         assert!((twice.emitting_before(2.5) - 1.5).abs() < 1e-6);
