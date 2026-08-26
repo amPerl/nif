@@ -259,10 +259,20 @@ pub struct Preview {
 
 /// The texture group's own layout, in one place because it is built both when a scene is made
 /// and later when a flip controller reaches a combination nothing has bound yet.
+/// The texture group's own layout, in one place because it is built both when a scene is made
+/// and later when a flip controller reaches a combination nothing has bound yet.
+///
+/// The three kinds of binding are **separate parameters on purpose**. They used to be one array
+/// of `GROUP_SLOTS`, and a caller filling it with `from_fn(|_| the_same_thing)` was correct until
+/// the environment binding was appended to the end, at which point that caller silently began
+/// reflecting its own texture. Nothing could catch it: the types still matched and every file
+/// still drew. Naming each kind means a new kind is a new parameter and every caller has to say
+/// what it wants there.
 fn slot_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
-    slots: [(&wgpu::TextureView, &wgpu::Sampler); GROUP_SLOTS],
+    slots: [(&wgpu::TextureView, &wgpu::Sampler); BOUND_SLOTS],
+    environment: (&wgpu::TextureView, &wgpu::Sampler),
     cube: (&wgpu::TextureView, &wgpu::Sampler),
 ) -> wgpu::BindGroup {
     let mut entries: Vec<wgpu::BindGroupEntry> = slots
@@ -281,14 +291,16 @@ fn slot_bind_group(
             ]
         })
         .collect();
-    entries.push(wgpu::BindGroupEntry {
-        binding: (GROUP_SLOTS * 2) as u32,
-        resource: wgpu::BindingResource::TextureView(cube.0),
-    });
-    entries.push(wgpu::BindGroupEntry {
-        binding: (GROUP_SLOTS * 2 + 1) as u32,
-        resource: wgpu::BindingResource::Sampler(cube.1),
-    });
+    for (at, (view, sampler)) in [(ENV_SLOT, environment), (GROUP_SLOTS, cube)] {
+        entries.push(wgpu::BindGroupEntry {
+            binding: (at * 2) as u32,
+            resource: wgpu::BindingResource::TextureView(view),
+        });
+        entries.push(wgpu::BindGroupEntry {
+            binding: (at * 2 + 1) as u32,
+            resource: wgpu::BindingResource::Sampler(sampler),
+        });
+    }
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("nifty textures"),
         layout,
@@ -368,8 +380,11 @@ struct MeshPass {
 /// Everything a pass's texture group is built from, retained so the group can be built again
 /// with one or more slots swapped for a flip controller's current frame.
 struct PassBindings {
-    views: [wgpu::TextureView; GROUP_SLOTS],
-    samplers: [wgpu::Sampler; GROUP_SLOTS],
+    views: [wgpu::TextureView; BOUND_SLOTS],
+    samplers: [wgpu::Sampler; BOUND_SLOTS],
+    /// A reflection is not one of the shader's slots and is never flipped, so it is kept apart
+    /// from them rather than on the end of the same array.
+    environment: (wgpu::TextureView, wgpu::Sampler),
     cube: (wgpu::TextureView, wgpu::Sampler),
     /// Which slot each binding position reads, so a flipped source lands in the right one.
     slots: [Option<TextureSlot>; BOUND_SLOTS],
@@ -387,11 +402,8 @@ impl PassBindings {
         layout: &wgpu::BindGroupLayout,
         state: FlipState,
     ) -> wgpu::BindGroup {
-        let views: [&wgpu::TextureView; GROUP_SLOTS] = std::array::from_fn(|position| {
-            self.slots
-                .get(position)
-                .copied()
-                .flatten()
+        let views: [&wgpu::TextureView; BOUND_SLOTS] = std::array::from_fn(|position| {
+            self.slots[position]
                 .and_then(|slot| state.source(slot))
                 .and_then(|source| self.frames.get(&source))
                 .unwrap_or(&self.views[position])
@@ -400,6 +412,7 @@ impl PassBindings {
             device,
             layout,
             std::array::from_fn(|i| (views[i], &self.samplers[i])),
+            (&self.environment.0, &self.environment.1),
             (&self.cube.0, &self.cube.1),
         )
     }
@@ -1231,10 +1244,17 @@ impl Gfx {
     /// nothing: white for dark, since it multiplies, and black for glow, since it adds.
     fn slot_group(
         &self,
-        slots: [(&wgpu::TextureView, &wgpu::Sampler); GROUP_SLOTS],
+        slots: [(&wgpu::TextureView, &wgpu::Sampler); BOUND_SLOTS],
+        environment: (&wgpu::TextureView, &wgpu::Sampler),
         cube: (&wgpu::TextureView, &wgpu::Sampler),
     ) -> wgpu::BindGroup {
-        slot_bind_group(&self.render_state.device, &self.texture_layout, slots, cube)
+        slot_bind_group(
+            &self.render_state.device,
+            &self.texture_layout,
+            slots,
+            environment,
+            cube,
+        )
     }
 
     /// One `NiSourceTexture`, embedded or from the library on disk.
@@ -1383,30 +1403,25 @@ impl Gfx {
     ) -> (wgpu::BindGroup, PassBindings) {
         // a slot the shape does not use has to change nothing, and what that means depends
         // on how the slot is combined
-        // the environment map defaults to black, since it adds rather than multiplies
-        let mut views: [wgpu::TextureView; GROUP_SLOTS] = std::array::from_fn(|position| {
-            match position < BOUND_SLOTS {
-                true => neutral[pass.absent[position] as usize].clone(),
-                false => neutral[shaders::Absent::Black as usize].clone(),
-            }
-        });
+        let mut views: [wgpu::TextureView; BOUND_SLOTS] =
+            std::array::from_fn(|position| neutral[pass.absent[position] as usize].clone());
         let default_sampling = shaders::Sampling {
             address: (wgpu::AddressMode::Repeat, wgpu::AddressMode::Repeat),
             filter: wgpu::FilterMode::Linear,
         };
-        let mut samplers: [wgpu::Sampler; GROUP_SLOTS] = std::array::from_fn(|position| {
-            match position < BOUND_SLOTS {
-                true => self.sampler(pass.address[position].unwrap_or(default_sampling)),
-                // a reflection runs off the edge of its map, so it clamps rather than wrapping
-                false => self.sampler(shaders::Sampling {
-                    address: (
-                        wgpu::AddressMode::ClampToEdge,
-                        wgpu::AddressMode::ClampToEdge,
-                    ),
-                    filter: wgpu::FilterMode::Linear,
-                }),
-            }
+        let mut samplers: [wgpu::Sampler; BOUND_SLOTS] = std::array::from_fn(|position| {
+            self.sampler(pass.address[position].unwrap_or(default_sampling))
         });
+        // a reflection runs off the edge of its map, so it clamps rather than wrapping, and it
+        // starts black because it adds rather than multiplies
+        let reflection_sampling = shaders::Sampling {
+            address: (
+                wgpu::AddressMode::ClampToEdge,
+                wgpu::AddressMode::ClampToEdge,
+            ),
+            filter: wgpu::FilterMode::Linear,
+        };
+        let mut env_view = neutral[shaders::Absent::Black as usize].clone();
 
         for (position, slot) in slots.iter().enumerate() {
             let Some(slot) = slot else { continue };
@@ -1453,13 +1468,7 @@ impl Gfx {
         // A cube map is a second binding kind rather than another slot, so it is resolved
         // separately and the blank one stands in wherever a shape reflects nothing.
         let mut cube_view = blank_cube.clone();
-        let cube_sampler = self.sampler(shaders::Sampling {
-            address: (
-                wgpu::AddressMode::ClampToEdge,
-                wgpu::AddressMode::ClampToEdge,
-            ),
-            filter: wgpu::FilterMode::Linear,
-        });
+        let reflection_sampler = self.sampler(reflection_sampling);
         if let Some(Block::NiTextureEffect(effect)) = environment.get(&nif.blocks) {
             let source = effect.source_texture_ref;
             match effect.coordinate_generation_type {
@@ -1475,14 +1484,15 @@ impl Gfx {
                     if let Some(view) =
                         Self::cached(cache, source, || self.source_texture(nif, source, library))
                     {
-                        views[ENV_SLOT] = view;
+                        env_view = view;
                     }
                 }
             }
         }
         let texture = self.slot_group(
             std::array::from_fn(|i| (&views[i], &samplers[i])),
-            (&cube_view, &cube_sampler),
+            (&env_view, &reflection_sampler),
+            (&cube_view, &reflection_sampler),
         );
         // Which slot each binding position reads, so a flipped frame lands in the right one.
         // A position reading anything but a plain slot cannot be flipped and stays as it is.
@@ -1522,7 +1532,8 @@ impl Gfx {
         let bindings = PassBindings {
             views,
             samplers,
-            cube: (cube_view, cube_sampler),
+            environment: (env_view, reflection_sampler.clone()),
+            cube: (cube_view, reflection_sampler),
             slots: bound_slots,
             frames,
         };
@@ -1652,18 +1663,10 @@ impl Gfx {
             lod: None,
             reach: reach * visit.transform.scale.abs(),
             pipeline: self.pipeline(state, module),
-            // A particle reflects nothing, so both environment bindings are black. Filling
-            // every position with the sprite left the environment slot reading it, and the
-            // fixed function pass adds that slot on top of what it already drew: each particle
-            // was laying a reflection mapped copy of itself over itself.
+            // a particle reflects nothing, so both reflections are black
             texture: self.slot_group(
-                std::array::from_fn(|position| {
-                    let view = match position < BOUND_SLOTS {
-                        true => &view,
-                        false => blank,
-                    };
-                    (view, &sampler)
-                }),
+                std::array::from_fn(|_| (&view, &sampler)),
+                (blank, &sampler),
                 (blank_cube, &sampler),
             ),
             bind_group: device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1716,6 +1719,7 @@ impl Gfx {
             self.upload_texture(1, 1, &texel.texel())
         });
         let white = neutral[shaders::Absent::White as usize].clone();
+        let black = neutral[shaders::Absent::Black as usize].clone();
         // shapes whose texture could not be loaded get a checker rather than white
         let missing = {
             let (width, height, rgba) = library::placeholder();
@@ -2370,9 +2374,12 @@ impl Gfx {
                         .as_entire_binding(),
                 }],
             }),
-            // the layout carries a texture group whether the shader samples it or not
+            // The layout carries a texture group whether the shader samples it or not. The
+            // grid draws with `fs_line`, which reads none of these, but the reflections are
+            // black rather than white so that stays true if it ever gets a lit pass.
             texture: self.slot_group(
                 std::array::from_fn(|_| (&white, &samplers_for_grid)),
+                (&black, &samplers_for_grid),
                 (&blank_cube, &samplers_for_grid),
             ),
             spacing,
