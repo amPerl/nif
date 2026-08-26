@@ -13,24 +13,24 @@ pub struct Matrix22 {
 #[derive(Debug, PartialEq, BinRead, BinWrite, Clone, Copy)]
 #[cfg_attr(feature = "facet", derive(facet::Facet))]
 pub struct Matrix33 {
-    pub column_major: [f32; 9],
+    pub row_major: [f32; 9],
 }
 
 impl Matrix33 {
     pub const IDENTITY: Matrix33 = Matrix33 {
-        column_major: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+        row_major: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
     };
 
     pub fn get(&self, row: usize, col: usize) -> Option<f32> {
         if row > 2 || col > 2 {
             return None;
         }
-        self.column_major.get(row * 3 + col).copied()
+        self.row_major.get(row * 3 + col).copied()
     }
 
     pub fn mul(&self, rhs: &Matrix33) -> Matrix33 {
-        let a = &self.column_major;
-        let b = &rhs.column_major;
+        let a = &self.row_major;
+        let b = &rhs.row_major;
         let mut out = [0.0f32; 9];
         for row in 0..3 {
             for col in 0..3 {
@@ -41,11 +41,11 @@ impl Matrix33 {
                 out[row * 3 + col] = sum;
             }
         }
-        Matrix33 { column_major: out }
+        Matrix33 { row_major: out }
     }
 
     pub fn mul_vector(&self, v: &Vector3) -> Vector3 {
-        let m = &self.column_major;
+        let m = &self.row_major;
         Vector3 {
             x: m[0] * v.x + m[1] * v.y + m[2] * v.z,
             y: m[3] * v.x + m[4] * v.y + m[5] * v.z,
@@ -63,7 +63,7 @@ impl Default for Matrix33 {
 #[cfg(feature = "glam")]
 impl From<&Matrix33> for glam::Mat3 {
     fn from(val: &Matrix33) -> Self {
-        glam::Mat3::from_cols_array(&val.column_major).transpose()
+        glam::Mat3::from_cols_array(&val.row_major).transpose()
     }
 }
 
@@ -71,7 +71,7 @@ impl From<&Matrix33> for glam::Mat3 {
 impl From<glam::Mat3> for Matrix33 {
     fn from(val: glam::Mat3) -> Self {
         Matrix33 {
-            column_major: val.transpose().to_cols_array(),
+            row_major: val.transpose().to_cols_array(),
         }
     }
 }
@@ -184,13 +184,13 @@ mod tests {
     fn rot_z(degrees: f32) -> Matrix33 {
         let (s, c) = degrees.to_radians().sin_cos();
         Matrix33 {
-            column_major: [c, -s, 0.0, s, c, 0.0, 0.0, 0.0, 1.0],
+            row_major: [c, -s, 0.0, s, c, 0.0, 0.0, 0.0, 1.0],
         }
     }
 
     fn rot_messy() -> Matrix33 {
         rot_z(37.0).mul(&Matrix33 {
-            column_major: [
+            row_major: [
                 1.0,
                 0.0,
                 0.0,
@@ -275,7 +275,7 @@ mod tests {
     #[test]
     fn matrix_get_is_row_major() {
         let m = Matrix33 {
-            column_major: [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+            row_major: [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
         };
         assert_eq!(m.get(0, 1), Some(1.0));
         assert_eq!(m.get(2, 0), Some(6.0));
@@ -308,6 +308,28 @@ mod tests {
             got,
             e
         );
+    }
+
+    #[test]
+    fn the_nine_floats_are_rows_and_not_columns() {
+        let m = Matrix33 {
+            row_major: [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+        };
+        assert_eq!(m.get(0, 1), Some(2.0));
+        assert_eq!(m.get(1, 0), Some(4.0));
+        assert!(approx(&m.mul_vector(&v(1.0, 0.0, 0.0)), &v(1.0, 4.0, 7.0)));
+        assert!(approx(&m.mul_vector(&v(0.0, 1.0, 0.0)), &v(2.0, 5.0, 8.0)));
+    }
+
+    #[cfg(feature = "glam")]
+    #[test]
+    fn glam_reads_the_same_nine_floats_as_rows() {
+        let m = Matrix33 {
+            row_major: [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+        };
+        let g = glam::Mat3::from(&m);
+        assert_eq!(g.row(0).to_array(), [1.0, 2.0, 3.0]);
+        assert_eq!(g.row(1).to_array(), [4.0, 5.0, 6.0]);
     }
 
     #[cfg(feature = "glam")]

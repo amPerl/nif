@@ -643,7 +643,7 @@ fn scalar(peek: Peek<'_, '_>) -> Option<Value> {
     if let Ok(m) = peek.get::<Matrix33>() {
         // stored row by row despite the field name, so this prints rows
         let row = |i: usize| {
-            let r = &m.column_major[i * 3..i * 3 + 3];
+            let r = &m.row_major[i * 3..i * 3 + 3];
             format!("{}, {}, {}", r[0], r[1], r[2])
         };
         return Some(Value::Text(format!(

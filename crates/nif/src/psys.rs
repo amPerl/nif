@@ -797,7 +797,7 @@ mod tests {
         };
         // half a turn about x, which sends z to -z
         let flipped = Matrix33 {
-            column_major: [1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, -1.0],
+            row_major: [1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, -1.0],
         };
         let blocks = vec![
             node(vec![1, 2], Matrix33::IDENTITY),
