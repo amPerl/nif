@@ -20,14 +20,26 @@ pub struct NiLookAtInterpolator {
     pub interpolator_scale: BlockRef,
 }
 
+/// Which of the object's own axes is aimed at the target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LookAxis {
+    X,
+    Y,
+    Z,
+}
+
 impl NiLookAtInterpolator {
     pub fn flip(&self) -> bool {
         self.flags & 0x0001 != 0
     }
-    pub fn look_y_axis(&self) -> bool {
-        self.flags & 0x0002 != 0
-    }
-    pub fn look_z_axis(&self) -> bool {
-        self.flags & 0x0004 != 0
+
+    /// The axis is a two bit field rather than a bit each, so reading the bits apart leaves no
+    /// way to tell the x case from a value nothing set.
+    pub fn axis(&self) -> LookAxis {
+        match (self.flags & 0x0006) >> 1 {
+            1 => LookAxis::Y,
+            2 => LookAxis::Z,
+            _ => LookAxis::X,
+        }
     }
 }

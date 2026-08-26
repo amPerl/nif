@@ -132,6 +132,10 @@ struct Frame {
 }
 
 pub struct Walk<'a> {
+    /// Where every object ended up in a pass that left the look at aims alone, so the aiming
+    /// pass has its targets to point at. Empty unless the file carries a look at.
+    #[cfg(feature = "glam")]
+    aimed_at: std::collections::HashMap<usize, crate::common::Vector3>,
     blocks: &'a [Block],
     stack: Vec<Frame>,
     path: Vec<usize>,
@@ -165,6 +169,8 @@ impl<'a> Walk<'a> {
             time: None,
             #[cfg(feature = "glam")]
             camera: None,
+            #[cfg(feature = "glam")]
+            aimed_at: std::collections::HashMap::new(),
         }
     }
 
@@ -190,6 +196,8 @@ impl<'a> Walk<'a> {
             time: None,
             #[cfg(feature = "glam")]
             camera: None,
+            #[cfg(feature = "glam")]
+            aimed_at: std::collections::HashMap::new(),
         }
     }
 
@@ -203,6 +211,30 @@ impl<'a> Walk<'a> {
     #[cfg(feature = "glam")]
     pub fn at_time(mut self, time: f32) -> Self {
         self.time = Some(time);
+        // A look at interpolator aims one object at another, so where the other has ended up has
+        // to be known before this walk reaches the node doing the aiming. A pass without them
+        // supplies it, which is the same answer the engine gets: it reads the target's world
+        // position from the update before and admits to being a frame behind.
+        #[cfg(feature = "glam")]
+        if self
+            .blocks
+            .iter()
+            .any(|block| matches!(block, Block::NiLookAtInterpolator(_)))
+        {
+            let roots: Vec<usize> = self.stack.iter().map(|frame| frame.index).collect();
+            self.aimed_at = Walk::from_roots(self.blocks, roots)
+                .at_rough_time(time)
+                .map(|visit| (visit.index, visit.transform.translation))
+                .collect();
+        }
+        self
+    }
+
+    /// `at_time` without resolving the look at aims, which is what the pass that places their
+    /// targets uses. Resolving them there would need the pass it is part of.
+    #[cfg(feature = "glam")]
+    fn at_rough_time(mut self, time: f32) -> Self {
+        self.time = Some(time);
         self
     }
 
@@ -212,6 +244,52 @@ impl<'a> Walk<'a> {
     pub fn seen_from(mut self, camera: crate::billboard::Camera) -> Self {
         self.camera = Some(camera);
         self
+    }
+
+    /// The world rotation a look at controller on this object asks for, or `None` where nothing
+    /// aims it or its target cannot be placed.
+    #[cfg(feature = "glam")]
+    fn aim_of(
+        &self,
+        object: &crate::blocks::NiAvObject,
+        index: usize,
+        world: &NiTransform,
+        time: f32,
+    ) -> Option<crate::common::Matrix33> {
+        if self.aimed_at.is_empty() {
+            return None;
+        }
+        let mut next = object.controller_ref;
+        for _ in 0..64 {
+            let block = next.get(self.blocks)?;
+            let controller = block.as_time_controller()?;
+            if let Block::NiTransformController(transform) = block {
+                if let Some(Block::NiLookAtInterpolator(aim)) =
+                    transform.base.interpolator_ref.get(self.blocks)
+                {
+                    if !controller.is_active() {
+                        return None;
+                    }
+                    let target = aim.look_at.index()?;
+                    // a node aiming at itself has nothing to aim along
+                    if target == index {
+                        return None;
+                    }
+                    let at = self.aimed_at.get(&target)?;
+                    let (_, _, roll) =
+                        crate::anim::look_at_parts(self.blocks, aim, controller.local_time(time));
+                    return crate::anim::look_at_rotation(
+                        glam::Vec3::from(&world.translation),
+                        glam::Vec3::from(at),
+                        aim.flip(),
+                        aim.axis(),
+                        roll,
+                    );
+                }
+            }
+            next = controller.next_controller_ref;
+        }
+        None
     }
 
     fn select_lod(&self, node: &NiLODNode, child_count: usize) -> Selection {
@@ -274,6 +352,14 @@ impl<'a> Iterator for Walk<'a> {
                     #[cfg(feature = "glam")]
                     if let (Block::NiBillboardNode(node), Some(camera)) = (block, self.camera) {
                         if let Some(rotation) = node.billboard_mode.orient(&world, &camera) {
+                            world.rotation = rotation;
+                        }
+                    }
+                    // the aim is a world rotation already, so it replaces one rather than
+                    // being composed into the parent the way the engine does it
+                    #[cfg(feature = "glam")]
+                    if let Some(time) = self.time {
+                        if let Some(rotation) = self.aim_of(av, frame.index, &world, time) {
                             world.rotation = rotation;
                         }
                     }

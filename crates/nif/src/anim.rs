@@ -1,8 +1,9 @@
 use glam::{Mat3, Quat, Vec3};
 
 use crate::blocks::{
-    Block, GeomMorpherFlags, NiAvObject, NiGeometry, NiMaterialProperty, NiTexturingProperty,
-    NiTimeController, NiTransformData, NiTransformInterpolator, TextureSlot, TextureTransform,
+    Block, GeomMorpherFlags, LookAxis, NiAvObject, NiGeometry, NiLookAtInterpolator,
+    NiMaterialProperty, NiTexturingProperty, NiTimeController, NiTransformData,
+    NiTransformInterpolator, TextureSlot, TextureTransform,
 };
 use crate::common::{
     BlockRef, Color4, Key, KeyGroup, KeyType, NiQuatTransform, NiTransform, Quaternion, Triangle,
@@ -92,6 +93,16 @@ pub fn transform_at(blocks: &[Block], object: &NiAvObject, time: f32) -> Option<
                 match crate::path::pose_at(blocks, interpolator, local) {
                     Some(pose) => pose,
                     None => continue,
+                }
+            }
+            // a look at aims the object at something else, which needs both of them placed
+            // first, so only what it carries itself comes out here
+            Some(Block::NiLookAtInterpolator(interpolator)) => {
+                let (translation, scale, _) = look_at_parts(blocks, interpolator, local);
+                Pose {
+                    rotation: None,
+                    translation,
+                    scale,
                 }
             }
             _ => continue,
@@ -553,6 +564,81 @@ pub fn alpha_at(blocks: &[Block], material: &NiMaterialProperty, time: f32) -> O
         return Some(keyed.unwrap_or(interpolator.value));
     }
     None
+}
+
+/// The world rotation that aims `from` at `to`, as a look at interpolator builds it.
+///
+/// The chosen axis points along the line between them, world up fills the second axis with
+/// whatever is left of it once the aim is taken out, and the third closes the set. Where the aim
+/// is within a thousandth of straight up there is no world up left to use, and world y stands in.
+///
+/// **The aim is reversed when `flip` is clear**, not when it is set, which reads backwards until
+/// you notice that an object faces along its own negative axis. Every look at in this game leaves
+/// it clear.
+pub fn look_at_rotation(
+    from: Vec3,
+    to: Vec3,
+    flip: bool,
+    axis: LookAxis,
+    roll: f32,
+) -> Option<crate::common::Matrix33> {
+    let offset = to - from;
+    if offset.length_squared() < 0.001 {
+        return None;
+    }
+    let mut aim = offset.normalize();
+
+    // straight up leaves nothing of world up to build on, so world y takes its place
+    let (mut up, along) = match aim.z.abs() > 0.999 {
+        true => (Vec3::Y, aim.y),
+        false => (Vec3::Z, aim.z),
+    };
+    up = (up - aim * along).normalize_or_zero();
+    if up == Vec3::ZERO {
+        return None;
+    }
+    if !flip {
+        aim = -aim;
+    }
+    let right = up.cross(aim);
+
+    let basis = match axis {
+        LookAxis::X => Mat3::from_cols(aim, up, -right),
+        LookAxis::Y => Mat3::from_cols(right, aim, -up),
+        LookAxis::Z => Mat3::from_cols(right, up, aim),
+    };
+    // the roll turns about the object's own z after the aim, and the engine negates it
+    Some((basis * Mat3::from_rotation_z(-roll)).into())
+}
+
+/// The translation, scale and roll a look at interpolator carries of its own. Its rotation is not
+/// here: that needs where the object and its target have ended up, which only a traversal knows.
+pub fn look_at_parts(
+    blocks: &[Block],
+    interpolator: &NiLookAtInterpolator,
+    time: f32,
+) -> (Option<Vector3>, Option<f32>, f32) {
+    let float_at = |reference: BlockRef| -> Option<f32> {
+        match reference.get(blocks)? {
+            Block::NiFloatInterpolator(interpolator) => match interpolator.data_ref.get(blocks) {
+                Some(Block::NiFloatData(data)) => data.data.sample(time).or(Some(interpolator.value)),
+                _ => Some(interpolator.value),
+            },
+            _ => None,
+        }
+    };
+    let translation = match interpolator.interpolator_translation.get(blocks) {
+        Some(Block::NiPoint3Interpolator(point)) => match point.data_ref.get(blocks) {
+            Some(Block::NiPosData(data)) => data.data.sample(time).or(Some(point.value)),
+            _ => Some(point.value),
+        },
+        _ => None,
+    };
+    (
+        translation,
+        float_at(interpolator.interpolator_scale),
+        float_at(interpolator.interpolator_roll).unwrap_or(0.0),
+    )
 }
 
 /// The dimmer a light is turned down to at `time`. None where nothing drives it, so the caller
