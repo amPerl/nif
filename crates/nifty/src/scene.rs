@@ -149,6 +149,7 @@ pub fn camera_uniform(
     textures: bool,
     light: &Light,
     lights: &[nif::light::Lit],
+    origin: Vec3,
 ) -> [f32; CAMERA_FLOATS as usize] {
     let mut out = [0.0; CAMERA_FLOATS as usize];
     out[..16].copy_from_slice(&view_proj.to_cols_array());
@@ -168,11 +169,13 @@ pub fn camera_uniform(
             // an ambient light is folded into the ambient term rather than reaching this
             nif::light::Falloff::Ambient => continue,
         };
-        let origin = match lit.falloff {
+        // the shader works in the space the scene is drawn in, which is moved to sit near zero,
+        // so a light's position has to be moved with it. A direction is unaffected by a move.
+        let at = match lit.falloff {
             nif::light::Falloff::Directional => lit.direction,
-            _ => lit.position,
+            _ => lit.position - origin,
         };
-        out[row..row + 4].copy_from_slice(&[origin.x, origin.y, origin.z, kind]);
+        out[row..row + 4].copy_from_slice(&[at.x, at.y, at.z, kind]);
         out[row + 4..row + 8].copy_from_slice(&[
             lit.direction.x,
             lit.direction.y,
@@ -3104,11 +3107,61 @@ mod tests {
         );
     }
 
+    /// The scene is drawn moved to sit near zero, and the shader compares a light's position
+    /// against a surface in that same moved space. A position uploaded in the file's own space
+    /// is off by the whole origin, which is thousands of units for a model parked far out.
+    /// A direction is not a position and must not move.
+    #[test]
+    fn a_light_position_reaches_the_shader_in_the_space_the_scene_is_drawn_in() {
+        use nif::light::{Falloff, Lit};
+        let origin = Vec3::new(9000.0, -4000.0, 25.0);
+        let at = Vec3::new(9010.0, -3995.0, 30.0);
+        let aim = Vec3::new(0.0, 0.0, -1.0);
+        let lit = |falloff| Lit {
+            falloff,
+            position: at,
+            direction: aim,
+            ambient: Vec3::ZERO,
+            diffuse: Vec3::ONE,
+            specular: Vec3::ZERO,
+            attenuation: Vec3::X,
+            cos_cutoff: -1.0,
+            exponent: 0.0,
+        };
+
+        let light = Light::default();
+        for falloff in [Falloff::Point, Falloff::Spot] {
+            let filled = super::camera_uniform(
+                nif::glam::Mat4::IDENTITY,
+                Vec3::ZERO,
+                true,
+                true,
+                &light,
+                &[lit(falloff)],
+                origin,
+            );
+            let placed = Vec3::new(filled[44], filled[45], filled[46]);
+            assert_eq!(placed, at - origin, "{falloff:?} was not moved with the scene");
+        }
+
+        // a directional light carries a direction in that slot, and moving it would tilt it
+        let filled = super::camera_uniform(
+            nif::glam::Mat4::IDENTITY,
+            Vec3::ZERO,
+            true,
+            true,
+            &light,
+            &[lit(Falloff::Directional)],
+            origin,
+        );
+        assert_eq!(Vec3::new(filled[44], filled[45], filled[46]), aim);
+    }
+
     #[test]
     fn the_camera_uniform_carries_the_light_at_the_end() {
         let light = Light::default();
         let filled =
-            super::camera_uniform(nif::glam::Mat4::IDENTITY, Vec3::ZERO, true, true, &light, &[]);
+            super::camera_uniform(nif::glam::Mat4::IDENTITY, Vec3::ZERO, true, true, &light, &[], Vec3::ZERO);
 
         assert_eq!(filled.len(), super::CAMERA_FLOATS as usize);
         assert_eq!(&filled[24..40], &light.uniform());

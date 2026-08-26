@@ -1067,6 +1067,7 @@ impl Viewer<'_> {
             self.state.textures,
             &light_now,
             &scene.lights,
+            scene.origin,
         );
         gfx.render_state
             .queue
