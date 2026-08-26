@@ -30,6 +30,9 @@ pub struct Request {
     pub pitch: f32,
     /// The window to open. The preview is a part of it, so this sets how large the images are.
     pub size: [f32; 2],
+    /// Where on the timeline to shoot, in the file's own seconds. Without this a capture only
+    /// ever sees the resting pose, which shows nothing of an animated feature.
+    pub time: Option<f32>,
 }
 
 impl Default for Request {
@@ -40,6 +43,7 @@ impl Default for Request {
             // the pitch the viewer opens at, so a capture matches what opening the file shows
             pitch: crate::scene::Camera::default().pitch.to_degrees(),
             size: [1280.0, 900.0],
+            time: None,
         }
     }
 }
@@ -67,6 +71,8 @@ pub struct Aim {
     /// Degrees.
     pub yaw: f32,
     pub pitch: f32,
+    /// Seconds, or `None` to leave the timeline where it is.
+    pub time: Option<f32>,
 }
 
 /// Where a capture run has got to. Each open document is walked through every yaw in turn, and
@@ -110,6 +116,7 @@ impl Capture {
             document: self.document,
             yaw: *self.todo.first()?,
             pitch: self.request.pitch,
+            time: self.request.time,
         })
     }
 
@@ -169,10 +176,15 @@ impl Capture {
             self.settle -= 1;
             return;
         }
+        // the time goes in the name too, or two runs of the same file overwrite each other
+        let at = match self.request.time {
+            Some(time) => format!("-t{time:.2}"),
+            None => String::new(),
+        };
         let path = self
             .request
             .dir
-            .join(format!("{stem}-yaw{:03}.png", yaw.round() as i64));
+            .join(format!("{stem}-yaw{:03}{at}.png", yaw.round() as i64));
         ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
         self.inflight = Some(Shot { path, rect });
     }

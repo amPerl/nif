@@ -11,6 +11,7 @@
 //!                     and exit. DIR defaults to `captures`.
 //!   --yaw-step=DEG    degrees between one capture and the next, default 45.
 //!   --pitch=DEG       height above the horizon to capture from, default the viewer's own.
+//!   --time=SECONDS    where on the timeline to capture, default the resting pose.
 //!   --size=WxH        the window to open, which decides how large the captured images are.
 
 mod app;
@@ -60,6 +61,14 @@ fn parse(raw: impl Iterator<Item = String>) -> Result<Args, String> {
             }
             "--yaw-step" => request.step = degrees("--yaw-step")?,
             "--pitch" => request.pitch = degrees("--pitch")?,
+            "--time" => {
+                let value = value.ok_or("--time wants a value, as --time=1.5")?;
+                request.time = Some(
+                    value
+                        .parse::<f32>()
+                        .map_err(|_| format!("--time wants seconds, not `{value}`"))?,
+                );
+            }
             "--size" => {
                 let value = value.ok_or("--size wants a value, as --size=1280x900")?;
                 let (width, height) = value
@@ -141,7 +150,8 @@ fn main() -> eframe::Result {
 }
 
 const USAGE: &str = "usage: nifty [file.nif ...] [texture-dir ...] \
-                     [--capture[=DIR]] [--yaw-step=DEG] [--pitch=DEG] [--size=WxH]";
+                     [--capture[=DIR]] [--yaw-step=DEG] [--pitch=DEG] [--size=WxH] \
+                     [--time=SECONDS]";
 
 #[cfg(test)]
 mod tests {
@@ -174,6 +184,13 @@ mod tests {
     #[test]
     fn an_unknown_option_is_not_a_file_name() {
         assert!(parsed(&["--yaw=45"]).is_err());
+    }
+
+    #[test]
+    fn a_time_is_seconds_on_the_timeline() {
+        let args = parsed(&["a.nif", "--capture", "--time=2.5"]).unwrap();
+        assert_eq!(args.capture.unwrap().time, Some(2.5));
+        assert!(parsed(&["a.nif", "--capture", "--time"]).is_err());
     }
 
     #[test]
