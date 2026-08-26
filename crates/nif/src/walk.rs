@@ -107,6 +107,39 @@ impl Lights {
     }
 }
 
+/// The texture effects reaching an object, gathered down the graph the same way the lights are.
+/// An effect list holds both, and which is which is the block's own business.
+///
+/// One is all the engine reads: it takes the first environment map and leaves any others alone.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Effects {
+    environment: BlockRef,
+}
+
+impl Effects {
+    /// The environment map in force, which is the nearest to the root that switched itself on.
+    pub fn environment(&self) -> BlockRef {
+        self.environment
+    }
+
+    /// `refs` are the effects a node holds. A light sits in the same list and is gathered
+    /// separately, and an effect switched off is left out the way the engine leaves it out.
+    fn with(mut self, blocks: &[Block], refs: &[BlockRef]) -> Effects {
+        for r in refs {
+            let Some(Block::NiTextureEffect(effect)) = r.get(blocks) else {
+                continue;
+            };
+            if !effect.switch_state {
+                continue;
+            }
+            if self.environment.index().is_none() {
+                self.environment = *r;
+            }
+        }
+        self
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Visit<'a> {
     pub index: usize,
@@ -120,6 +153,8 @@ pub struct Visit<'a> {
     pub properties: Properties,
     /// The lights reaching here, from this object and every node above it.
     pub lights: Lights,
+    /// The texture effects reaching here, gathered the same way.
+    pub effects: Effects,
 }
 
 struct Frame {
@@ -129,6 +164,7 @@ struct Frame {
     hidden: bool,
     properties: Properties,
     lights: Lights,
+    effects: Effects,
 }
 
 pub struct Walk<'a> {
@@ -161,6 +197,7 @@ impl<'a> Walk<'a> {
                 depth: 0,
                 properties: Properties::default(),
                 lights: Lights::default(),
+                effects: Effects::default(),
                 hidden: false,
             }],
             path: Vec::new(),
@@ -181,6 +218,7 @@ impl<'a> Walk<'a> {
                 index,
                 properties: Properties::default(),
                 lights: Lights::default(),
+                effects: Effects::default(),
                 parent: NiTransform::IDENTITY,
                 depth: 0,
                 hidden: false,
@@ -387,9 +425,9 @@ impl<'a> Iterator for Walk<'a> {
             let properties = frame
                 .properties
                 .with(self.blocks, block.property_refs().unwrap_or(&[]));
-            let lights = frame
-                .lights
-                .with(self.blocks, block.effect_refs().unwrap_or(&[]));
+            let effect_refs = block.effect_refs().unwrap_or(&[]);
+            let lights = frame.lights.with(self.blocks, effect_refs);
+            let effects = frame.effects.with(self.blocks, effect_refs);
 
             let children = block.child_refs().unwrap_or(&[]);
             if !children.is_empty() {
@@ -406,6 +444,7 @@ impl<'a> Iterator for Walk<'a> {
                             hidden,
                             properties,
                             lights,
+                            effects,
                         });
                     }
                 };
@@ -430,6 +469,7 @@ impl<'a> Iterator for Walk<'a> {
                 hidden,
                 properties,
                 lights,
+                effects,
             });
         }
         None
@@ -549,6 +589,81 @@ mod tests {
         ];
         assert_eq!(lights_on_the_shape(&blocks, 2), vec![BlockRef::Index(4)]);
         assert!(lights_on_the_shape(&blocks, 3).is_empty());
+    }
+
+    fn texture_effect(switch_state: bool) -> Block {
+        Block::NiTextureEffect(crate::blocks::NiTextureEffect {
+            base: crate::blocks::NiDynamicEffect {
+                base: av_object(),
+                switch_state,
+                unaffected_node_refs: Vec::new(),
+            },
+            model_projection_matrix: crate::common::Matrix33::IDENTITY,
+            model_projection_translation: crate::common::Vector3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            texture_filtering: crate::blocks::TexFilterMode::Trilerp,
+            texture_clamping: crate::blocks::TexClampMode::ClampSClampT,
+            texture_type: 2,
+            coordinate_generation_type: 2,
+            source_texture_ref: BlockRef::None,
+            enable_plane: 0,
+            plane: crate::common::NiPlane {
+                normal: crate::common::Vector3 { x: 0.0, y: 0.0, z: 1.0 },
+                constant: 0.0,
+            },
+        })
+    }
+
+    fn effect_on_the_shape(blocks: &[Block], at: usize) -> BlockRef {
+        Walk::from_roots(blocks, [0])
+            .find(|v| v.index == at)
+            .expect("the shape is reachable")
+            .effects
+            .environment()
+    }
+
+    /// A texture effect rides the same effect list as a light and reaches down the same way, so
+    /// a shape under one picks it up however deep it sits.
+    #[test]
+    fn a_texture_effect_reaches_the_shapes_under_it() {
+        let blocks = vec![
+            node(vec![1], vec![3]),
+            node(vec![2], vec![]),
+            shape(),
+            texture_effect(true),
+        ];
+        assert_eq!(effect_on_the_shape(&blocks, 2), BlockRef::Index(3));
+    }
+
+    /// The engine reads one environment map and leaves the rest, so the nearest to the root wins
+    /// rather than the last one gathered.
+    #[test]
+    fn only_the_first_environment_map_is_kept() {
+        let blocks = vec![
+            node(vec![1], vec![3]),
+            node(vec![2], vec![4]),
+            shape(),
+            texture_effect(true),
+            texture_effect(true),
+        ];
+        assert_eq!(effect_on_the_shape(&blocks, 2), BlockRef::Index(3));
+    }
+
+    /// One switched off is left out, and a light in the same list is not mistaken for one.
+    #[test]
+    fn a_switched_off_effect_and_a_light_are_both_passed_over() {
+        let blocks = vec![
+            node(vec![1], vec![2, 3]),
+            shape(),
+            texture_effect(false),
+            directional(true, 1.0),
+        ];
+        assert_eq!(effect_on_the_shape(&blocks, 1), BlockRef::None);
+        // and the light in that same list still comes through its own way
+        assert_eq!(lights_on_the_shape(&blocks, 1), vec![BlockRef::Index(3)]);
     }
 
     /// A light switched off is not carried at all.
