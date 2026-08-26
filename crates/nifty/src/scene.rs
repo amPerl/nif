@@ -212,12 +212,88 @@ pub fn camera_uniform(
     out
 }
 
+/// The slots a flip controller is ever seen to drive, in the order `FlipState` holds them.
+pub const FLIPPABLE: [TextureSlot; 3] = [TextureSlot::Base, TextureSlot::Glow, TextureSlot::Gloss];
+
+/// Which source each flippable slot is showing, for one texturing property at one time.
+///
+/// A property is commonly flipped on two slots at once, so what a shape binds depends on the
+/// combination rather than on any one slot's frame. This is the cache key for that, and it is
+/// deliberately not a set of independent lookups: the bindings are one group.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Default, Debug)]
+pub struct FlipState {
+    sources: [Option<usize>; FLIPPABLE.len()],
+}
+
+impl FlipState {
+    pub fn set(&mut self, slot: TextureSlot, source: usize) {
+        if let Some(at) = FLIPPABLE.iter().position(|s| *s == slot) {
+            self.sources[at] = Some(source);
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.sources.iter().all(Option::is_none)
+    }
+
+    fn source(&self, slot: TextureSlot) -> Option<usize> {
+        let at = FLIPPABLE.iter().position(|s| *s == slot)?;
+        self.sources[at]
+    }
+}
+
 /// Lives in `callback_resources`, which is all `paint` can reach.
 pub struct Preview {
     wire: wgpu::RenderPipeline,
     highlight: wgpu::RenderPipeline,
     grid: wgpu::RenderPipeline,
     camera_bind_group: wgpu::BindGroup,
+    /// What the texture group is laid out as, so a flipped combination can be assembled here
+    /// rather than only where the scene is built.
+    texture_layout: wgpu::BindGroupLayout,
+    /// Bind groups for combinations the animation has actually reached, by shape, pass and
+    /// combination. Built on demand: the cross product reaches 2,601 for one property in this
+    /// corpus against 102 textures, so building it up front is not an option.
+    flipped: HashMap<(usize, usize, FlipState), wgpu::BindGroup>,
+}
+
+/// The texture group's own layout, in one place because it is built both when a scene is made
+/// and later when a flip controller reaches a combination nothing has bound yet.
+fn slot_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    slots: [(&wgpu::TextureView, &wgpu::Sampler); GROUP_SLOTS],
+    cube: (&wgpu::TextureView, &wgpu::Sampler),
+) -> wgpu::BindGroup {
+    let mut entries: Vec<wgpu::BindGroupEntry> = slots
+        .iter()
+        .enumerate()
+        .flat_map(|(i, (view, sampler))| {
+            [
+                wgpu::BindGroupEntry {
+                    binding: (i * 2) as u32,
+                    resource: wgpu::BindingResource::TextureView(view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: (i * 2 + 1) as u32,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
+            ]
+        })
+        .collect();
+    entries.push(wgpu::BindGroupEntry {
+        binding: (GROUP_SLOTS * 2) as u32,
+        resource: wgpu::BindingResource::TextureView(cube.0),
+    });
+    entries.push(wgpu::BindGroupEntry {
+        binding: (GROUP_SLOTS * 2 + 1) as u32,
+        resource: wgpu::BindingResource::Sampler(cube.1),
+    });
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("nifty textures"),
+        layout,
+        entries: &entries,
+    })
 }
 
 /// Lives on the app, for building meshes when a file loads.
@@ -284,9 +360,49 @@ struct MeshPass {
     pipeline: wgpu::RenderPipeline,
     pipeline_unculled: wgpu::RenderPipeline,
     texture: wgpu::BindGroup,
-    /// Every source a flip controller can swap into this pass's first binding, by its own block.
-    /// Empty unless one drives this shape and this pass reads the base slot.
-    flip_frames: HashMap<usize, wgpu::BindGroup>,
+    /// What this pass binds when nothing is flipping, kept so a flipped combination can be
+    /// assembled later without rebuilding the shape.
+    bindings: PassBindings,
+}
+
+/// Everything a pass's texture group is built from, retained so the group can be built again
+/// with one or more slots swapped for a flip controller's current frame.
+struct PassBindings {
+    views: [wgpu::TextureView; GROUP_SLOTS],
+    samplers: [wgpu::Sampler; GROUP_SLOTS],
+    cube: (wgpu::TextureView, wgpu::Sampler),
+    /// Which slot each binding position reads, so a flipped source lands in the right one.
+    slots: [Option<TextureSlot>; BOUND_SLOTS],
+    /// Every frame any flip controller on this property can reach, uploaded once each. Empty
+    /// unless something flips this shape.
+    frames: HashMap<usize, wgpu::TextureView>,
+}
+
+impl PassBindings {
+    /// This pass's group with each flipped slot swapped for the frame it is showing. Falls back
+    /// to whatever the shape carries wherever a frame is missing.
+    fn group(
+        &self,
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        state: FlipState,
+    ) -> wgpu::BindGroup {
+        let views: [&wgpu::TextureView; GROUP_SLOTS] = std::array::from_fn(|position| {
+            self.slots
+                .get(position)
+                .copied()
+                .flatten()
+                .and_then(|slot| state.source(slot))
+                .and_then(|source| self.frames.get(&source))
+                .unwrap_or(&self.views[position])
+        });
+        slot_bind_group(
+            device,
+            layout,
+            std::array::from_fn(|i| (views[i], &self.samplers[i])),
+            (&self.cube.0, &self.cube.1),
+        )
+    }
 }
 
 /// A particle system's drawing side. The geometry is generated per frame rather than stored, so
@@ -444,8 +560,9 @@ pub struct Frame {
     /// A shape's shader attributes where a controller drives one of them, by shape block. Empty
     /// unless a file animates an attribute, which is rare and was easy to miss.
     pub params: HashMap<usize, [f32; 4]>,
-    /// The source a flip controller has swapped into the base slot, by texturing property block.
-    pub flip: HashMap<usize, usize>,
+    /// What each texturing property is flipping to this frame, across every slot a controller
+    /// drives. A property flipped on two slots at once is the common case, not the exception.
+    pub flip: HashMap<usize, FlipState>,
     /// Where each particle system's particles are, by the system's own block. Simulated by the
     /// caller, since the state has to outlive a scene rebuild.
     pub particles: HashMap<usize, Vec<nif::psys::Particle>>,
@@ -1013,6 +1130,8 @@ impl Gfx {
                 highlight,
                 grid,
                 camera_bind_group,
+                texture_layout: texture_layout.clone(),
+                flipped: HashMap::new(),
             });
 
         // wgpu reports validation failures through `log`, and nothing here installs a logger
@@ -1096,37 +1215,7 @@ impl Gfx {
         slots: [(&wgpu::TextureView, &wgpu::Sampler); GROUP_SLOTS],
         cube: (&wgpu::TextureView, &wgpu::Sampler),
     ) -> wgpu::BindGroup {
-        let mut entries: Vec<wgpu::BindGroupEntry> = slots
-            .iter()
-            .enumerate()
-            .flat_map(|(i, (view, sampler))| {
-                [
-                    wgpu::BindGroupEntry {
-                        binding: (i * 2) as u32,
-                        resource: wgpu::BindingResource::TextureView(view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: (i * 2 + 1) as u32,
-                        resource: wgpu::BindingResource::Sampler(sampler),
-                    },
-                ]
-            })
-            .collect();
-        entries.push(wgpu::BindGroupEntry {
-            binding: (GROUP_SLOTS * 2) as u32,
-            resource: wgpu::BindingResource::TextureView(cube.0),
-        });
-        entries.push(wgpu::BindGroupEntry {
-            binding: (GROUP_SLOTS * 2 + 1) as u32,
-            resource: wgpu::BindingResource::Sampler(cube.1),
-        });
-        self.render_state
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("nifty textures"),
-                layout: &self.texture_layout,
-                entries: &entries,
-            })
+        slot_bind_group(&self.render_state.device, &self.texture_layout, slots, cube)
     }
 
     /// One `NiSourceTexture`, embedded or from the library on disk.
@@ -1272,7 +1361,7 @@ impl Gfx {
         cache: &mut HashMap<usize, wgpu::TextureView>,
         named_textures: &mut HashMap<&'static str, wgpu::TextureView>,
         missing: &wgpu::TextureView,
-    ) -> (wgpu::BindGroup, HashMap<usize, wgpu::BindGroup>) {
+    ) -> (wgpu::BindGroup, PassBindings) {
         // a slot the shape does not use has to change nothing, and what that means depends
         // on how the slot is combined
         // the environment map defaults to black, since it adds rather than multiplies
@@ -1376,17 +1465,25 @@ impl Gfx {
             std::array::from_fn(|i| (&views[i], &samplers[i])),
             (&cube_view, &cube_sampler),
         );
-        // every frame a flip controller can reach, uploaded once each and shared by block
-        let mut flip_frames = HashMap::new();
-        let base_slot_flips =
-            slots.first() == Some(&Some(shaders::Source::Slot(TextureSlot::Base)));
-        for block in nif.blocks.iter().filter(|_| base_slot_flips) {
+        // Which slot each binding position reads, so a flipped frame lands in the right one.
+        // A position reading anything but a plain slot cannot be flipped and stays as it is.
+        let bound_slots: [Option<TextureSlot>; BOUND_SLOTS] =
+            std::array::from_fn(|position| match slots.get(position).copied().flatten() {
+                Some(shaders::Source::Slot(slot)) => Some(slot),
+                _ => None,
+            });
+        // Every frame any flip controller on this property can reach, uploaded once each. Only
+        // the slots this pass actually binds are worth uploading, and only the slots anything is
+        // ever seen to flip.
+        let mut frames = HashMap::new();
+        for block in nif.blocks.iter() {
             let Block::NiFlipController(flip) = block else {
                 continue;
             };
-            if flip.target_ref.index() != texturing_block
-                || TextureSlot::from_flip_index(flip.texture_slot) != Some(TextureSlot::Base)
-            {
+            let Some(slot) = TextureSlot::from_flip_index(flip.texture_slot) else {
+                continue;
+            };
+            if flip.target_ref.index() != texturing_block || !bound_slots.contains(&Some(slot)) {
                 continue;
             }
             for source_ref in &flip.source_refs {
@@ -1400,19 +1497,17 @@ impl Gfx {
                             .unwrap_or_else(|| missing.clone())
                     })
                     .clone();
-                // the other two slots keep whatever the shape itself carries
-                let group = self.slot_group(
-                    std::array::from_fn(|i| {
-                        // only the first binding is swapped; the rest stay as the shape's own
-                        let view = if i == 0 { &view } else { &views[i] };
-                        (view, &samplers[i])
-                    }),
-                    (&cube_view, &cube_sampler),
-                );
-                flip_frames.insert(index, group);
+                frames.insert(index, view);
             }
         }
-        (texture, flip_frames)
+        let bindings = PassBindings {
+            views,
+            samplers,
+            cube: (cube_view, cube_sampler),
+            slots: bound_slots,
+            frames,
+        };
+        (texture, bindings)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2035,7 +2130,7 @@ impl Gfx {
                     .entry((key, unculled))
                     .or_insert_with(|| self.pipeline(unculled, module))
                     .clone();
-                let (texture, flip_frames) = self.pass_textures(
+                let (texture, bindings) = self.pass_textures(
                     nif,
                     pass,
                     resolved[index],
@@ -2053,7 +2148,7 @@ impl Gfx {
                     pipeline,
                     pipeline_unculled,
                     texture,
-                    flip_frames,
+                    bindings,
                 });
             }
             // the bits name the scene's lights, so a shape lit by a subset carries a subset
@@ -2631,10 +2726,30 @@ impl PreviewCall {
     }
 
     /// One pass's textures as of this frame, which a flip controller may have swapped.
-    fn texture_of<'a>(&'a self, mesh: &'a Mesh, pass: &'a MeshPass) -> &'a wgpu::BindGroup {
+    /// What the shape's texturing property is flipping to this frame, across every slot.
+    fn flip_state(&self, mesh: &Mesh) -> FlipState {
         mesh.texturing_block
             .and_then(|block| self.frame.flip.get(&block))
-            .and_then(|source| pass.flip_frames.get(source))
+            .copied()
+            .unwrap_or_default()
+    }
+
+    fn texture_of<'a>(
+        &'a self,
+        preview: &'a Preview,
+        mesh: &'a Mesh,
+        at: usize,
+        pass: &'a MeshPass,
+    ) -> &'a wgpu::BindGroup {
+        let state = self.flip_state(mesh);
+        if state.is_empty() {
+            return &pass.texture;
+        }
+        // filled in `prepare`, which is the only place with a device. A combination that somehow
+        // was not prepared falls back to the shape's own maps rather than dropping the draw.
+        preview
+            .flipped
+            .get(&(mesh.shape_block, at, state))
             .unwrap_or(&pass.texture)
     }
 
@@ -2691,12 +2806,31 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
     /// and leaves the material behind it alone.
     fn prepare(
         &self,
-        _device: &wgpu::Device,
+        device: &wgpu::Device,
         queue: &wgpu::Queue,
         _screen: &egui_wgpu::ScreenDescriptor,
         _encoder: &mut wgpu::CommandEncoder,
-        _resources: &mut egui_wgpu::CallbackResources,
+        resources: &mut egui_wgpu::CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
+        // A flipped shape binds a group per combination of slot frames, built the first time the
+        // animation reaches that combination. Only combinations actually visited are built, which
+        // is what keeps this off the cross product.
+        if let Some(preview) = resources.get_mut::<Preview>() {
+            for mesh in self.scene.meshes.iter().filter(|m| self.visible(m)) {
+                let state = self.flip_state(mesh);
+                if state.is_empty() {
+                    continue;
+                }
+                for (at, pass) in mesh.passes.iter().enumerate() {
+                    let key = (mesh.shape_block, at, state);
+                    if preview.flipped.contains_key(&key) {
+                        continue;
+                    }
+                    let group = pass.bindings.group(device, &preview.texture_layout, state);
+                    preview.flipped.insert(key, group);
+                }
+            }
+        }
         for mesh in &self.scene.meshes {
             // a skinned shape's vertices arrive in world space, so its node pose is not its
             // model matrix and writing one here would move it twice
@@ -2841,7 +2975,11 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
             render_pass.set_pipeline(&preview.wire);
             for mesh in self.scene.meshes.iter().filter(|m| self.visible(m)) {
                 render_pass.set_bind_group(1, &mesh.bind_group, &[]);
-                render_pass.set_bind_group(2, self.texture_of(mesh, &mesh.passes[0]), &[]);
+                render_pass.set_bind_group(
+                    2,
+                    self.texture_of(preview, mesh, 0, &mesh.passes[0]),
+                    &[],
+                );
                 render_pass.set_vertex_buffer(0, mesh.vertices.slice(..));
                 render_pass.set_index_buffer(mesh.edges.slice(..), wgpu::IndexFormat::Uint16);
                 render_pass.draw_indexed(0..mesh.edge_count, 0, 0..1);
@@ -2901,13 +3039,18 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
             for item in immediate.into_iter().chain(sorted) {
                 match item {
                     Sorted::Shape(mesh) => {
-                        for pass in &mesh.passes {
+                        for (at, pass) in mesh.passes.iter().enumerate() {
                             let pipeline = if self.cull {
                                 &pass.pipeline
                             } else {
                                 &pass.pipeline_unculled
                             };
-                            draw_pass(render_pass, mesh, pipeline, self.texture_of(mesh, pass));
+                            draw_pass(
+                                render_pass,
+                                mesh,
+                                pipeline,
+                                self.texture_of(preview, mesh, at, pass),
+                            );
                         }
                     }
                     Sorted::Particles(mesh, quads) => {
@@ -2959,7 +3102,7 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
                 continue;
             }
             render_pass.set_bind_group(1, &mesh.bind_group, &[]);
-            render_pass.set_bind_group(2, self.texture_of(mesh, &mesh.passes[0]), &[]);
+            render_pass.set_bind_group(2, self.texture_of(preview, mesh, 0, &mesh.passes[0]), &[]);
             render_pass.set_vertex_buffer(0, mesh.vertices.slice(..));
             render_pass.set_index_buffer(mesh.edges.slice(..), wgpu::IndexFormat::Uint16);
             render_pass.draw_indexed(0..mesh.edge_count, 0, 0..1);

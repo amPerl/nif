@@ -805,16 +805,19 @@ impl Viewer<'_> {
                         time,
                     ),
                 );
-                let flipped = nif::anim::flip_source_at(
-                    &loaded.nif.blocks,
-                    property,
-                    nif::blocks::TextureSlot::Base,
-                    time,
-                );
-                if let (Some(source), Some(block)) =
-                    (flipped.and_then(|r| r.index()), mesh.texturing_block)
-                {
-                    frame.flip.insert(block, source);
+                // every slot a flip controller is ever seen to drive, not just the base one:
+                // a property flipped on two at once is the common case
+                let mut flipped = crate::scene::FlipState::default();
+                for slot in crate::scene::FLIPPABLE {
+                    let source =
+                        nif::anim::flip_source_at(&loaded.nif.blocks, property, slot, time)
+                            .and_then(|r| r.index());
+                    if let Some(source) = source {
+                        flipped.set(slot, source);
+                    }
+                }
+                if let (false, Some(block)) = (flipped.is_empty(), mesh.texturing_block) {
+                    frame.flip.insert(block, flipped);
                 }
             }
         }
@@ -1457,6 +1460,9 @@ impl eframe::App for Nifty {
             } else if let Some(aim) = capture.aim() {
                 self.active = aim.document;
                 if let Some(document) = self.documents.get_mut(aim.document) {
+                    if let Some(time) = aim.time {
+                        document.state.time = time;
+                    }
                     document.state.camera.yaw = aim.yaw.to_radians();
                     document.state.camera.pitch = aim
                         .pitch
