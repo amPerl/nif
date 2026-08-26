@@ -405,11 +405,30 @@ impl PassBindings {
     }
 }
 
+/// What a particle system's own transform contributes to its particles.
+///
+/// A system flagged world space keeps only its **scale**: its particles are already in world
+/// space, so where the node sits and which way it faces are not theirs, and a node that moves
+/// leaves the particles it has already emitted behind. A system not so flagged carries them with
+/// it like any other child.
+///
+/// Every reader goes through here, the emitter placement included, because the space a particle
+/// is born into and the space it is drawn in have to be the same one.
+pub fn particle_space(pose: Mat4, world_space: bool) -> Mat4 {
+    match world_space {
+        true => Mat4::from_scale(Vec3::splat(pose.x_axis.truncate().length())),
+        false => pose,
+    }
+}
+
 /// A particle system's drawing side. The geometry is generated per frame rather than stored, so
 /// the buffers are sized once for the system's capacity and rewritten as the simulation moves.
 pub struct ParticleMesh {
     /// The NiParticleSystem this draws, which is what the frame's particles are keyed by.
     pub block: usize,
+    /// Whether the particles are already in world space, so the system's own place and turn are
+    /// not applied to them. See `particle_space`.
+    pub world_space: bool,
     /// Where the system sits when nothing animates it. The frame's pose wins when there is one,
     /// because a system whose node moves has to be drawn where picking will look for it.
     pub model: Mat4,
@@ -1621,6 +1640,10 @@ impl Gfx {
 
         Some(ParticleMesh {
             block: visit.index,
+            world_space: match nif.blocks.get(visit.index) {
+                Some(Block::NiParticleSystem(psys)) => psys.world_space,
+                _ => false,
+            },
             model: Mat4::from(&visit.transform),
             capacity,
             sorted,
@@ -2905,12 +2928,14 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
             // the pose the frame walked, so an animated system draws where it now is rather
             // than where the scene was built. Picking walks at the same time, and the two have
             // to agree or the ray tests empty space.
-            let model = self
-                .frame
-                .poses
-                .get(&mesh.block)
-                .copied()
-                .unwrap_or(mesh.model);
+            let model = particle_space(
+                self.frame
+                    .poses
+                    .get(&mesh.block)
+                    .copied()
+                    .unwrap_or(mesh.model),
+                mesh.world_space,
+            );
             let scale = model.x_axis.truncate().length();
             let model = drawn_at(self.scene.origin, model);
             let (right, up) = self.quad_axes();
@@ -3025,13 +3050,15 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
             }
             let centre = |item: &Sorted| match item {
                 Sorted::Shape(mesh) => self.center(mesh),
-                Sorted::Particles(mesh, _) => self
-                    .frame
-                    .poses
-                    .get(&mesh.block)
-                    .copied()
-                    .unwrap_or(mesh.model)
-                    .transform_point3(Vec3::ZERO),
+                Sorted::Particles(mesh, _) => particle_space(
+                    self.frame
+                        .poses
+                        .get(&mesh.block)
+                        .copied()
+                        .unwrap_or(mesh.model),
+                    mesh.world_space,
+                )
+                .transform_point3(Vec3::ZERO),
             };
             sorted.sort_by(|a, b| {
                 centre(b)

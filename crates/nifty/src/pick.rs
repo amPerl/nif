@@ -84,7 +84,10 @@ pub fn hits(
             let Some(particles) = frame.particles.get(&visit.index) else {
                 continue;
             };
-            let model = Mat4::from(&visit.transform);
+            let model = crate::scene::particle_space(
+                Mat4::from(&visit.transform),
+                matches!(visit.block, Block::NiParticleSystem(psys) if psys.world_space),
+            );
             // taken from the matrix, the same way the renderer sizes a quad
             let scale = model.x_axis.truncate().length();
             let nearest = particles

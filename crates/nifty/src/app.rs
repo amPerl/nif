@@ -1852,7 +1852,14 @@ fn place_emitters(nif: &Nif, systems: &mut [nif::psys::System]) {
         world.insert(visit.index, Mat4::from(&visit.transform));
     }
     for system in systems.iter_mut() {
-        let Some(into_system) = world.get(&system.block).map(|m| m.inverse()) else {
+        let world_space = matches!(
+            nif.blocks.get(system.block),
+            Some(Block::NiParticleSystem(psys)) if psys.world_space
+        );
+        let Some(into_system) = world
+            .get(&system.block)
+            .map(|pose| crate::scene::particle_space(*pose, world_space).inverse())
+        else {
             continue;
         };
         let spaces = nif::psys::System::emitter_objects(&nif.blocks, system.block)
