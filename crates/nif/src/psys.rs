@@ -15,8 +15,8 @@
 use glam::{Mat4, Vec3};
 
 use crate::blocks::{
-    Block, ForceType, NiPSysColorModifier, NiPSysEmitter, NiPSysGravityModifier,
-    NiPSysGrowFadeModifier, NiPSysRotationModifier,
+    Block, EmitFrom, ForceType, NiPSysColorModifier, NiPSysEmitter, NiPSysGravityModifier,
+    NiPSysGrowFadeModifier, NiPSysRotationModifier, VelocityType,
 };
 use crate::common::{BlockRef, Color4, NiTransform, Vector3};
 
@@ -92,6 +92,11 @@ pub struct System {
     time: f32,
     rng: Rng,
     seed: u64,
+    /// Where each object an emitter names sits in this system's space, by that object's block.
+    /// The simulation does not walk the graph, so the caller resolves this and hands it over.
+    /// Empty means every emitter places into the system's own space, which is only right where
+    /// the two coincide.
+    spaces: std::collections::HashMap<usize, Mat4>,
 }
 
 impl System {
@@ -114,11 +119,42 @@ impl System {
             time: 0.0,
             rng: Rng::new(seed),
             seed,
+            spaces: std::collections::HashMap::new(),
         })
     }
 
     pub fn particles(&self) -> &[Particle] {
         &self.particles
+    }
+
+    /// Where the objects this system's emitters name sit relative to the system itself, keyed by
+    /// the object's own block. An emitter places into its object's space, not the system's: a
+    /// volume emitter names one through `emitter_object_ref` and a mesh emitter names the mesh it
+    /// emits from, and in this game every one of them names something.
+    ///
+    /// Survives `reset`, since it describes the file rather than the simulation.
+    pub fn place_against(&mut self, spaces: std::collections::HashMap<usize, Mat4>) {
+        self.spaces = spaces;
+    }
+
+    /// Every block whose space this system's emitters place into, for the caller to resolve.
+    pub fn emitter_objects(blocks: &[Block], block: usize) -> Vec<usize> {
+        let Some(Block::NiParticleSystem(psys)) = blocks.get(block) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for modifier in psys.modifiers_refs.iter().filter_map(|r| r.get(blocks)) {
+            match modifier {
+                Block::NiPSysBoxEmitter(e) => out.extend(e.base.emitter_object_ref.index()),
+                Block::NiPSysCylinderEmitter(e) => out.extend(e.base.emitter_object_ref.index()),
+                Block::NiPSysSphereEmitter(e) => out.extend(e.base.emitter_object_ref.index()),
+                Block::NiPSysMeshEmitter(e) => {
+                    out.extend(e.emitter_mesh_refs.iter().filter_map(|r| r.index()))
+                }
+                _ => {}
+            }
+        }
+        out
     }
 
     pub fn time(&self) -> f32 {
@@ -349,7 +385,7 @@ impl System {
             let Some(mut particle) = emit(emitter, age, &mut self.rng) else {
                 continue;
             };
-            place(blocks, index, &mut particle, &mut self.rng);
+            place(blocks, index, &self.spaces, &mut particle, &mut self.rng);
             if let Some(spin) = spinner {
                 seed_rotation(spin, &mut particle, &mut self.rng);
             }
@@ -637,16 +673,147 @@ fn system_modifiers(blocks: &[Block], system: usize) -> impl Iterator<Item = usi
     refs.iter().filter_map(|r| r.index())
 }
 
-/// Where in its volume an emitter starts a particle. Only the box is placed for now; the others
-/// start at the emitter's origin, which is where a volume's centre sits anyway.
-fn place(blocks: &[Block], index: usize, particle: &mut Particle, rng: &mut Rng) {
-    if let Some(Block::NiPSysBoxEmitter(box_emitter)) = blocks.get(index) {
-        particle.position = Vector3 {
-            x: box_emitter.width * (rng.unit() - 0.5),
-            y: box_emitter.height * (rng.unit() - 0.5),
-            z: box_emitter.depth * (rng.unit() - 0.5),
-        };
+/// Where in its volume, or on its surface, an emitter starts a particle, taken into the system's
+/// space through whatever the caller resolved for the object the emitter names.
+///
+/// A mesh emitter also decides the direction: every one in this game takes it from the surface
+/// the particle leaves rather than from the emitter's own declination.
+fn place(
+    blocks: &[Block],
+    index: usize,
+    spaces: &std::collections::HashMap<usize, Mat4>,
+    particle: &mut Particle,
+    rng: &mut Rng,
+) {
+    let (local, normal, object) = match blocks.get(index) {
+        Some(Block::NiPSysBoxEmitter(e)) => (
+            Vec3::new(
+                e.width * (rng.unit() - 0.5),
+                e.height * (rng.unit() - 0.5),
+                e.depth * (rng.unit() - 0.5),
+            ),
+            None,
+            e.base.emitter_object_ref.index(),
+        ),
+        Some(Block::NiPSysCylinderEmitter(e)) => {
+            let angle = rng.unit() * std::f32::consts::TAU;
+            // area weighted, or the middle of the disc gets far more than its share
+            let radius = e.radius * rng.unit().max(0.0).sqrt();
+            (
+                Vec3::new(
+                    radius * angle.cos(),
+                    radius * angle.sin(),
+                    e.height * (rng.unit() - 0.5),
+                ),
+                None,
+                e.base.emitter_object_ref.index(),
+            )
+        }
+        Some(Block::NiPSysSphereEmitter(e)) => {
+            // volume weighted the same way, and the direction is uniform over the sphere
+            let z = rng.symmetric();
+            let angle = rng.unit() * std::f32::consts::TAU;
+            let ring = (1.0 - z * z).max(0.0).sqrt();
+            let radius = e.radius * rng.unit().max(0.0).cbrt();
+            (
+                Vec3::new(
+                    radius * ring * angle.cos(),
+                    radius * ring * angle.sin(),
+                    radius * z,
+                ),
+                None,
+                e.base.emitter_object_ref.index(),
+            )
+        }
+        Some(Block::NiPSysMeshEmitter(e)) => {
+            // one mesh each in this corpus, but the engine picks at random among them
+            let count = e.emitter_mesh_refs.len();
+            if count == 0 {
+                return;
+            }
+            let which = ((rng.unit() * count as f32) as usize).min(count - 1);
+            let mesh = e.emitter_mesh_refs[which].index();
+            let Some((point, normal)) =
+                mesh.and_then(|m| surface_point(blocks, m, &e.emission_type, rng))
+            else {
+                return;
+            };
+            // only `UseNormals` takes its direction from the surface, and it is the only kind
+            // this game asks for
+            let aimed = matches!(e.initial_velocity_type, VelocityType::UseNormals);
+            (point, aimed.then_some(normal).flatten(), mesh)
+        }
+        _ => return,
+    };
+    let space = object
+        .and_then(|object| spaces.get(&object))
+        .copied()
+        .unwrap_or(Mat4::IDENTITY);
+    particle.position = space.transform_point3(local).into();
+    if let Some(normal) = normal {
+        let speed = Vec3::from(&particle.velocity).length();
+        let aimed = space.transform_vector3(normal).normalize_or_zero();
+        particle.velocity = (aimed * speed).into();
     }
+}
+
+/// A point on a mesh's surface and the direction to leave it by, in the mesh's own space.
+///
+/// The direction is the **stored vertex normals** of the corners involved, averaged and unitized,
+/// not the triangle's geometric normal, and a mesh storing none leaves the direction alone. The
+/// face and edge modes pick a random triangle and then a point on it or along one of its sides;
+/// the centre modes are the same triangle without the random offset.
+fn surface_point(
+    blocks: &[Block],
+    mesh: usize,
+    from: &EmitFrom,
+    rng: &mut Rng,
+) -> Option<(Vec3, Option<Vec3>)> {
+    let block = blocks.get(mesh)?;
+    let (data, triangles) = block.triangles(blocks)?;
+    let vertices = data.vertices.as_ref()?;
+    if triangles.is_empty() {
+        return None;
+    }
+    let picked = ((rng.unit() * triangles.len() as f32) as usize).min(triangles.len() - 1);
+    let triangle = &triangles[picked];
+    let at = |index: u16| vertices.get(index as usize).map(Vec3::from);
+    let normal_at = |index: u16| {
+        data.normals
+            .as_ref()
+            .and_then(|n| n.get(index as usize))
+            .map(Vec3::from)
+    };
+    let corners = [triangle.a, triangle.b, triangle.c];
+    let (a, b, c) = (at(corners[0])?, at(corners[1])?, at(corners[2])?);
+
+    // an edge mode only ever involves two of the three corners, so the average is over those
+    let edge = matches!(from, EmitFrom::EdgeCenter | EmitFrom::EdgeSurface);
+    let used: &[u16] = match edge {
+        true => &corners[..2],
+        false => &corners,
+    };
+    let mut sum = Vec3::ZERO;
+    let mut have = true;
+    for index in used {
+        match normal_at(*index) {
+            Some(normal) => sum += normal,
+            None => have = false,
+        }
+    }
+    let normal = have.then(|| (sum / used.len() as f32).normalize_or_zero());
+
+    let point = match from {
+        EmitFrom::FaceSurface => {
+            let (d1, d2) = (b - a, c - a);
+            let root = rng.unit().max(0.0).sqrt();
+            a + (d2 * rng.unit() - d1) * root + d1
+        }
+        EmitFrom::EdgeSurface => a + (b - a) * rng.unit(),
+        EmitFrom::EdgeCenter => (a + b) / 2.0,
+        _ => (a + b + c) / 3.0,
+    };
+    Some((point, normal))
 }
 
 /// A small generator chosen for being reproducible rather than for its statistics: the same
@@ -856,6 +1023,7 @@ mod tests {
             time: 0.0,
             rng: Rng::new(1),
             seed: 1,
+            spaces: Default::default(),
         };
         system.spin(0.5);
 
@@ -1117,6 +1285,7 @@ mod tests {
             time: 0.0,
             rng: Rng::new(1),
             seed: 1,
+            spaces: Default::default(),
         };
         system.tint(&blocks, &modifier);
 
@@ -1176,6 +1345,7 @@ mod tests {
             time: 0.0,
             rng: Rng::new(1),
             seed: 1,
+            spaces: Default::default(),
         };
 
         // half way into a two second grow

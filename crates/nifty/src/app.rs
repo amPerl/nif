@@ -1,4 +1,9 @@
-use std::{collections::HashSet, io::Cursor, path::PathBuf, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    io::Cursor,
+    path::PathBuf,
+    sync::Arc,
+};
 
 use eframe::egui::{self, text::LayoutJob, Color32, FontId, TextFormat, WidgetText};
 use eframe::egui_wgpu;
@@ -293,7 +298,8 @@ impl Nifty {
             None => format!("{} blocks", nif.blocks.len()),
         });
         state.time = nif::anim::span(&nif.blocks).map_or(0.0, |(start, _)| start);
-        let systems = nif::psys::systems(&nif.blocks);
+        let mut systems = nif::psys::systems(&nif.blocks);
+        place_emitters(&nif, &mut systems);
         state.loaded = Some(Loaded {
             path,
             links: link_table(&nif.blocks),
@@ -1829,5 +1835,30 @@ impl eframe::App for Nifty {
                 capture.shoot(ui.ctx(), &stem, rect);
             }
         }
+    }
+}
+
+/// Hands each system the transforms its emitters place against.
+///
+/// An emitter places into the space of the object it names, not the system's, and in this corpus
+/// every emitter names one. The simulation does not walk the graph, so the walk happens here and
+/// the result is a matrix per named object taking it into its system's space.
+fn place_emitters(nif: &Nif, systems: &mut [nif::psys::System]) {
+    if systems.is_empty() {
+        return;
+    }
+    let mut world: HashMap<usize, Mat4> = HashMap::new();
+    for visit in nif.walk() {
+        world.insert(visit.index, Mat4::from(&visit.transform));
+    }
+    for system in systems.iter_mut() {
+        let Some(into_system) = world.get(&system.block).map(|m| m.inverse()) else {
+            continue;
+        };
+        let spaces = nif::psys::System::emitter_objects(&nif.blocks, system.block)
+            .into_iter()
+            .filter_map(|object| Some((object, into_system * *world.get(&object)?)))
+            .collect();
+        system.place_against(spaces);
     }
 }
