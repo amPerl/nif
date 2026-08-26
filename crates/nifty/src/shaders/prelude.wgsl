@@ -10,9 +10,9 @@ struct Camera {
     // x is how many of the file's own lights follow. Zero means the file carries none and the
     // viewer's own light above stands in for them.
     light_count: vec4<f32>,
-    // four rows per light: where it is and what kind, the way it points and its cone, its
-    // colour and its cone exponent, and its three attenuation terms
-    lights: array<vec4<f32>, 32>,
+    // five rows per light: where it is and what kind, the way it points and its cone, its
+    // diffuse colour and its cone exponent, its three attenuation terms, and its specular colour
+    lights: array<vec4<f32>, 40>,
 };
 struct Model {
     model: mat4x4<f32>,
@@ -35,7 +35,8 @@ struct Model {
     ambient: vec4<f32>,
     // rgb plus glossiness in w
     specular: vec4<f32>,
-    // x holds a bit per scene light, naming the ones that reach this shape
+    // x holds a bit per scene light, naming the ones that reach this shape. y is whether a
+    // specular property switched the highlight on, which is off unless one says otherwise.
     lights: vec4<f32>,
 };
 
@@ -140,24 +141,27 @@ fn surface_normal(in: VertexOut) -> vec3<f32> {
     return derived;
 }
 
-/// What the file's own lights add at this point. The ambient term is not here: an ambient
-/// light is summed into `light_ambient` before anything reaches the shader.
+/// What the file's own lights add at this point, diffuse in `xyz` and specular in `w` since the
+/// two are gathered together but multiply different material channels. The ambient term is not
+/// here: an ambient light is summed into `light_ambient` before anything reaches the shader.
 ///
 /// `world` is where the surface is, which only the two attenuating kinds need.
-fn scene_lights(normal: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
-    var sum = vec3<f32>(0.0);
+fn scene_lights(normal: vec3<f32>, to_eye: vec3<f32>, world: vec3<f32>) -> vec4<f32> {
+    var sum = vec4<f32>(0.0);
     let count = i32(camera.light_count.x);
     let mask = u32(model.lights.x);
+    let gloss = max(model.specular.w, 1.0);
 
     for (var i = 0; i < count; i = i + 1) {
         if ((mask & (1u << u32(i))) == 0u) {
             continue;
         }
-        let row = i * 4;
+        let row = i * 5;
         let origin = camera.lights[row];
         let aim = camera.lights[row + 1];
         let colour = camera.lights[row + 2];
         let falloff = camera.lights[row + 3];
+        let gleam = camera.lights[row + 4];
 
         // a directional light carries its travel direction where the others carry a position
         var to_light = -origin.xyz;
@@ -182,7 +186,12 @@ fn scene_lights(normal: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
         }
 
         let lambert = clamp(dot(normal, to_light), 0.0, 1.0);
-        sum = sum + colour.rgb * lambert * attenuation;
+        sum = vec4<f32>(sum.rgb + colour.rgb * lambert * attenuation, sum.w);
+
+        // the half vector between the eye and the light, which is what a local viewer uses
+        let half = normalize(to_light + to_eye);
+        let gleam_amount = pow(clamp(dot(normal, half), 0.0, 1.0), gloss);
+        sum.w = sum.w + dot(gleam.rgb, vec3<f32>(1.0)) * gleam_amount * attenuation / 3.0;
     }
     return sum;
 }
@@ -193,15 +202,18 @@ fn lit_colour(in: VertexOut) -> vec3<f32> {
 
     // a file carrying its own lights is lit by those alone, and the viewer's key light and rim
     // stand in only for one carrying none
-    var shade = camera.light_ambient.rgb;
+    var shade = vec3<f32>(0.0);
+    var gleam = 0.0;
     if (camera.light_count.x < 0.5) {
         // the light travels away from its source, so the direction back to it is negated
         let to_light = -camera.light_dir.xyz;
         let lambert = clamp(dot(normal, to_light), 0.0, 1.0);
         let fill = camera.light_dir.w * clamp(dot(normal, to_eye), 0.0, 1.0);
-        shade = shade + camera.light_diffuse.rgb * lambert + vec3<f32>(fill);
+        shade = camera.light_diffuse.rgb * lambert + vec3<f32>(fill);
     } else {
-        shade = shade + scene_lights(normal, in.world);
+        let sum = scene_lights(normal, to_eye, in.world);
+        shade = sum.rgb;
+        gleam = sum.w;
     }
 
     // the texture modulates the lit colour, so emissive is inside the multiply, not over it:
@@ -209,13 +221,19 @@ fn lit_colour(in: VertexOut) -> vec3<f32> {
     let vertex = in.color.rgb;
     let emissive_src = mix(model.emissive.rgb, vertex, model.sources.x);
     let diffuse_src = mix(model.diffuse.rgb, vertex, model.sources.y);
+    // ambient and diffuse are separate material channels against separate light terms, and a
+    // vertex colour property re-routes both together or neither
+    let ambient_src = mix(model.ambient.rgb, vertex, model.sources.y);
+    let highlight = model.specular.rgb * gleam * model.lights.y;
     let material_lit = clamp(
-        emissive_src + diffuse_src * shade * model.sources.z,
+        emissive_src
+            + (ambient_src * camera.light_ambient.rgb + diffuse_src * shade + highlight)
+                * model.sources.z,
         vec3<f32>(0.0),
         vec3<f32>(1.0)
     );
 
-    let plain = vec3<f32>(0.78, 0.80, 0.84) * shade;
+    let plain = vec3<f32>(0.78, 0.80, 0.84) * (camera.light_ambient.rgb + shade);
     let lit = mix(plain, material_lit, camera.flags.x);
     return lit;
 }

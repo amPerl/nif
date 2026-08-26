@@ -84,8 +84,11 @@ impl Lights {
     }
 
     /// `refs` are the effects a node holds, which join whatever is already in force. A texture
-    /// effect sits in the same list and is passed over, as is a light switched off or dimmed to
-    /// nothing, which the engine skips rather than applying dark.
+    /// effect sits in the same list and is passed over, as is a light switched off.
+    ///
+    /// A light's dimmer is deliberately not read here. The engine drops a light dimmed below
+    /// 0.01 as it draws, against whatever the dimmer is at that moment, and a light stored at
+    /// zero to be driven up by a controller is exactly what a static reading would throw away.
     fn with(mut self, blocks: &[Block], refs: &[BlockRef]) -> Lights {
         for r in refs {
             if self.count >= Lights::MAX {
@@ -94,7 +97,7 @@ impl Lights {
             let Some(light) = r.get(blocks).and_then(Block::light) else {
                 continue;
             };
-            if !light.switch_state || light.dimmer < 0.01 {
+            if !light.switch_state {
                 continue;
             }
             self.refs[self.count] = *r;
@@ -462,19 +465,23 @@ mod tests {
         assert!(lights_on_the_shape(&blocks, 3).is_empty());
     }
 
-    /// The engine skips a light that is switched off or dimmed to nothing rather than carrying it
-    /// and applying it dark, so neither reaches the shape at all.
+    /// A light switched off is not carried at all.
     #[test]
-    fn a_light_switched_off_or_dimmed_out_is_left_behind() {
-        for light in [directional(false, 1.0), directional(true, 0.0)] {
-            let blocks = vec![node(vec![1], vec![2]), shape(), light];
-            assert!(
-                lights_on_the_shape(&blocks, 1).is_empty(),
-                "a light the engine would skip was carried anyway"
-            );
-        }
+    fn a_light_switched_off_is_left_behind() {
+        let blocks = vec![node(vec![1], vec![2]), shape(), directional(false, 1.0)];
+        assert!(lights_on_the_shape(&blocks, 1).is_empty());
+
         // and the same light switched on does reach it, so the test is not passing vacuously
         let blocks = vec![node(vec![1], vec![2]), shape(), directional(true, 1.0)];
+        assert_eq!(lights_on_the_shape(&blocks, 1), vec![BlockRef::Index(2)]);
+    }
+
+    /// A light stored at dimmer zero is still carried, because a dimmer controller drives that
+    /// value and the only light in this game that animates is stored dark and driven up. Reading
+    /// the stored dimmer here throws it away before the controller is ever consulted.
+    #[test]
+    fn a_light_dimmed_to_nothing_is_still_carried() {
+        let blocks = vec![node(vec![1], vec![2]), shape(), directional(true, 0.0)];
         assert_eq!(lights_on_the_shape(&blocks, 1), vec![BlockRef::Index(2)]);
     }
 

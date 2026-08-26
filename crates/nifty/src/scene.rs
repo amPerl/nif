@@ -42,8 +42,9 @@ const MODEL_FLOATS: u64 = 84;
 /// limit on how many it will gather.
 const SCENE_LIGHTS: usize = nif::walk::Lights::MAX;
 
-/// Four rows each: where it is and what kind, its cone, its colour, and its attenuation.
-const LIGHT_ROWS: usize = 4;
+/// Five rows each: where it is and what kind, its cone, its diffuse colour, its attenuation,
+/// and its specular colour.
+const LIGHT_ROWS: usize = 5;
 
 /// View, eye, flags, the viewer's own light, then the count and the file's own lights.
 const CAMERA_FLOATS: u64 = 44 + (SCENE_LIGHTS * LIGHT_ROWS * 4) as u64;
@@ -194,6 +195,12 @@ pub fn camera_uniform(
             lit.attenuation.z,
             0.0,
         ]);
+        out[row + 16..row + 20].copy_from_slice(&[
+            lit.specular.x,
+            lit.specular.y,
+            lit.specular.z,
+            0.0,
+        ]);
     }
     out
 }
@@ -321,7 +328,13 @@ pub struct Scene {
     pub origin: Vec3,
     /// The lights the file itself carries, in the order the walk reaches them. Empty for nearly
     /// every file, and where it is empty the viewer's own light stands in.
+    ///
+    /// Resolved at rest. A frame resolves them again from `light_blocks` where anything moves
+    /// one or drives its dimmer.
     pub lights: Vec<nif::light::Lit>,
+    /// Which block each of `lights` came from, in the same order, so a frame can resolve them
+    /// again without having to work out the order a second time.
+    pub light_blocks: Vec<usize>,
     /// Every ambient light in the file, summed. `None` leaves the viewer's own ambient alone.
     pub ambient: Option<Vec3>,
     pub meshes: Vec<Mesh>,
@@ -1420,6 +1433,7 @@ impl Gfx {
         // a light is resolved once and shapes name it by index afterwards. An ambient light
         // folds into the scene's ambient term instead of becoming one of these
         let mut scene_lights: Vec<nif::light::Lit> = Vec::new();
+        let mut light_blocks: Vec<usize> = Vec::new();
         let mut light_at: HashMap<usize, usize> = HashMap::new();
         let mut ambient = Vec3::ZERO;
         let mut any_ambient = false;
@@ -1432,7 +1446,10 @@ impl Gfx {
                     continue;
                 }
                 let world = light_world.get(&index).copied().unwrap_or(Mat4::IDENTITY);
-                let Some(lit) = nif.blocks.get(index).and_then(|b| nif::light::resolve(b, world))
+                let Some(lit) = nif
+                    .blocks
+                    .get(index)
+                    .and_then(|b| nif::light::resolve(b, world, None))
                 else {
                     continue;
                 };
@@ -1446,6 +1463,7 @@ impl Gfx {
                     continue;
                 }
                 light_at.insert(index, scene_lights.len());
+                light_blocks.push(index);
                 scene_lights.push(lit);
             }
         }
@@ -1819,6 +1837,11 @@ impl Gfx {
             model_uniform[72..76].copy_from_slice(&ambient);
             model_uniform[76..80].copy_from_slice(&specular);
             model_uniform[80] = light_mask as f32;
+            // the engine leaves specular off unless a property switches it on
+            model_uniform[81] = f32::from(matches!(
+                in_force.specular.get(&nif.blocks),
+                Some(Block::NiSpecularProperty(p)) if p.is_enabled()
+            ));
             model_uniform[68..72].copy_from_slice(&shader_color(
                 &nif.blocks,
                 &geometry.extra_data_refs,
@@ -1963,6 +1986,7 @@ impl Gfx {
         (
             Scene {
                 lights: scene_lights,
+                light_blocks,
                 ambient: scene_ambient,
                 origin,
                 meshes,

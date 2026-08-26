@@ -1060,13 +1060,39 @@ impl Viewer<'_> {
         if let Some(ambient) = scene.ambient {
             light_now.ambient = ambient;
         }
+        // A light can sit on a node something animates, and its dimmer can be driven too, so
+        // the resting values only stand while the clock does. Resolved against the same walk
+        // the shapes are posed by, or the light would lag the thing carrying it.
+        let blocks = self.state.loaded.as_ref().map(|l| &l.nif.blocks);
+        let lights_now = match (viewpoint.time, blocks) {
+            (Some(time), Some(blocks)) if !scene.light_blocks.is_empty() => scene
+                .light_blocks
+                .iter()
+                .zip(scene.lights.iter())
+                .map(|(block, resting)| {
+                    let Some(light) = blocks.get(*block) else {
+                        return *resting;
+                    };
+                    let world = frame
+                        .poses
+                        .get(block)
+                        .copied()
+                        .unwrap_or_else(|| Mat4::from_translation(resting.position));
+                    let dimmer = light
+                        .av_object()
+                        .and_then(|av| nif::anim::dimmer_at(blocks, av, time));
+                    nif::light::resolve(light, world, dimmer).unwrap_or(*resting)
+                })
+                .collect(),
+            _ => scene.lights.clone(),
+        };
         let uniform = crate::scene::camera_uniform(
             view_proj,
             eye - scene.origin,
             self.state.colors,
             self.state.textures,
             &light_now,
-            &scene.lights,
+            &lights_now,
             scene.origin,
         );
         gfx.render_state

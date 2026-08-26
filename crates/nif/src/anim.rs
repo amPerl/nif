@@ -550,6 +550,34 @@ pub fn alpha_at(blocks: &[Block], material: &NiMaterialProperty, time: f32) -> O
     None
 }
 
+/// The dimmer a light is turned down to at `time`. None where nothing drives it, so the caller
+/// keeps whatever the light itself stores.
+///
+/// The dimmer is not a term of its own: it scales the light's three colours, so a light driven
+/// to zero goes out rather than turning black against what it was.
+pub fn dimmer_at(blocks: &[Block], light: &NiAvObject, time: f32) -> Option<f32> {
+    for block in controllers(blocks, light.controller_ref) {
+        let Block::NiLightDimmerController(controller) = block else {
+            continue;
+        };
+        let time_controller: &NiTimeController = controller;
+        if !time_controller.is_active() {
+            continue;
+        }
+        let Some(Block::NiFloatInterpolator(interpolator)) =
+            controller.base.base.interpolator_ref.get(blocks)
+        else {
+            continue;
+        };
+        let keyed = match interpolator.data_ref.get(blocks) {
+            Some(Block::NiFloatData(data)) => data.data.sample(time_controller.local_time(time)),
+            _ => None,
+        };
+        return Some(keyed.unwrap_or(interpolator.value));
+    }
+    None
+}
+
 /// The uv transform in force on one texture slot at `time`. None when the slot carries no
 /// transform of its own and nothing animates it, so the caller can leave its uvs alone.
 ///

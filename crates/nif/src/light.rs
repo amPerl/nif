@@ -40,9 +40,11 @@ pub struct Lit {
 ///
 /// `world` is the light's own world transform, which only a traversal knows. The direction of
 /// travel is the first column of its rotation, not the third that a Z up format suggests.
-pub fn resolve(block: &Block, world: Mat4) -> Option<Lit> {
+///
+/// `dimmer` replaces the light's own where a controller drives it.
+pub fn resolve(block: &Block, world: Mat4, dimmer: Option<f32>) -> Option<Lit> {
     let light = block.light()?;
-    let scale = light.dimmer;
+    let scale = dimmer.unwrap_or(light.dimmer);
     let colour = |c: &crate::common::Color3| Vec3::new(c.r, c.g, c.b) * scale;
 
     let mut out = Lit {
@@ -141,9 +143,13 @@ mod tests {
     #[test]
     fn the_dimmer_is_folded_into_every_colour() {
         let block = Block::NiDirectionalLight(crate::blocks::NiDirectionalLight { base: base(0.5) });
-        let lit = resolve(&block, Mat4::IDENTITY).expect("a light");
+        let lit = resolve(&block, Mat4::IDENTITY, None).expect("a light");
 
         assert!((lit.ambient - Vec3::new(0.05, 0.1, 0.15)).length() < 1e-6);
+
+        // a controller driving the dimmer replaces the light's own rather than compounding it
+        let driven = resolve(&block, Mat4::IDENTITY, Some(1.0)).expect("a light");
+        assert!((driven.diffuse - Vec3::new(0.4, 0.5, 0.6)).length() < 1e-6);
         assert!((lit.diffuse - Vec3::new(0.2, 0.25, 0.3)).length() < 1e-6);
         assert!((lit.specular - Vec3::new(0.35, 0.4, 0.45)).length() < 1e-6);
     }
@@ -154,12 +160,12 @@ mod tests {
     fn a_directional_light_travels_along_its_own_x() {
         let block = Block::NiDirectionalLight(crate::blocks::NiDirectionalLight { base: base(1.0) });
 
-        let lit = resolve(&block, Mat4::IDENTITY).expect("a light");
+        let lit = resolve(&block, Mat4::IDENTITY, None).expect("a light");
         assert!((lit.direction - Vec3::X).length() < 1e-6);
 
         // turned a quarter about z, its own x now points along world y
         let turned = Mat4::from_rotation_z(std::f32::consts::FRAC_PI_2);
-        let lit = resolve(&block, turned).expect("a light");
+        let lit = resolve(&block, turned, None).expect("a light");
         assert!(
             (lit.direction - Vec3::Y).length() < 1e-5,
             "travels {:?}",
@@ -182,7 +188,7 @@ mod tests {
             outer_spot_angle: 60.0,
             exponent: 2.0,
         });
-        let lit = resolve(&block, Mat4::IDENTITY).expect("a light");
+        let lit = resolve(&block, Mat4::IDENTITY, None).expect("a light");
 
         assert_eq!(lit.falloff, Falloff::Spot);
         // 60 degrees off the axis, so the cone spans 120 degrees in full
@@ -201,7 +207,7 @@ mod tests {
             quadratic_attenuation: 0.02,
         });
         let at = Mat4::from_translation(Vec3::new(3.0, -4.0, 5.0));
-        let lit = resolve(&block, at).expect("a light");
+        let lit = resolve(&block, at, None).expect("a light");
 
         assert_eq!(lit.falloff, Falloff::Point);
         assert_eq!(lit.position, Vec3::new(3.0, -4.0, 5.0));
@@ -217,7 +223,7 @@ mod tests {
             Block::NiDirectionalLight(crate::blocks::NiDirectionalLight { base: base(1.0) });
         let lit: Vec<Lit> = [&ambient, &directional, &ambient]
             .iter()
-            .filter_map(|b| resolve(b, Mat4::IDENTITY))
+            .filter_map(|b| resolve(b, Mat4::IDENTITY, None))
             .collect();
 
         // two ambients at 0.1,0.2,0.3, and the directional's own ambient left out
