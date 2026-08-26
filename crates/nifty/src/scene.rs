@@ -1208,6 +1208,22 @@ impl Gfx {
         })
     }
 
+    /// A source block's texture, uploaded once per scene however many shapes name it. A failure
+    /// is not remembered, since what stands in for a map that would not load differs between a
+    /// slot and a reflection, and that is the caller's to decide.
+    fn cached(
+        cache: &mut HashMap<usize, wgpu::TextureView>,
+        source: nif::common::BlockRef,
+        upload: impl FnOnce() -> Option<wgpu::TextureView>,
+    ) -> Option<wgpu::TextureView> {
+        let key = source.index()?;
+        if let Some(view) = cache.get(&key) {
+            return Some(view.clone());
+        }
+        let view = upload()?;
+        Some(cache.entry(key).or_insert(view).clone())
+    }
+
     /// The cube map an effect names, or `None` where it names none or the faces do not agree.
     fn cube_texture(&self, nif: &Nif, source_ref: nif::common::BlockRef) -> Option<wgpu::TextureView> {
         let Some(Block::NiSourceCubeMap(source)) = source_ref.get(&nif.blocks) else {
@@ -1304,14 +1320,16 @@ impl Gfx {
                     let Some(desc) = property.and_then(|p| p.texture(*slot)) else {
                         continue;
                     };
-                    if let Some(key) = desc.source_ref.index() {
-                        views[position] = cache
-                            .entry(key)
-                            .or_insert_with(|| {
+                    // a slot that will not load shows the missing marker, which is cached with
+                    // the rest so the failure is reported once rather than retried per shape
+                    if desc.source_ref.index().is_some() {
+                        views[position] = Self::cached(cache, desc.source_ref, || {
+                            Some(
                                 self.source_texture(nif, desc.source_ref, library)
-                                    .unwrap_or_else(|| missing.clone())
-                            })
-                            .clone();
+                                    .unwrap_or_else(|| missing.clone()),
+                            )
+                        })
+                        .unwrap_or_else(|| missing.clone());
                     }
                     // the shader's own sampler state beats the map's clamp mode
                     samplers[position] =
@@ -1335,15 +1353,19 @@ impl Gfx {
             filter: wgpu::FilterMode::Linear,
         });
         if let Some(Block::NiTextureEffect(effect)) = environment.get(&nif.blocks) {
+            let source = effect.source_texture_ref;
             match effect.coordinate_generation_type {
                 // a cube is indexed by the reflection itself, a sphere by two of its components
                 3 => {
-                    if let Some(view) = self.cube_texture(nif, effect.source_texture_ref) {
+                    if let Some(view) =
+                        Self::cached(cache, source, || self.cube_texture(nif, source))
+                    {
                         cube_view = view;
                     }
                 }
                 _ => {
-                    if let Some(view) = self.source_texture(nif, effect.source_texture_ref, library)
+                    if let Some(view) =
+                        Self::cached(cache, source, || self.source_texture(nif, source, library))
                     {
                         views[ENV_SLOT] = view;
                     }
@@ -1393,6 +1415,7 @@ impl Gfx {
         (texture, flip_frames)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn particle_mesh(
         &self,
         nif: &Nif,
@@ -1400,6 +1423,7 @@ impl Gfx {
         geometry: &NiGeometry,
         library: &TextureLibrary,
         module: &wgpu::ShaderModule,
+        blank_cube: &wgpu::TextureView,
     ) -> Option<ParticleMesh> {
         let device = &self.render_state.device;
         let capacity = match geometry.data_ref.get(&nif.blocks) {
@@ -1512,10 +1536,7 @@ impl Gfx {
             texture: self.slot_group(
                 std::array::from_fn(|_| (&view, &sampler)),
                 // a particle reflects nothing, so its cube is the black one
-                (
-                    &self.upload_cube(1, &std::array::from_fn(|_| vec![0u8, 0, 0, 255])),
-                    &sampler,
-                ),
+                (blank_cube, &sampler),
             ),
             bind_group: device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("nifty particles"),
@@ -1716,7 +1737,14 @@ impl Gfx {
             // and it takes buffers sized for its capacity. This has to come before `geometry_of`,
             // which only resolves the shapes that store triangles.
             if let Block::NiParticleSystem(psys) = visit.block {
-                let mesh = self.particle_mesh(nif, &visit, &psys.base, library, &fixed_module);
+                let mesh = self.particle_mesh(
+                    nif,
+                    &visit,
+                    &psys.base,
+                    library,
+                    &fixed_module,
+                    &blank_cube,
+                );
                 if let Some(mut mesh) = mesh {
                     mesh.lod = lod_of.get(&visit.index).copied();
                     let centre = mesh.model.transform_point3(Vec3::ZERO);
