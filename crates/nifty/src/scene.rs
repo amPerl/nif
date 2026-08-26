@@ -1842,9 +1842,23 @@ impl Gfx {
                 );
                 if let Some(mut mesh) = mesh {
                     mesh.lod = lod_of.get(&visit.index).copied();
-                    let centre = mesh.model.transform_point3(Vec3::ZERO);
-                    min = min.min(centre - Vec3::splat(mesh.reach));
-                    max = max.max(centre + Vec3::splat(mesh.reach));
+                    // A particle starts at the object its emitter names, not at the system's own
+                    // node, so the bounds are taken around each of those. Measuring from the node
+                    // put the floor and the framing somewhere the particles never reach whenever
+                    // the two differ, which in this corpus is most of the time.
+                    let objects = nif::psys::System::emitter_objects(&nif.blocks, visit.index);
+                    let mut from: Vec<Vec3> = objects
+                        .iter()
+                        .filter_map(|object| rest_pose.get(object))
+                        .map(|pose| pose.transform_point3(Vec3::ZERO))
+                        .collect();
+                    if from.is_empty() {
+                        from.push(mesh.model.transform_point3(Vec3::ZERO));
+                    }
+                    for centre in from {
+                        min = min.min(centre - Vec3::splat(mesh.reach));
+                        max = max.max(centre + Vec3::splat(mesh.reach));
+                    }
                     particles.push(mesh);
                 }
                 continue;
