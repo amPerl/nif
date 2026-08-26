@@ -1537,6 +1537,7 @@ impl Gfx {
         geometry: &NiGeometry,
         library: &TextureLibrary,
         module: &wgpu::ShaderModule,
+        blank: &wgpu::TextureView,
         blank_cube: &wgpu::TextureView,
     ) -> Option<ParticleMesh> {
         let device = &self.render_state.device;
@@ -1651,9 +1652,18 @@ impl Gfx {
             lod: None,
             reach: reach * visit.transform.scale.abs(),
             pipeline: self.pipeline(state, module),
+            // A particle reflects nothing, so both environment bindings are black. Filling
+            // every position with the sprite left the environment slot reading it, and the
+            // fixed function pass adds that slot on top of what it already drew: each particle
+            // was laying a reflection mapped copy of itself over itself.
             texture: self.slot_group(
-                std::array::from_fn(|_| (&view, &sampler)),
-                // a particle reflects nothing, so its cube is the black one
+                std::array::from_fn(|position| {
+                    let view = match position < BOUND_SLOTS {
+                        true => &view,
+                        false => blank,
+                    };
+                    (view, &sampler)
+                }),
                 (blank_cube, &sampler),
             ),
             bind_group: device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1861,6 +1871,7 @@ impl Gfx {
                     &psys.base,
                     library,
                     &fixed_module,
+                    &neutral[shaders::Absent::Black as usize],
                     &blank_cube,
                 );
                 if let Some(mut mesh) = mesh {
