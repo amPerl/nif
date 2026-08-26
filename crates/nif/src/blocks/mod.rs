@@ -6,7 +6,7 @@ pub use ni_animation::*;
 pub use ni_main::*;
 pub use ni_particle::*;
 
-use crate::common::BlockRef;
+use crate::common::{BlockRef, Triangle};
 use binrw::BinWrite;
 
 #[allow(clippy::large_enum_variant)]
@@ -335,6 +335,27 @@ impl Block {
             _ => return None,
         };
         Some(data)
+    }
+
+    /// The triangles a shape stores, whichever form holds them, with the data they index into.
+    /// A strip is expanded here so a caller never has to know which of the two it has.
+    pub fn triangles<'a>(
+        &self,
+        blocks: &'a [Block],
+    ) -> Option<(&'a NiGeometryData, Vec<Triangle>)> {
+        let data = match self {
+            Block::NiTriShape(shape) => shape.data_ref.get(blocks)?,
+            Block::NiTriStrips(strips) => strips.data_ref.get(blocks)?,
+            _ => return None,
+        };
+        match data {
+            Block::NiTriShapeData(data) => Some((&data.base.base, data.triangles.clone()?)),
+            Block::NiTriShapeDynamicData(data) => {
+                Some((&data.base.base.base, data.base.triangles.clone()?))
+            }
+            Block::NiTriStripsData(data) => Some((&data.base.base, data.triangles().collect())),
+            _ => None,
+        }
     }
 
     pub fn av_object(&self) -> Option<&NiAvObject> {

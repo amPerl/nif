@@ -2361,21 +2361,9 @@ pub(crate) fn geometry_of<'a>(
     nif: &'a Nif,
     block: &'a Block,
 ) -> Option<(&'a NiGeometry, &'a NiGeometryData, Vec<Triangle>)> {
-    let (geometry, data) = match block {
-        Block::NiTriShape(shape) => (&shape.base, shape.data_ref.get(&nif.blocks)?),
-        Block::NiTriStrips(strips) => (&strips.base, strips.data_ref.get(&nif.blocks)?),
-        _ => return None,
-    };
-    match data {
-        Block::NiTriShapeData(data) => Some((geometry, &data.base.base, data.triangles.clone()?)),
-        Block::NiTriShapeDynamicData(data) => {
-            Some((geometry, &data.base.base.base, data.base.triangles.clone()?))
-        }
-        Block::NiTriStripsData(data) => {
-            Some((geometry, &data.base.base, data.triangles().collect()))
-        }
-        _ => None,
-    }
+    let geometry = block.geometry()?;
+    let (data, triangles) = block.triangles(&nif.blocks)?;
+    Some((geometry, data, triangles))
 }
 
 /// A uv transform as the two rows that reach the shader, since the third is always (0, 0, 1).
