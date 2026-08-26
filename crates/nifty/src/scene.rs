@@ -74,7 +74,7 @@ fn address_of(clamp: &nif::blocks::TexClampMode) -> (wgpu::AddressMode, wgpu::Ad
 const VERTEX_FLOATS: usize = 3 + 3 + 4 + 2 + 2 + 2;
 
 /// How many texture slots one shape binds. Which maps those are is the shader's choice.
-const BOUND_SLOTS: usize = shaders::SLOTS;
+pub(crate) const BOUND_SLOTS: usize = shaders::SLOTS;
 
 /// The environment map rides after the shader's own slots. It carries no uv rows of its own,
 /// since a reflection generates its own coordinates rather than reading a set.
@@ -84,7 +84,7 @@ const ENV_SLOT: usize = BOUND_SLOTS;
 const GROUP_SLOTS: usize = BOUND_SLOTS + 1;
 
 /// What the fixed function path binds, in the order their uv transforms sit in the uniform.
-const DEFAULT_SLOTS: [Option<shaders::Source>; BOUND_SLOTS] = [
+pub(crate) const DEFAULT_SLOTS: [Option<shaders::Source>; BOUND_SLOTS] = [
     Some(shaders::Source::Slot(TextureSlot::Base)),
     Some(shaders::Source::Slot(TextureSlot::Dark)),
     Some(shaders::Source::Slot(TextureSlot::Glow)),
@@ -442,6 +442,11 @@ pub struct ParticleMesh {
     /// Whether the particles are already in world space, so the system's own place and turn are
     /// not applied to them. See `particle_space`.
     pub world_space: bool,
+    /// The texturing property the system draws with, which is what a flip controller targets.
+    pub texturing_block: Option<usize>,
+    /// What this system's sprite binds, kept so a flip can rebind it. A particle goes through the
+    /// same path a shape's pass does, so it gets the same neutrals and the same flip frames.
+    bindings: PassBindings,
     /// Where the system sits when nothing animates it. The frame's pose wins when there is one,
     /// because a system whose node moves has to be drawn where picking will look for it.
     pub model: Mat4,
@@ -1548,8 +1553,12 @@ impl Gfx {
         geometry: &NiGeometry,
         library: &TextureLibrary,
         module: &wgpu::ShaderModule,
-        blank: &wgpu::TextureView,
+        fixed: &shaders::Shader,
         blank_cube: &wgpu::TextureView,
+        neutral: &[wgpu::TextureView; 3],
+        cache: &mut HashMap<usize, wgpu::TextureView>,
+        named_textures: &mut HashMap<&'static str, wgpu::TextureView>,
+        missing: &wgpu::TextureView,
     ) -> Option<ParticleMesh> {
         let device = &self.render_state.device;
         let capacity = match geometry.data_ref.get(&nif.blocks) {
@@ -1628,21 +1637,29 @@ impl Gfx {
             0.0,
         ));
 
-        let view = match visit.properties.texturing.get(&nif.blocks) {
+        // The same binding path a shape's pass takes. Doing it by hand here bound the sprite to
+        // every slot, and the fixed pass multiplies by the dark slot and adds the glow one, so a
+        // particle was drawn as its own sprite squared plus itself. It also meant no flip
+        // controller could ever reach a particle, since the frames live on the pass.
+        let property = match visit.properties.texturing.get(&nif.blocks) {
             Some(Block::NiTexturingProperty(p)) => Some(p),
             _ => None,
-        }
-        .and_then(|property| property.texture(TextureSlot::Base))
-        .and_then(|desc| self.source_texture(nif, desc.source_ref, library));
-        let white = self.upload_texture(1, 1, &[255, 255, 255, 255]);
-        let sampler = self.sampler(shaders::Sampling {
-            address: (
-                wgpu::AddressMode::ClampToEdge,
-                wgpu::AddressMode::ClampToEdge,
-            ),
-            filter: wgpu::FilterMode::Linear,
-        });
-        let view = view.unwrap_or(white);
+        };
+        let (texture, bindings) = self.pass_textures(
+            nif,
+            &fixed.passes[0],
+            DEFAULT_SLOTS,
+            property,
+            visit.properties.texturing.index(),
+            library,
+            // a particle reflects nothing, so it names no environment effect
+            nif::common::BlockRef::default(),
+            blank_cube,
+            neutral,
+            cache,
+            named_textures,
+            missing,
+        );
 
         let model_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("nifty particles model"),
@@ -1663,12 +1680,9 @@ impl Gfx {
             lod: None,
             reach: reach * visit.transform.scale.abs(),
             pipeline: self.pipeline(state, module),
-            // a particle reflects nothing, so both reflections are black
-            texture: self.slot_group(
-                std::array::from_fn(|_| (&view, &sampler)),
-                (blank, &sampler),
-                (blank_cube, &sampler),
-            ),
+            texturing_block: visit.properties.texturing.index(),
+            texture,
+            bindings,
             bind_group: device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("nifty particles"),
                 layout: &self.model_layout,
@@ -1875,8 +1889,12 @@ impl Gfx {
                     &psys.base,
                     library,
                     &fixed_module,
-                    &neutral[shaders::Absent::Black as usize],
+                    fixed,
                     &blank_cube,
+                    &neutral,
+                    &mut cache,
+                    &mut named_textures,
+                    &missing,
                 );
                 if let Some(mut mesh) = mesh {
                     mesh.lod = lod_of.get(&visit.index).copied();
@@ -2769,9 +2787,10 @@ impl PreviewCall {
     }
 
     /// One pass's textures as of this frame, which a flip controller may have swapped.
-    /// What the shape's texturing property is flipping to this frame, across every slot.
-    fn flip_state(&self, mesh: &Mesh) -> FlipState {
-        mesh.texturing_block
+    /// What a texturing property is flipping to this frame, across every slot. A particle
+    /// system asks the same question of the same map as a shape does.
+    fn flip_state(&self, texturing_block: Option<usize>) -> FlipState {
+        texturing_block
             .and_then(|block| self.frame.flip.get(&block))
             .copied()
             .unwrap_or_default()
@@ -2784,7 +2803,7 @@ impl PreviewCall {
         at: usize,
         pass: &'a MeshPass,
     ) -> &'a wgpu::BindGroup {
-        let state = self.flip_state(mesh);
+        let state = self.flip_state(mesh.texturing_block);
         if state.is_empty() {
             return &pass.texture;
         }
@@ -2794,6 +2813,24 @@ impl PreviewCall {
             .flipped
             .get(&(mesh.shape_block, at, state))
             .unwrap_or(&pass.texture)
+    }
+
+    /// A particle system's sprite as of this frame, which a flip controller may have swapped.
+    /// Its one pass is numbered zero, so it shares the cache with the shapes without colliding:
+    /// the key carries the block, and a block is either a system or a shape.
+    fn particle_texture<'a>(
+        &'a self,
+        preview: &'a Preview,
+        mesh: &'a ParticleMesh,
+    ) -> &'a wgpu::BindGroup {
+        let state = self.flip_state(mesh.texturing_block);
+        if state.is_empty() {
+            return &mesh.texture;
+        }
+        preview
+            .flipped
+            .get(&(mesh.block, 0, state))
+            .unwrap_or(&mesh.texture)
     }
 
     /// The same question for a particle system, which carries its level like any other shape.
@@ -2859,19 +2896,34 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
         // animation reaches that combination. Only combinations actually visited are built, which
         // is what keeps this off the cross product.
         if let Some(preview) = resources.get_mut::<Preview>() {
-            for mesh in self.scene.meshes.iter().filter(|m| self.visible(m)) {
-                let state = self.flip_state(mesh);
+            let shapes = self
+                .scene
+                .meshes
+                .iter()
+                .filter(|m| self.visible(m))
+                .flat_map(|mesh| {
+                    mesh.passes.iter().enumerate().map(move |(at, pass)| {
+                        (mesh.shape_block, at, mesh.texturing_block, &pass.bindings)
+                    })
+                });
+            // a system has the one pass, numbered zero
+            let systems = self
+                .scene
+                .particles
+                .iter()
+                .filter(|m| self.visible_particles(m))
+                .map(|mesh| (mesh.block, 0, mesh.texturing_block, &mesh.bindings));
+            for (block, at, texturing, bindings) in shapes.chain(systems) {
+                let state = self.flip_state(texturing);
                 if state.is_empty() {
                     continue;
                 }
-                for (at, pass) in mesh.passes.iter().enumerate() {
-                    let key = (mesh.shape_block, at, state);
-                    if preview.flipped.contains_key(&key) {
-                        continue;
-                    }
-                    let group = pass.bindings.group(device, &preview.texture_layout, state);
-                    preview.flipped.insert(key, group);
+                let key = (block, at, state);
+                if preview.flipped.contains_key(&key) {
+                    continue;
                 }
+                let group = bindings.group(device, &preview.texture_layout, state);
+                preview.flipped.insert(key, group);
             }
         }
         for mesh in &self.scene.meshes {
@@ -3103,7 +3155,7 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
                     Sorted::Particles(mesh, quads) => {
                         render_pass.set_pipeline(&mesh.pipeline);
                         render_pass.set_bind_group(1, &mesh.bind_group, &[]);
-                        render_pass.set_bind_group(2, &mesh.texture, &[]);
+                        render_pass.set_bind_group(2, self.particle_texture(preview, mesh), &[]);
                         render_pass.set_vertex_buffer(0, mesh.vertices.slice(..));
                         render_pass
                             .set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint16);

@@ -795,19 +795,48 @@ impl Viewer<'_> {
             // property can be the target of several at once and they are resolved together.
             // Walked per shape rather than per property, since which slots a shape binds is its
             // shader's choice.
-            let scene = self.state.scene.iter();
-            for mesh in scene.flat_map(|scene| scene.meshes.iter()) {
-                let property = match mesh.texturing_block.and_then(|i| loaded.nif.blocks.get(i)) {
+            // Both kinds, since a flip controller reaches a particle system's sprite exactly as
+            // it reaches a shape's map, and a quarter of them target one.
+            let shapes = self
+                .state
+                .scene
+                .iter()
+                .flat_map(|scene| scene.meshes.iter())
+                .map(|mesh| {
+                    (
+                        mesh.shape_block,
+                        mesh.texturing_block,
+                        mesh.bound,
+                        mesh.uv_pins,
+                    )
+                });
+            let systems = self
+                .state
+                .scene
+                .iter()
+                .flat_map(|scene| scene.particles.iter())
+                .map(|mesh| {
+                    (
+                        mesh.block,
+                        mesh.texturing_block,
+                        crate::scene::DEFAULT_SLOTS,
+                        [None; crate::scene::BOUND_SLOTS],
+                    )
+                });
+            for (shape_block, texturing_block, bound, uv_pins) in
+                shapes.chain(systems).collect::<Vec<_>>()
+            {
+                let property = match texturing_block.and_then(|i| loaded.nif.blocks.get(i)) {
                     Some(Block::NiTexturingProperty(property)) => property,
                     _ => continue,
                 };
                 frame.uv.insert(
-                    mesh.shape_block,
+                    shape_block,
                     crate::scene::slot_uv_rows(
                         &loaded.nif.blocks,
                         Some(property),
-                        mesh.bound,
-                        mesh.uv_pins,
+                        bound,
+                        uv_pins,
                         time,
                     ),
                 );
@@ -822,7 +851,7 @@ impl Viewer<'_> {
                         flipped.set(slot, source);
                     }
                 }
-                if let (false, Some(block)) = (flipped.is_empty(), mesh.texturing_block) {
+                if let (false, Some(block)) = (flipped.is_empty(), texturing_block) {
                     frame.flip.insert(block, flipped);
                 }
             }
