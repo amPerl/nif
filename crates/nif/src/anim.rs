@@ -344,8 +344,9 @@ pub fn float_extra_data_at(
         else {
             continue;
         };
+        let time_controller: &NiTimeController = controller;
         return match interpolator.data_ref.get(blocks) {
-            Some(Block::NiFloatData(data)) => data.data.sample(time),
+            Some(Block::NiFloatData(data)) => data.data.sample(time_controller.local_time(time)),
             _ => Some(interpolator.value),
         };
     }
@@ -368,9 +369,13 @@ pub fn morph_at(blocks: &[Block], geometry: &NiAvObject, time: f32) -> Option<Ve
         let Block::NiGeomMorpherController(controller) = block else {
             continue;
         };
-        if !controller.is_active() {
+        let time_controller: &NiTimeController = controller;
+        if !time_controller.is_active() {
             continue;
         }
+        // the controller's own clock, so a morpher that loops comes round again instead of
+        // holding its last key for the rest of the file
+        let time = time_controller.local_time(time);
         let Some(Block::NiMorphData(data)) = controller.data_ref.get(blocks) else {
             continue;
         };
@@ -1178,6 +1183,8 @@ pub(crate) mod tests {
                     base: crate::blocks::NiInterpController {
                         base: crate::blocks::NiTimeController {
                             target_ref: target,
+                            // spanning its own keys, as a file's does
+                            end_time: 2.0,
                             ..time_controller(BlockRef::None)
                         },
                     },
@@ -1186,6 +1193,60 @@ pub(crate) mod tests {
                 extra_data_name: crate::blocks::NiString::from(attribute),
             },
         })
+    }
+
+    /// A morpher reads its weights on its own clock, not the file's. Nearly every morpher in
+    /// this game loops over a span far shorter than the file, so reading the file's clock runs
+    /// the morph once and then holds its last key for however long is left.
+    #[test]
+    fn a_looping_morpher_comes_round_again() {
+        let target = |weight| {
+            crate::blocks::Morph {
+                frame_name: crate::blocks::NiString::from("target"),
+                legacy_weight: weight,
+                vectors: vec![vector(0.0, 0.0, 0.0), vector(1.0, 0.0, 0.0)],
+            }
+        };
+        let blocks = vec![
+            shape(BlockRef::Index(1), BlockRef::None),
+            Block::NiGeomMorpherController(crate::blocks::NiGeomMorpherController {
+                base: crate::blocks::NiInterpController {
+                    base: crate::blocks::NiTimeController {
+                        // a short span, as a morpher has, against a file that runs much longer
+                        end_time: 1.0,
+                        ..time_controller(BlockRef::None)
+                    },
+                },
+                morpher_flags: GeomMorpherFlags::UpdateNormalsDisabled,
+                data_ref: BlockRef::Index(2),
+                always_update: 0,
+                interpolator_refs: vec![BlockRef::None, BlockRef::Index(3)],
+            }),
+            Block::NiMorphData(crate::blocks::NiMorphData {
+                num_vertices: 2,
+                relative_targets: 0,
+                morphs: vec![target(0.0), target(0.0)],
+            }),
+            float_interpolator(0.0, BlockRef::Index(4)),
+            Block::NiFloatData(crate::blocks::NiFloatData {
+                data: group(
+                    KeyType::Linear,
+                    vec![key(0.0, 0.0, 0.0, 0.0), key(1.0, 1.0, 0.0, 0.0)],
+                ),
+            }),
+        ];
+        let Some(Block::NiTriShape(geometry)) = blocks.first() else {
+            unreachable!()
+        };
+
+        let at = |t: f32| morph_at(&blocks, geometry, t).expect("the shape morphs")[1].x;
+        // the weight ramps across the span, so the second vertex travels with it
+        let quarter = at(0.25);
+        assert!(quarter > 0.0 && quarter < 1.0, "mid span gave {quarter}");
+
+        // and the same place in a later pass gives the same answer, rather than the held end
+        assert!((at(3.25) - quarter).abs() < 1e-5, "later pass gave {}", at(3.25));
+        assert!((at(9.25) - quarter).abs() < 1e-5);
     }
 
     /// An animated shader attribute is a controller, an interpolator and a key group deep, and
@@ -1218,6 +1279,13 @@ pub(crate) mod tests {
         assert_eq!(
             float_extra_data_at(&blocks, geometry, "Exponent", 1.0),
             None
+        );
+
+        // the controller loops, so past its span the track comes round rather than holding its
+        // last key for the rest of the file
+        assert_eq!(
+            float_extra_data_at(&blocks, geometry, "WarpAlpha", 3.0),
+            float_extra_data_at(&blocks, geometry, "WarpAlpha", 1.0)
         );
     }
 
