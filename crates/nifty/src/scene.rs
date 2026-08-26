@@ -880,6 +880,12 @@ pub struct Camera {
     pub pan: Vec3,
 }
 
+impl Camera {
+    /// How far the orbit rig tilts, short of straight up and straight down where the view
+    /// direction and the world up would agree and the basis would collapse.
+    pub const PITCH_LIMIT: f32 = 1.5;
+}
+
 impl Default for Camera {
     fn default() -> Self {
         Self {

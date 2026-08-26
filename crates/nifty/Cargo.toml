@@ -18,4 +18,4 @@ texpresso = "2.0.2"
 facet-reflect = "0.50.0-rc.6"
 walkdir = "2.5.0"
 pollster = "0.4.0"
-image = { version = "0.25.10", default-features = false, features = ["bmp", "tga"] }
+image = { version = "0.25.10", default-features = false, features = ["bmp", "png", "tga"] }

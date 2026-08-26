@@ -9,6 +9,7 @@ use nif::glam::camera::rh::{proj::directx::perspective, view::look_at_mat4};
 use nif::glam::{Mat4, Vec3};
 use nif::{blocks::Block, Nif};
 
+use crate::capture::Capture;
 use crate::details::{self, Details};
 use crate::library::TextureLibrary;
 use crate::pick;
@@ -44,6 +45,9 @@ struct State {
     /// The frame the last draw built. Framing a shape happens outside the draw and still has to
     /// ask where that shape is now, which only a frame knows.
     last_frame: Arc<Frame>,
+    /// The rectangle the preview last drew into, in points. A capture crops the window's own
+    /// pixels to it, so it has to be the rectangle the draw used rather than the panel's.
+    preview_rect: Option<egui::Rect>,
     camera: Camera,
     wireframe: bool,
     /// Draw from the camera the file carries rather than the pan and orbit rig. Ignored by a
@@ -154,6 +158,8 @@ pub struct Nifty {
     /// Built in shaders, plus any a user supplied from a directory.
     shaders: Shaders,
     show_shaders: bool,
+    /// A `--capture` run, which turns each document through a circle and then closes the window.
+    capture: Option<Capture>,
 }
 
 impl Default for State {
@@ -164,6 +170,7 @@ impl Default for State {
             selected: None,
             scene: None,
             last_frame: Arc::default(),
+            preview_rect: None,
             camera: Camera::default(),
             wireframe: false,
             scene_camera: false,
@@ -199,7 +206,14 @@ impl Nifty {
             show_light: false,
             shaders: Shaders::default(),
             show_shaders: false,
+            capture: None,
         }
+    }
+
+    /// Runs the viewer as a capture rather than as a window to work in: every open document is
+    /// turned through a full circle, the preview is saved at each step, and the window closes.
+    pub fn capture(&mut self, request: crate::capture::Request) {
+        self.capture = Some(Capture::new(request));
     }
 
     /// Selects the first open document, so opening several lands on the one named first.
@@ -866,6 +880,9 @@ impl Viewer<'_> {
     }
 
     fn preview(&mut self, ui: &mut egui::Ui) {
+        // an empty preview still fills a rectangle, and a capture photographs that rather than
+        // waiting for a draw that is never going to come
+        self.state.preview_rect = Some(ui.available_rect_before_wrap());
         let (Some(scene), Some(gfx)) = (self.state.scene.clone(), self.gfx) else {
             ui.centered_and_justified(|ui| ui.label("nothing to draw"));
             return;
@@ -981,7 +998,8 @@ impl Viewer<'_> {
 
         if response.dragged() && !panning {
             camera.yaw -= response.drag_delta().x * 0.01;
-            camera.pitch = (camera.pitch + response.drag_delta().y * 0.01).clamp(-1.5, 1.5);
+            camera.pitch = (camera.pitch + response.drag_delta().y * 0.01)
+                .clamp(-Camera::PITCH_LIMIT, Camera::PITCH_LIMIT);
         }
         // aspect goes in the projection, so the whole panel is used
         let fov = 60f32.to_radians();
@@ -1166,6 +1184,7 @@ impl Viewer<'_> {
             .queue
             .write_buffer(&gfx.camera_buffer, 0, bytemuck::cast_slice(&uniform));
 
+        self.state.preview_rect = Some(rect);
         ui.painter().add(egui_wgpu::Callback::new_paint_callback(
             rect,
             PreviewCall {
@@ -1423,6 +1442,29 @@ fn add_node(
 
 impl eframe::App for Nifty {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // A capture aims before anything draws, so the yaw it sets is the yaw that gets painted
+        // and then photographed. Delivering first frees the camera to turn in the same frame the
+        // previous shot arrives in.
+        if let Some(capture) = &mut self.capture {
+            if capture.deliver(ui.ctx(), self.documents.len()) {
+                capture.report();
+                let failed = capture.failed();
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                self.capture = None;
+                if failed {
+                    std::process::exit(1);
+                }
+            } else if let Some(aim) = capture.aim() {
+                self.active = aim.document;
+                if let Some(document) = self.documents.get_mut(aim.document) {
+                    document.state.camera.yaw = aim.yaw.to_radians();
+                    document.state.camera.pitch = aim
+                        .pitch
+                        .to_radians()
+                        .clamp(-Camera::PITCH_LIMIT, Camera::PITCH_LIMIT);
+                }
+            }
+        }
         for path in ui.ctx().input(|i| {
             i.raw
                 .dropped_files
@@ -1671,6 +1713,7 @@ impl eframe::App for Nifty {
             show_light,
             shaders,
             show_shaders,
+            capture,
         } = self;
 
         egui::Panel::top("bar").show(ui, |ui| {
@@ -1766,5 +1809,19 @@ impl eframe::App for Nifty {
                     },
                 );
         });
+
+        // the preview has drawn by now, so both the pixels and the rectangle they are in exist
+        if let (Some(capture), Some(document)) = (capture, documents.get(*active)) {
+            if let Some(rect) = document.state.preview_rect {
+                let stem = document
+                    .state
+                    .loaded
+                    .as_ref()
+                    .and_then(|loaded| loaded.path.file_stem())
+                    .map(|stem| stem.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "untitled".into());
+                capture.shoot(ui.ctx(), &stem, rect);
+            }
+        }
     }
 }
