@@ -1,0 +1,56 @@
+name: Release nif
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/nif/Cargo.toml'
+      - 'CHANGELOG.md'
+      - '.github/workflows/release-nif.yml'
+  workflow_dispatch:
+
+jobs:
+  release:
+    name: Release on version bump
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read nif version
+        id: version
+        run: echo "version=$(grep -m1 '^version' crates/nif/Cargo.toml | cut -d '"' -f2)" >> "$GITHUB_OUTPUT"
+
+      # only cut a release when the version has actually moved
+      - name: Look for an existing release
+        id: released
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/v${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # the release body is the changelog's own section, so the two cannot drift
+      - name: Take the notes from the changelog
+        if: steps.released.outputs.exists == 'false'
+        run: |
+          awk -v hdr="## nif v${{ steps.version.outputs.version }} - " \
+            'index($0, hdr) == 1 { found = 1; next } found && /^## / { exit } found { print }' \
+            CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "CHANGELOG.md has no section for nif v${{ steps.version.outputs.version }}" >&2
+            exit 1
+          fi
+
+      - name: Create release
+        if: steps.released.outputs.exists == 'false'
+        uses: ncipollo/release-action@v1
+        with:
+          name: nif v${{ steps.version.outputs.version }}
+          tag: v${{ steps.version.outputs.version }}
+          bodyFile: release-notes.md
+          token: ${{ secrets.GITHUB_TOKEN }}

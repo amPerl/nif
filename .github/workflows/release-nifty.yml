@@ -7,6 +7,7 @@ on:
       - 'crates/nifty/**'
       - 'crates/nif/**'
       - 'Cargo.toml'
+      - 'CHANGELOG.md'
       - '.github/workflows/release-nifty.yml'
   workflow_dispatch:
 
@@ -47,6 +48,19 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # the release body is the changelog's own section, so the two cannot drift
+      - name: Take the notes from the changelog
+        if: steps.released.outputs.exists == 'false'
+        shell: bash
+        run: |
+          awk -v hdr="## nifty v${{ steps.version.outputs.version }} - " \
+            'index($0, hdr) == 1 { found = 1; next } found && /^## / { exit } found { print }' \
+            CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "CHANGELOG.md has no section for nifty v${{ steps.version.outputs.version }}" >&2
+            exit 1
+          fi
+
       - name: Create release
         if: steps.released.outputs.exists == 'false'
         uses: ncipollo/release-action@v1
@@ -54,5 +68,5 @@ jobs:
           name: nifty ${{ steps.version.outputs.version }}
           tag: nifty-v${{ steps.version.outputs.version }}
           artifacts: 'target\release\nifty.exe'
+          bodyFile: release-notes.md
           token: ${{ secrets.GITHUB_TOKEN }}
-          generateReleaseNotes: true
