@@ -202,7 +202,11 @@ fn scene_lights(normal: vec3<f32>, to_eye: vec3<f32>, world: vec3<f32>) -> vec4<
     return sum;
 }
 
-/// What a sphere or cube mapped environment adds at this point.
+/// What a sphere or cube mapped environment adds at this point, masked by the gloss map.
+///
+/// The gloss map is what decides where a reflection shows. The engine only sets that stage up
+/// inside its environment branch and modulates with it there, so a gloss map on a shape no effect
+/// reaches does nothing, and an absent one is white and changes nothing either.
 ///
 /// The engine hands the device a camera space reflection and a texture matrix built from the
 /// effect's own matrix times the inverse view. No effect here carries a translation, so the
@@ -219,7 +223,8 @@ fn environment(in: VertexOut) -> vec3<f32> {
         cube_sampler,
         vec3<f32>(reflected.x, reflected.z, reflected.y)
     ).rgb;
-    return textureSample(env_texture, env_sampler, reflected.xy).rgb + cube;
+    let gloss = textureSample(slot3_texture, slot3_sampler, slot_uv(3u, in)).rgb;
+    return (textureSample(env_texture, env_sampler, reflected.xy).rgb + cube) * gloss;
 }
 
 fn lit_colour(in: VertexOut) -> vec3<f32> {

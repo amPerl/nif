@@ -88,7 +88,9 @@ pub(crate) const DEFAULT_SLOTS: [Option<shaders::Source>; BOUND_SLOTS] = [
     Some(shaders::Source::Slot(TextureSlot::Base)),
     Some(shaders::Source::Slot(TextureSlot::Dark)),
     Some(shaders::Source::Slot(TextureSlot::Glow)),
-    None,
+    // the gloss map masks the reflection and does nothing else, so it rides in the free position
+    // and its absent neutral is already the white that modulates to no change
+    Some(shaders::Source::Slot(TextureSlot::Gloss)),
 ];
 
 /// The one light the viewer invents, since a NIF does not carry the scene's lighting. Almost no
