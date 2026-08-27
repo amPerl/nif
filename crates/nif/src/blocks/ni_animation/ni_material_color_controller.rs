@@ -8,7 +8,7 @@ pub struct NiMaterialColorController {
     pub target_color: MaterialColor,
 }
 
-#[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[derive(Debug, PartialEq, Clone, Copy, BinRead, BinWrite)]
 #[cfg_attr(feature = "facet", derive(facet::Facet))]
 #[cfg_attr(feature = "facet", repr(u8))]
 pub enum MaterialColor {

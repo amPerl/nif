@@ -1,8 +1,8 @@
 use glam::{Mat3, Quat, Vec3};
 
 use crate::blocks::{
-    Block, GeomMorpherFlags, LookAxis, NiAvObject, NiGeometry, NiLookAtInterpolator,
-    NiMaterialProperty, NiTexturingProperty, NiTimeController, NiTransformData,
+    Block, GeomMorpherFlags, LookAxis, MaterialColor, NiAvObject, NiGeometry, NiLookAtInterpolator,
+    NiMaterialProperty, NiObjectNET, NiTexturingProperty, NiTimeController, NiTransformData,
     NiTransformInterpolator, TextureSlot, TextureTransform,
 };
 use crate::common::{
@@ -646,6 +646,39 @@ pub fn look_at_parts(
 ///
 /// The dimmer is not a term of its own: it scales the light's three colours, so a light driven
 /// to zero goes out rather than turning black against what it was.
+/// The material channel a controller drives on `material`, and its value at `time`.
+///
+/// Only one channel is driven per controller and only two are ever driven in this game, ambient
+/// and self illumination, so a caller gets the pair and decides which of its own channels to
+/// replace. The interpolator's own value stands in where its data has no key at this time.
+pub fn material_color_at(
+    blocks: &[Block],
+    material: &NiObjectNET,
+    time: f32,
+) -> Option<(MaterialColor, Vector3)> {
+    for block in controllers(blocks, material.controller_ref) {
+        let Block::NiMaterialColorController(controller) = block else {
+            continue;
+        };
+        let time_controller: &NiTimeController = controller;
+        if !time_controller.is_active() {
+            continue;
+        }
+        let Some(Block::NiPoint3Interpolator(interpolator)) =
+            controller.base.interpolator_ref.get(blocks)
+        else {
+            continue;
+        };
+        let keyed = match interpolator.data_ref.get(blocks) {
+            Some(Block::NiPosData(data)) => data.data.sample(time_controller.local_time(time)),
+            _ => None,
+        };
+        let value = keyed.unwrap_or(interpolator.value);
+        return Some((controller.target_color, value));
+    }
+    None
+}
+
 pub fn dimmer_at(blocks: &[Block], light: &NiAvObject, time: f32) -> Option<f32> {
     for block in controllers(blocks, light.controller_ref) {
         let Block::NiLightDimmerController(controller) = block else {
