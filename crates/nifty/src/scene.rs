@@ -38,6 +38,12 @@ const PARAMS_OFFSET: u64 = 64 * 4;
 /// The shader's `Model` and `Camera` structs, in floats. Every buffer bound as one has to be
 /// this long, the grid's included.
 const MODEL_FLOATS: u64 = 84;
+
+/// Where the emissive channel sits in the model uniform, which is what self illumination drives.
+const EMISSIVE_OFFSET: wgpu::BufferAddress = 20 * 4;
+
+/// And the ambient channel, which the fixed function path folds into its own light sum.
+const AMBIENT_OFFSET: wgpu::BufferAddress = 72 * 4;
 /// The most of a file's own lights that reach the shader at once, which is the engine's own
 /// limit on how many it will gather.
 const SCENE_LIGHTS: usize = nif::walk::Lights::MAX;
@@ -599,6 +605,9 @@ pub struct Frame {
     /// A shape's shader attributes where a controller drives one of them, by shape block. Empty
     /// unless a file animates an attribute, which is rare and was easy to miss.
     pub params: HashMap<usize, [f32; 4]>,
+    /// A material channel a controller drives, by material property block. Only ambient and self
+    /// illumination are ever driven, so the pair says which one and what it is now.
+    pub material_color: HashMap<usize, (nif::blocks::MaterialColor, [f32; 4])>,
     /// What each texturing property is flipping to this frame, across every slot a controller
     /// drives. A property flipped on two slots at once is the common case, not the exception.
     pub flip: HashMap<usize, FlipState>,
@@ -2949,6 +2958,21 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
             }
             if let Some(rows) = self.frame.uv.get(&mesh.shape_block) {
                 queue.write_buffer(&mesh.model_buffer, UV_OFFSET, bytemuck::cast_slice(rows));
+            }
+            // a material colour controller replaces one channel and leaves the rest alone
+            if let Some((channel, value)) = mesh
+                .material_block
+                .and_then(|block| self.frame.material_color.get(&block))
+            {
+                let at = match channel {
+                    nif::blocks::MaterialColor::Ambient => Some(AMBIENT_OFFSET),
+                    nif::blocks::MaterialColor::SelfIllum => Some(EMISSIVE_OFFSET),
+                    // nothing in this game drives the other two
+                    _ => None,
+                };
+                if let Some(at) = at {
+                    queue.write_buffer(&mesh.model_buffer, at, bytemuck::cast_slice(value));
+                }
             }
             // a deform replaces the stored vertices outright, so the whole buffer goes back
             // rather than the positions being poked one at a time

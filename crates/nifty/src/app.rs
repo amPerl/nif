@@ -734,6 +734,23 @@ impl Viewer<'_> {
                     // The fixed function pipeline clamped the material colour, so clamp here.
                     frame.alpha.insert(index, alpha.clamp(0.0, 1.0));
                 }
+                // one channel of the material colour, clamped for the same reason
+                if let Some((channel, value)) =
+                    nif::anim::material_color_at(&loaded.nif.blocks, material, time)
+                {
+                    frame.material_color.insert(
+                        index,
+                        (
+                            channel,
+                            [
+                                value.x.clamp(0.0, 1.0),
+                                value.y.clamp(0.0, 1.0),
+                                value.z.clamp(0.0, 1.0),
+                                1.0,
+                            ],
+                        ),
+                    );
+                }
             }
             // a geometry morpher rewrites the shape's vertices rather than moving the shape,
             // so it is resolved per frame like a pose and handed to the renderer the same way
