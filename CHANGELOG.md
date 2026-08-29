@@ -1,5 +1,19 @@
 # Changelog
 
+## nifty v0.6.0 - 2026-08-29
+
+### Added
+
+- Added a reload button to each document tab, which reads the file again while keeping the camera,
+  the timeline position and the view toggles. The selected block is restored too, but only when the
+  block at that index still has the same type and name, so an edit that moves blocks around clears
+  the selection rather than quietly pointing it at something else.
+- Added an auto reload checkbox, which watches every open file and re-reads it when it changes on
+  disk.
+- Added an animate forever checkbox to the transport. The file span is the longest single
+  controller, so wrapping there catches any shorter controller part way through its own cycle and
+  it jumps. This lets the clock run on instead, which is what the engine does.
+
 ## nifty v0.5.0 - 2026-08-27
 
 ### Added
