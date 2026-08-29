@@ -1036,6 +1036,7 @@ fn blend_factor(function: &AlphaFunction, destination: bool) -> wgpu::BlendFacto
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct Camera {
     pub yaw: f32,
     pub pitch: f32,

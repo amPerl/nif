@@ -165,6 +165,9 @@ pub struct Nifty {
     show_shaders: bool,
     /// A `--capture` run, which turns each document through a circle and then closes the window.
     capture: Option<Capture>,
+    /// A document the top bar asked to re-read. Acted on at the top of the next frame, since the
+    /// bar draws from a borrow of the document list and cannot replace one mid draw.
+    reloading: Option<usize>,
 }
 
 impl Default for State {
@@ -212,6 +215,7 @@ impl Nifty {
             shaders: Shaders::default(),
             show_shaders: false,
             capture: None,
+            reloading: None,
         }
     }
 
@@ -258,13 +262,75 @@ impl Nifty {
 
     /// Each file opens as its own document rather than replacing the current one.
     pub fn open(&mut self, path: PathBuf) {
+        let Some(state) = self.load(path) else {
+            return;
+        };
+        self.documents.push(Document {
+            state,
+            dock: default_dock(),
+        });
+        self.active = self.documents.len() - 1;
+    }
+
+    /// Reads the document at `index` again from the path it came from, keeping where the camera
+    /// is and where the timeline sits. Both are kept because a reload is for looking at an edit
+    /// to the same file, and returning to the default view would hide what changed.
+    pub fn reload(&mut self, index: usize) {
+        let Some(path) = self
+            .documents
+            .get(index)
+            .and_then(|d| d.state.loaded.as_ref())
+            .map(|loaded| loaded.path.clone())
+        else {
+            return;
+        };
+        let Some(mut state) = self.load(path) else {
+            return;
+        };
+        let Some(document) = self.documents.get_mut(index) else {
+            return;
+        };
+        let was = &document.state;
+        state.camera = was.camera;
+        // the file may have been edited into a different span, so the old time is kept only
+        // where the new one still reaches it
+        state.time = match state.loaded.as_ref().and_then(|l| l.span) {
+            Some((start, end)) => was.time.clamp(start, end),
+            None => was.time,
+        };
+        state.wireframe = was.wireframe;
+        state.scene_camera = was.scene_camera;
+        state.cull = was.cull;
+        state.colors = was.colors;
+        state.textures = was.textures;
+        state.grid = was.grid;
+        state.lod_mode = was.lod_mode;
+        state.lod_distance = was.lod_distance;
+        state.playing = was.playing;
+        // The selection is a block index, and an edited file can mean a different block sits at
+        // it. Restored only when the block there still has the same type and name, so a reload
+        // never silently moves the selection to something else.
+        let same = |a: &State, b: &State| {
+            let at = a.selected?;
+            (identity(a, at) == identity(b, at)).then_some(at)
+        };
+        if let Some(at) = same(was, &state) {
+            state.selected = Some(at);
+            // the tree opens the ancestors and scrolls to it, the way a pick does
+            state.sync_tree = true;
+        }
+        document.state = state;
+    }
+
+    /// Reads and parses one file into a fresh state, or reports why it could not be.
+    fn load(&mut self, path: PathBuf) -> Option<State> {
         self.error = None;
 
         let bytes = match std::fs::read(&path) {
             Ok(bytes) => bytes,
             Err(e) => {
                 self.error = Some(e.to_string());
-                return;
+                return None;
             }
         };
 
@@ -273,7 +339,7 @@ impl Nifty {
             Ok(nif) => nif,
             Err(e) => {
                 self.error = Some(first_line(&e.to_string()));
-                return;
+                return None;
             }
         };
 
@@ -323,12 +389,19 @@ impl Nifty {
             size: bytes.len(),
         });
 
-        self.documents.push(Document {
-            state,
-            dock: default_dock(),
-        });
-        self.active = self.documents.len() - 1;
+        Some(state)
     }
+}
+
+/// What identifies a block well enough to tell whether a reload is looking at the same one:
+/// its type, and its name where it has one.
+fn identity(state: &State, index: usize) -> Option<(&'static str, String)> {
+    let block = state.loaded.as_ref()?.nif.blocks.get(index)?;
+    let name = block
+        .object_net()
+        .map(|named| named.name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    Some((block.name(), name))
 }
 
 fn first_line(text: &str) -> String {
@@ -1536,6 +1609,9 @@ impl eframe::App for Nifty {
                 self.open(path);
             }
         }
+        if let Some(index) = self.reloading.take() {
+            self.reload(index);
+        }
         if ui.ctx().input(|i| i.key_pressed(egui::Key::F)) {
             if let Some(document) = self.documents.get_mut(self.active) {
                 document.focus_selected();
@@ -1772,6 +1848,7 @@ impl eframe::App for Nifty {
             shaders,
             show_shaders,
             capture,
+            reloading,
         } = self;
 
         egui::Panel::top("bar").show(ui, |ui| {
@@ -1787,6 +1864,13 @@ impl eframe::App for Nifty {
                         .clicked()
                     {
                         *active = index;
+                    }
+                    if ui
+                        .small_button(icon::ARROW_CLOCKWISE)
+                        .on_hover_text("read this file again, keeping the camera and the time")
+                        .clicked()
+                    {
+                        *reloading = Some(index);
                     }
                     if ui.small_button(icon::X).clicked() {
                         close = Some(index);
