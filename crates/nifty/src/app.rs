@@ -75,6 +75,13 @@ struct State {
     lod_distance: f32,
     /// Where the timeline sits, in the file's own seconds.
     time: f32,
+    /// Let the clock run past the file's span instead of starting over at it.
+    ///
+    /// The span is the longest single controller. Where a shorter one does not divide it,
+    /// wrapping there catches that one part way through its own cycle and it jumps. The engine
+    /// wraps nothing: each controller runs on its own clock, and they coincide again only at a
+    /// common multiple of their periods. This reproduces that.
+    unbounded: bool,
     playing: bool,
     /// Where the last pick happened, so clicking the same spot cycles through what is behind.
     last_pick: Option<egui::Pos2>,
@@ -201,6 +208,7 @@ impl Default for State {
             lod_mode: LodMode::Auto,
             lod_distance: 0.0,
             time: 0.0,
+            unbounded: false,
             playing: false,
             last_pick: None,
             sync_tree: false,
@@ -1011,10 +1019,13 @@ impl Viewer<'_> {
         let (start, end) = loaded.span?;
 
         let repeats = loaded.repeats;
+        // animating forever has nothing to hold or wrap at, so a file that plays once is
+        // left alone
+        let unbounded = self.state.unbounded && repeats;
         if self.state.playing {
             // stable_dt rather than dt, so one slow frame does not jump the animation
             self.state.time += ui.input(|i| i.stable_dt).min(0.1);
-            if self.state.time > end {
+            if self.state.time > end && !unbounded {
                 // a file whose controllers all clamp is played once, and holds what it ends on.
                 // Starting over would be a loop the file never asked for.
                 if repeats {
@@ -1036,10 +1047,25 @@ impl Viewer<'_> {
                 self.state.playing = false;
                 self.state.time = start;
             }
+            // the slider grows with the clock when it animates forever, so the handle still
+            // tracks the time instead of resting at the end
+            let reach = match unbounded {
+                true => end.max(self.state.time),
+                false => end,
+            };
             ui.add(
-                egui::Slider::new(&mut self.state.time, start..=end)
+                egui::Slider::new(&mut self.state.time, start..=reach)
                     .text("seconds")
                     .drag_value_speed(0.01),
+            );
+            ui.add_enabled(
+                repeats,
+                egui::Checkbox::new(&mut self.state.unbounded, "animate forever"),
+            )
+            .on_hover_text(
+                "let the clock run past the span instead of starting over at it, the way the \
+                 game does. The span is the longest controller, and the shorter ones are caught \
+                 part way through when it wraps",
             );
             ui.weak(format!(
                 "{:.2} s span, {}",
