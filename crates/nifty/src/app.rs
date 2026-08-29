@@ -23,6 +23,14 @@ use crate::shaders::Shaders;
 
 struct Loaded {
     path: PathBuf,
+    /// When the file was last written as of the read that produced this, which is what auto
+    /// reload compares against.
+    ///
+    /// A read that fails leaves this alone, so the poll keeps retrying. That is deliberate on
+    /// Windows, where a file being written is often locked outright: the retry picks it up the
+    /// moment the writer lets go, where recording the time we saw would leave the viewer stale
+    /// until the next save.
+    written: Option<std::time::SystemTime>,
     nif: Nif,
     links: Vec<Vec<Link>>,
     consumed: usize,
@@ -168,6 +176,10 @@ pub struct Nifty {
     /// A document the top bar asked to re-read. Acted on at the top of the next frame, since the
     /// bar draws from a borrow of the document list and cannot replace one mid draw.
     reloading: Option<usize>,
+    /// Watch every open file and re-read it when it changes on disk.
+    auto_reload: bool,
+    /// When the files were last checked, in the same seconds egui counts.
+    polled: f64,
 }
 
 impl Default for State {
@@ -216,6 +228,8 @@ impl Nifty {
             show_shaders: false,
             capture: None,
             reloading: None,
+            auto_reload: false,
+            polled: 0.0,
         }
     }
 
@@ -322,6 +336,24 @@ impl Nifty {
         document.state = state;
     }
 
+    /// Re-reads any open file whose last written time has moved. One `metadata` call per open
+    /// document, which is cheap enough to run on a timer.
+    fn poll_for_changes(&mut self) {
+        let changed: Vec<usize> = self
+            .documents
+            .iter()
+            .enumerate()
+            .filter_map(|(index, document)| {
+                let loaded = document.state.loaded.as_ref()?;
+                let now = written_at(&loaded.path);
+                (now.is_some() && now != loaded.written).then_some(index)
+            })
+            .collect();
+        for index in changed {
+            self.reload(index);
+        }
+    }
+
     /// Reads and parses one file into a fresh state, or reports why it could not be.
     fn load(&mut self, path: PathBuf) -> Option<State> {
         self.error = None;
@@ -367,6 +399,7 @@ impl Nifty {
         let mut systems = nif::psys::systems(&nif.blocks);
         place_emitters(&nif, &mut systems);
         state.loaded = Some(Loaded {
+            written: written_at(&path),
             path,
             links: link_table(&nif.blocks),
             span: nif::anim::span(&nif.blocks),
@@ -391,6 +424,17 @@ impl Nifty {
 
         Some(state)
     }
+}
+
+/// How often auto reload looks at the files. Short enough that a save in another program shows
+/// up promptly, long enough that the check costs nothing.
+const POLL_SECONDS: f64 = 0.5;
+
+/// When a file was last written, or `None` where it cannot be read at all.
+fn written_at(path: &std::path::Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()
 }
 
 /// What identifies a block well enough to tell whether a reload is looking at the same one:
@@ -1609,6 +1653,17 @@ impl eframe::App for Nifty {
                 self.open(path);
             }
         }
+        if self.auto_reload {
+            let now = ui.ctx().input(|i| i.time);
+            if now - self.polled >= POLL_SECONDS {
+                self.polled = now;
+                self.poll_for_changes();
+            }
+            // egui only draws on input, so without this the poll would stop as soon as the
+            // window stopped receiving any, which is when a file is being edited elsewhere
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_secs_f64(POLL_SECONDS));
+        }
         if let Some(index) = self.reloading.take() {
             self.reload(index);
         }
@@ -1849,6 +1904,8 @@ impl eframe::App for Nifty {
             show_shaders,
             capture,
             reloading,
+            auto_reload,
+            polled: _,
         } = self;
 
         egui::Panel::top("bar").show(ui, |ui| {
@@ -1929,6 +1986,8 @@ impl eframe::App for Nifty {
                     if ui.button(format!("shaders: {}", shaders.count())).clicked() {
                         *show_shaders = true;
                     }
+                    ui.checkbox(auto_reload, "auto reload")
+                        .on_hover_text("re-read every open file when it changes on disk");
                 });
             });
         });
