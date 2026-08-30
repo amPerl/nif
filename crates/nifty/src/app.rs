@@ -13,13 +13,14 @@ use egui_phosphor::regular as icon;
 use nif::glam::camera::rh::{proj::directx::perspective, view::look_at_mat4};
 use nif::glam::{Mat4, Vec3};
 use nif::{blocks::Block, Nif};
+use nif_wgpu::library::TextureLibrary;
+use nif_wgpu::pick;
+use nif_wgpu::scene::{Camera, Frame, Gfx, Light, LodMode, PreviewCall, Scene, Viewpoint};
+use nif_wgpu::shaders::Shaders;
+use nif_wgpu::Viewport;
 
 use crate::capture::Capture;
 use crate::details::{self, Details};
-use crate::library::TextureLibrary;
-use crate::pick;
-use crate::scene::{Camera, Frame, Gfx, Light, LodMode, PreviewCall, Scene, Viewpoint};
-use crate::shaders::Shaders;
 
 struct Loaded {
     path: PathBuf,
@@ -222,11 +223,21 @@ impl Default for State {
 
 impl Nifty {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        // wgpu reports validation failures through `log`, and nothing here installs a logger.
+        // Set here rather than in the renderer, since where the errors go is the application's
+        // to choose.
+        if let Some(render_state) = cc.wgpu_render_state.as_ref() {
+            render_state
+                .device
+                .on_uncaptured_error(std::sync::Arc::new(|error| {
+                    eprintln!("wgpu error: {error}");
+                }));
+        }
         Self {
             documents: Vec::new(),
             active: 0,
             error: None,
-            gfx: cc.wgpu_render_state.as_ref().map(Gfx::new),
+            gfx: cc.wgpu_render_state.as_ref().map(Gfx::from_render_state),
             library: TextureLibrary::default(),
             show_library: false,
             root_input: String::new(),
@@ -840,7 +851,7 @@ impl Viewer<'_> {
             if let Some(skinned) = skinned {
                 frame.deformed.insert(
                     mesh.shape_block,
-                    crate::scene::Deformed {
+                    nif_wgpu::scene::Deformed {
                         positions: skinned.positions,
                         normals: skinned.normals,
                     },
@@ -896,7 +907,7 @@ impl Viewer<'_> {
                         nif::anim::morph_normals(&loaded.nif.blocks, geometry, &positions);
                     frame.deformed.insert(
                         mesh.shape_block,
-                        crate::scene::Deformed { positions, normals },
+                        nif_wgpu::scene::Deformed { positions, normals },
                     );
                 }
             }
@@ -961,8 +972,8 @@ impl Viewer<'_> {
                     (
                         mesh.block,
                         mesh.texturing_block,
-                        crate::scene::DEFAULT_SLOTS,
-                        [None; crate::scene::BOUND_SLOTS],
+                        nif_wgpu::scene::DEFAULT_SLOTS,
+                        [None; nif_wgpu::scene::BOUND_SLOTS],
                     )
                 });
             for (shape_block, texturing_block, bound, uv_pins) in
@@ -974,7 +985,7 @@ impl Viewer<'_> {
                 };
                 frame.uv.insert(
                     shape_block,
-                    crate::scene::slot_uv_rows(
+                    nif_wgpu::scene::slot_uv_rows(
                         &loaded.nif.blocks,
                         Some(property),
                         bound,
@@ -984,8 +995,8 @@ impl Viewer<'_> {
                 );
                 // every slot a flip controller is ever seen to drive, not just the base one:
                 // a property flipped on two at once is the common case
-                let mut flipped = crate::scene::FlipState::default();
-                for slot in crate::scene::FLIPPABLE {
+                let mut flipped = nif_wgpu::scene::FlipState::default();
+                for slot in nif_wgpu::scene::FLIPPABLE {
                     let source =
                         nif::anim::flip_source_at(&loaded.nif.blocks, property, slot, time)
                             .and_then(|r| r.index());
@@ -1311,14 +1322,19 @@ impl Viewer<'_> {
                     &frame.poses,
                 );
                 visible.retain(|shape| !frame.hidden.contains(shape));
-                let hits = pick::ray_through(view_proj, scene.origin, rect, pointer)
-                    .map(|ray| {
-                        // the same axes the renderer spans a quad with, so a particle is picked
-                        // as the square it draws rather than a sphere around it
-                        let axes = (view.row(0).truncate(), view.row(1).truncate());
-                        pick::hits(&loaded.nif, &ray, &visible, viewpoint, &frame, axes)
-                    })
-                    .unwrap_or_default();
+                let hits = pick::ray_through(
+                    view_proj,
+                    scene.origin,
+                    Viewport::from(rect),
+                    [pointer.x, pointer.y],
+                )
+                .map(|ray| {
+                    // the same axes the renderer spans a quad with, so a particle is picked
+                    // as the square it draws rather than a sphere around it
+                    let axes = (view.row(0).truncate(), view.row(1).truncate());
+                    pick::hits(&loaded.nif, &ray, &visible, viewpoint, &frame, axes)
+                })
+                .unwrap_or_default();
                 let repeat = self
                     .state
                     .last_pick
@@ -1369,7 +1385,7 @@ impl Viewer<'_> {
                 .collect(),
             _ => scene.lights.clone(),
         };
-        let uniform = crate::scene::camera_uniform(
+        let uniform = nif_wgpu::scene::camera_uniform(
             view_proj,
             eye - scene.origin,
             self.state.colors,
@@ -1378,8 +1394,7 @@ impl Viewer<'_> {
             &lights_now,
             scene.origin,
         );
-        gfx.render_state
-            .queue
+        gfx.queue
             .write_buffer(&gfx.camera_buffer, 0, bytemuck::cast_slice(&uniform));
 
         self.state.preview_rect = Some(rect);
@@ -1713,10 +1728,10 @@ impl eframe::App for Nifty {
                         for (name, origin) in self.shaders.names() {
                             ui.label(name);
                             match origin {
-                                crate::shaders::Origin::BuiltIn => {
+                                nif_wgpu::shaders::Origin::BuiltIn => {
                                     ui.weak("built in");
                                 }
-                                crate::shaders::Origin::Directory(path) => {
+                                nif_wgpu::shaders::Origin::Directory(path) => {
                                     ui.label(path.display().to_string());
                                 }
                             }
@@ -2073,7 +2088,7 @@ fn place_emitters(nif: &Nif, systems: &mut [nif::psys::System]) {
         );
         let Some(into_system) = world
             .get(&system.block)
-            .map(|pose| crate::scene::particle_space(*pose, world_space).inverse())
+            .map(|pose| nif_wgpu::scene::particle_space(*pose, world_space).inverse())
         else {
             continue;
         };

@@ -1,8 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use eframe::egui;
-use eframe::egui_wgpu::{self, wgpu};
 use nif::glam::{Mat4, Vec3};
 use nif::{
     blocks::{
@@ -80,7 +78,7 @@ fn address_of(clamp: &nif::blocks::TexClampMode) -> (wgpu::AddressMode, wgpu::Ad
 const VERTEX_FLOATS: usize = 3 + 3 + 4 + 2 + 2 + 2;
 
 /// How many texture slots one shape binds. Which maps those are is the shader's choice.
-pub(crate) const BOUND_SLOTS: usize = shaders::SLOTS;
+pub const BOUND_SLOTS: usize = shaders::SLOTS;
 
 /// The environment map rides after the shader's own slots. It carries no uv rows of its own,
 /// since a reflection generates its own coordinates rather than reading a set.
@@ -90,7 +88,7 @@ const ENV_SLOT: usize = BOUND_SLOTS;
 const GROUP_SLOTS: usize = BOUND_SLOTS + 1;
 
 /// What the fixed function path binds, in the order their uv transforms sit in the uniform.
-pub(crate) const DEFAULT_SLOTS: [Option<shaders::Source>; BOUND_SLOTS] = [
+pub const DEFAULT_SLOTS: [Option<shaders::Source>; BOUND_SLOTS] = [
     Some(shaders::Source::Slot(TextureSlot::Base)),
     Some(shaders::Source::Slot(TextureSlot::Dark)),
     Some(shaders::Source::Slot(TextureSlot::Glow)),
@@ -104,7 +102,7 @@ pub(crate) const DEFAULT_SLOTS: [Option<shaders::Source>; BOUND_SLOTS] = [
 /// would leave nearly everything black.
 ///
 /// Every path reads this: the fixed function stand in and each custom shader, so moving it moves
-/// the whole scene consistently. The defaults reproduce the shading nifty had when these were
+/// the whole scene consistently. The defaults reproduce the shading these gave when they were
 /// constants baked into the fragment shader.
 #[derive(Clone, Copy, PartialEq)]
 pub struct Light {
@@ -114,7 +112,7 @@ pub struct Light {
     pub ambient: Vec3,
     pub diffuse: Vec3,
     pub specular: Vec3,
-    /// A view dependent rim that is nifty's own viewing aid rather than anything the engine had.
+    /// A view dependent rim, which is a viewing aid rather than anything the engine had.
     pub fill: f32,
 }
 
@@ -270,7 +268,7 @@ pub struct Preview {
 /// The texture group's own layout, in one place because it is built both when a scene is made
 /// and later when a flip controller reaches a combination nothing has bound yet.
 ///
-/// The three kinds of binding are **separate parameters on purpose**. They used to be one array
+/// The three kinds of binding are separate parameters on purpose. They used to be one array
 /// of `GROUP_SLOTS`, and a caller filling it with `from_fn(|_| the_same_thing)` was correct until
 /// the environment binding was appended to the end, at which point that caller silently began
 /// reflecting its own texture. Nothing could catch it: the types still matched and every file
@@ -310,7 +308,7 @@ fn slot_bind_group(
         });
     }
     device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("nifty textures"),
+        label: Some("nif textures"),
         layout,
         entries: &entries,
     })
@@ -318,7 +316,14 @@ fn slot_bind_group(
 
 /// Lives on the app, for building meshes when a file loads.
 pub struct Gfx {
-    pub render_state: egui_wgpu::RenderState,
+    pub device: wgpu::Device,
+    pub queue: wgpu::Queue,
+    /// The format of the surface being drawn into. Every pipeline is built against it, so
+    /// drawing into a different one means building another `Gfx`.
+    ///
+    /// A linear format, not an Srgb one. Nothing here encodes gamma on output and textures
+    /// upload in gamma space, so an Srgb target darkens the whole scene.
+    pub target: wgpu::TextureFormat,
     model_layout: wgpu::BindGroupLayout,
     texture_layout: wgpu::BindGroupLayout,
     samplers: [wgpu::Sampler; ADDRESS_MODES.len() * ADDRESS_MODES.len() * 2],
@@ -428,7 +433,7 @@ impl PassBindings {
 
 /// What a particle system's own transform contributes to its particles.
 ///
-/// A system flagged world space keeps only its **scale**: its particles are already in world
+/// A system flagged world space keeps only its scale: its particles are already in world
 /// space, so where the node sits and which way it faces are not theirs, and a node that moves
 /// leaves the particles it has already emitted behind. A system not so flagged carries them with
 /// it like any other child.
@@ -1064,19 +1069,25 @@ impl Default for Camera {
 }
 
 impl Gfx {
-    pub fn new(render_state: &egui_wgpu::RenderState) -> Self {
-        let device = &render_state.device;
+    /// Returns the shared resources and the preview's pipelines together. Both are built from
+    /// the one shader module and the one pipeline layout, so neither is worth building twice.
+    pub fn new(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        target: wgpu::TextureFormat,
+    ) -> (Self, Preview) {
+        let device = &device;
 
         let camera_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("nifty camera"),
+            label: Some("nif camera"),
             entries: &[uniform_entry(CAMERA_FLOATS)],
         });
         let model_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("nifty model"),
+            label: Some("nif model"),
             entries: &[uniform_entry(MODEL_FLOATS)],
         });
         let texture_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("nifty texture"),
+            label: Some("nif texture"),
             entries: &slot_layout_entries(),
         });
         // one per address mode pair. TexClampMode is per map and glow maps clamp about as
@@ -1090,7 +1101,7 @@ impl Gfx {
                 wgpu::FilterMode::Nearest
             };
             device.create_sampler(&wgpu::SamplerDescriptor {
-                label: Some("nifty sampler"),
+                label: Some("nif sampler"),
                 address_mode_u: ADDRESS_MODES[(i / modes) % modes],
                 address_mode_v: ADDRESS_MODES[i % modes],
                 mag_filter: filter,
@@ -1100,13 +1111,13 @@ impl Gfx {
         });
 
         let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("nifty camera"),
+            label: Some("nif camera"),
             size: CAMERA_FLOATS * 4,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("nifty camera"),
+            label: Some("nif camera"),
             layout: &camera_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
@@ -1121,7 +1132,7 @@ impl Gfx {
         let shader = compile(device, &fixed.name, &fixed.passes[0])
             .expect("the built in fixed function shader has to compile");
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("nifty"),
+            label: Some("nif"),
             bind_group_layouts: &[
                 Some(&camera_layout),
                 Some(&model_layout),
@@ -1133,7 +1144,7 @@ impl Gfx {
             device,
             &layout,
             &shader,
-            render_state.target_format,
+            target,
             DrawState {
                 cull: None,
                 depth_write: false,
@@ -1148,7 +1159,7 @@ impl Gfx {
             device,
             &layout,
             &shader,
-            render_state.target_format,
+            target,
             DrawState {
                 cull: None,
                 ..DrawState::opaque()
@@ -1161,7 +1172,7 @@ impl Gfx {
             device,
             &layout,
             &shader,
-            render_state.target_format,
+            target,
             DrawState {
                 cull: None,
                 ..DrawState::opaque()
@@ -1170,44 +1181,36 @@ impl Gfx {
             "fs_wire",
         );
 
-        render_state
-            .renderer
-            .write()
-            .callback_resources
-            .insert(Preview {
-                wire,
-                highlight,
-                grid,
-                camera_bind_group,
-                texture_layout: texture_layout.clone(),
-                flipped: HashMap::new(),
-            });
+        let preview = Preview {
+            wire,
+            highlight,
+            grid,
+            camera_bind_group,
+            texture_layout: texture_layout.clone(),
+            flipped: HashMap::new(),
+        };
 
-        // wgpu reports validation failures through `log`, and nothing here installs a logger
-        render_state
-            .device
-            .on_uncaptured_error(std::sync::Arc::new(|error| {
-                eprintln!("wgpu error: {error}");
-            }));
-
-        Self {
-            render_state: render_state.clone(),
+        let gfx = Self {
+            device: device.clone(),
+            queue,
+            target,
             model_layout,
             texture_layout,
             samplers,
             pipeline_layout: layout,
             camera_buffer,
-        }
+        };
+        (gfx, preview)
     }
 
     /// One pipeline per shader and draw state combination, so a shader that overrides its own
     /// blending gets its own rather than sharing whatever the file's properties asked for.
     fn pipeline(&self, state: DrawState, module: &wgpu::ShaderModule) -> wgpu::RenderPipeline {
         build_pipeline(
-            &self.render_state.device,
+            &self.device,
             &self.pipeline_layout,
             module,
-            self.render_state.target_format,
+            self.target,
             state,
             wgpu::PrimitiveTopology::TriangleList,
             "fs_main",
@@ -1223,26 +1226,27 @@ impl Gfx {
     }
 
     fn upload_texture(&self, width: u32, height: u32, rgba: &[u8]) -> wgpu::TextureView {
-        let device = &self.render_state.device;
+        let device = &self.device;
         let size = wgpu::Extent3d {
             width,
             height,
             depth_or_array_layers: 1,
         };
         let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("nifty texture"),
+            label: Some("nif texture"),
             size,
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            // Not the Srgb variant: eframe's target is Bgra8Unorm and nothing here encodes
-            // gamma on output, so decoding sRGB at sample time would make everything too dark.
-            // Gamma space also matches D3D9 fixed function, which had no sRGB handling.
+            // Not the Srgb variant: nothing here encodes gamma on output, so decoding sRGB at
+            // sample time would make everything too dark. The target format has to be linear
+            // for the same reason. Gamma space also matches D3D9 fixed function, which had no
+            // sRGB handling.
             format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        self.render_state.queue.write_texture(
+        self.queue.write_texture(
             texture.as_image_copy(),
             rgba,
             wgpu::TexelCopyBufferLayout {
@@ -1265,13 +1269,7 @@ impl Gfx {
         environment: (&wgpu::TextureView, &wgpu::Sampler),
         cube: (&wgpu::TextureView, &wgpu::Sampler),
     ) -> wgpu::BindGroup {
-        slot_bind_group(
-            &self.render_state.device,
-            &self.texture_layout,
-            slots,
-            environment,
-            cube,
-        )
+        slot_bind_group(&self.device, &self.texture_layout, slots, environment, cube)
     }
 
     /// One `NiSourceTexture`, embedded or from the library on disk.
@@ -1306,14 +1304,14 @@ impl Gfx {
     /// the top of each face is read, and they share a format and a size the way the device
     /// requires.
     fn upload_cube(&self, size: u32, faces: &[Vec<u8>; 6]) -> wgpu::TextureView {
-        let device = &self.render_state.device;
+        let device = &self.device;
         let extent = wgpu::Extent3d {
             width: size,
             height: size,
             depth_or_array_layers: 6,
         };
         let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("nifty cube"),
+            label: Some("nif cube"),
             size: extent,
             mip_level_count: 1,
             sample_count: 1,
@@ -1325,7 +1323,7 @@ impl Gfx {
             view_formats: &[],
         });
         for (at, face) in faces.iter().enumerate() {
-            self.render_state.queue.write_texture(
+            self.queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture: &texture,
                     mip_level: 0,
@@ -1574,7 +1572,7 @@ impl Gfx {
         named_textures: &mut HashMap<&'static str, wgpu::TextureView>,
         missing: &wgpu::TextureView,
     ) -> Option<ParticleMesh> {
-        let device = &self.render_state.device;
+        let device = &self.device;
         let capacity = match geometry.data_ref.get(&nif.blocks) {
             Some(Block::NiPSysData(data)) => data.vertex_count(),
             _ => 0,
@@ -1676,7 +1674,7 @@ impl Gfx {
         );
 
         let model_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("nifty particles model"),
+            label: Some("nif particles model"),
             contents: bytemuck::cast_slice(&uniform),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -1698,7 +1696,7 @@ impl Gfx {
             texture,
             bindings,
             bind_group: device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("nifty particles"),
+                label: Some("nif particles"),
                 layout: &self.model_layout,
                 entries: &[wgpu::BindGroupEntry {
                     binding: 0,
@@ -1706,18 +1704,18 @@ impl Gfx {
                 }],
             }),
             vertices: device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("nifty particles"),
+                label: Some("nif particles"),
                 size: (capacity * 4 * VERTEX_FLOATS * 4) as u64,
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),
             indices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("nifty particles"),
+                label: Some("nif particles"),
                 contents: bytemuck::cast_slice(&indices),
                 usage: wgpu::BufferUsages::INDEX,
             }),
             edges: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("nifty particle edges"),
+                label: Some("nif particle edges"),
                 contents: bytemuck::cast_slice(&edges),
                 usage: wgpu::BufferUsages::INDEX,
             }),
@@ -1733,7 +1731,7 @@ impl Gfx {
         shaders: &Shaders,
     ) -> (Scene, Vec<String>, Vec<String>) {
         let lod_of = lod_ancestry(nif);
-        let device = &self.render_state.device;
+        let device = &self.device;
         // one per Absent variant, since what an unread slot stands in with depends on how the
         // slot combines: white where it multiplies, black where it adds, half where it doubles
         // a shape reflecting nothing samples a black cube, since the reflection adds
@@ -2289,7 +2287,7 @@ impl Gfx {
             }
 
             let model_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("nifty model"),
+                label: Some("nif model"),
                 contents: bytemuck::cast_slice(&model_uniform),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
@@ -2323,7 +2321,7 @@ impl Gfx {
                 radius: ((shape_max - shape_min).length() * 0.5).max(0.001),
                 data_block: geometry.data_ref.index().unwrap_or(usize::MAX),
                 vertices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("nifty vertices"),
+                    label: Some("nif vertices"),
                     contents: bytemuck::cast_slice(&attributes),
                     // a shape the frame rewrites needs the buffer to be writable, and only it
                     usage: if deforms {
@@ -2333,19 +2331,19 @@ impl Gfx {
                     },
                 }),
                 indices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("nifty indices"),
+                    label: Some("nif indices"),
                     contents: bytemuck::cast_slice(&indices),
                     usage: wgpu::BufferUsages::INDEX,
                 }),
                 count: indices.len() as u32,
                 edges: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("nifty edges"),
+                    label: Some("nif edges"),
                     contents: bytemuck::cast_slice(&edges),
                     usage: wgpu::BufferUsages::INDEX,
                 }),
                 edge_count: edges.len() as u32,
                 bind_group: device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("nifty model"),
+                    label: Some("nif model"),
                     layout: &self.model_layout,
                     entries: &[wgpu::BindGroupEntry {
                         binding: 0,
@@ -2388,18 +2386,18 @@ impl Gfx {
             center: ground,
             count: (lines.len() / VERTEX_FLOATS) as u32,
             vertices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("nifty grid"),
+                label: Some("nif grid"),
                 contents: bytemuck::cast_slice(&lines),
                 usage: wgpu::BufferUsages::VERTEX,
             }),
             model: device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("nifty grid"),
+                label: Some("nif grid"),
                 layout: &self.model_layout,
                 entries: &[wgpu::BindGroupEntry {
                     binding: 0,
                     resource: device
                         .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some("nifty grid model"),
+                            label: Some("nif grid model"),
                             contents: bytemuck::cast_slice(&identity),
                             usage: wgpu::BufferUsages::UNIFORM,
                         })
@@ -2672,7 +2670,7 @@ fn build_pipeline(
         alpha: wgpu::BlendComponent::OVER,
     });
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("nifty"),
+        label: Some("nif"),
         layout: Some(layout),
         vertex: wgpu::VertexState {
             module: shader,
@@ -2893,52 +2891,45 @@ impl PreviewCall {
     fn quad_axes(&self) -> (Vec3, Vec3) {
         (self.right, self.up)
     }
-}
 
-impl egui_wgpu::CallbackTrait for PreviewCall {
-    /// The model matrix is the first 64 bytes of the uniform, so a pose rewrites only that
-    /// and leaves the material behind it alone.
-    fn prepare(
-        &self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        _screen: &egui_wgpu::ScreenDescriptor,
-        _encoder: &mut wgpu::CommandEncoder,
-        resources: &mut egui_wgpu::CallbackResources,
-    ) -> Vec<wgpu::CommandBuffer> {
+    /// Builds the bind groups this frame needs and writes what a controller has moved into the
+    /// buffers already on the device. Separate from the draw because a bind group cannot be
+    /// created while a pass is recording.
+    ///
+    /// The model matrix is the first 64 bytes of the uniform, so a pose rewrites only that and
+    /// leaves the material behind it alone.
+    pub fn prepare(&self, device: &wgpu::Device, queue: &wgpu::Queue, preview: &mut Preview) {
         // A flipped shape binds a group per combination of slot frames, built the first time the
         // animation reaches that combination. Only combinations actually visited are built, which
         // is what keeps this off the cross product.
-        if let Some(preview) = resources.get_mut::<Preview>() {
-            let shapes = self
-                .scene
-                .meshes
-                .iter()
-                .filter(|m| self.visible(m))
-                .flat_map(|mesh| {
-                    mesh.passes.iter().enumerate().map(move |(at, pass)| {
-                        (mesh.shape_block, at, mesh.texturing_block, &pass.bindings)
-                    })
-                });
-            // a system has the one pass, numbered zero
-            let systems = self
-                .scene
-                .particles
-                .iter()
-                .filter(|m| self.visible_particles(m))
-                .map(|mesh| (mesh.block, 0, mesh.texturing_block, &mesh.bindings));
-            for (block, at, texturing, bindings) in shapes.chain(systems) {
-                let state = self.flip_state(texturing);
-                if state.is_empty() {
-                    continue;
-                }
-                let key = (block, at, state);
-                if preview.flipped.contains_key(&key) {
-                    continue;
-                }
-                let group = bindings.group(device, &preview.texture_layout, state);
-                preview.flipped.insert(key, group);
+        let shapes = self
+            .scene
+            .meshes
+            .iter()
+            .filter(|m| self.visible(m))
+            .flat_map(|mesh| {
+                mesh.passes.iter().enumerate().map(move |(at, pass)| {
+                    (mesh.shape_block, at, mesh.texturing_block, &pass.bindings)
+                })
+            });
+        // a system has the one pass, numbered zero
+        let systems = self
+            .scene
+            .particles
+            .iter()
+            .filter(|m| self.visible_particles(m))
+            .map(|mesh| (mesh.block, 0, mesh.texturing_block, &mesh.bindings));
+        for (block, at, texturing, bindings) in shapes.chain(systems) {
+            let state = self.flip_state(texturing);
+            if state.is_empty() {
+                continue;
             }
+            let key = (block, at, state);
+            if preview.flipped.contains_key(&key) {
+                continue;
+            }
+            let group = bindings.group(device, &preview.texture_layout, state);
+            preview.flipped.insert(key, group);
         }
         for mesh in &self.scene.meshes {
             // a skinned shape's vertices arrive in world space, so its node pose is not its
@@ -3073,19 +3064,11 @@ impl egui_wgpu::CallbackTrait for PreviewCall {
                 queue.write_buffer(&mesh.vertices, 0, bytemuck::cast_slice(&vertices));
             }
         }
-        Vec::new()
     }
 
-    fn paint(
-        &self,
-        _info: egui::PaintCallbackInfo,
-        render_pass: &mut wgpu::RenderPass<'static>,
-        resources: &egui_wgpu::CallbackResources,
-    ) {
-        let Some(preview) = resources.get::<Preview>() else {
-            return;
-        };
-
+    /// Records the scene into a pass the caller has opened. Everything it binds was built by
+    /// `prepare`, which has to have run for the same frame or the draw uses stale buffers.
+    pub fn paint(&self, render_pass: &mut wgpu::RenderPass<'static>, preview: &Preview) {
         render_pass.set_bind_group(0, &preview.camera_bind_group, &[]);
 
         if self.grid {
@@ -3579,7 +3562,7 @@ mod tests {
             let hull = &shader.passes[0];
             assert_eq!(
                 hull.state.cull,
-                Some(Some(eframe::egui_wgpu::wgpu::Face::Front)),
+                Some(Some(wgpu::Face::Front)),
                 "{name} hull has to drop its near side"
             );
             assert!(
@@ -3595,7 +3578,7 @@ mod tests {
             assert!(surface.vertex.is_none(), "{name} surface stays put");
             assert_eq!(
                 surface.state.cull,
-                Some(Some(eframe::egui_wgpu::wgpu::Face::Back)),
+                Some(Some(wgpu::Face::Back)),
                 "{name} surface culls the way any solid does"
             );
             // the thickness is the shape's to set, and the source's default stands in for it

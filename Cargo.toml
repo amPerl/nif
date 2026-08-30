@@ -1,3 +1,3 @@
 [workspace]
-members = ["crates/nif", "crates/nifty"]
+members = ["crates/nif", "crates/nif-wgpu", "crates/nifty"]
 resolver = "2"

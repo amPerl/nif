@@ -14,9 +14,8 @@ use nif::common::{
     BlockRef, ByteColor4, Color3, Color4, Matrix33, Quaternion, TexCoord, Triangle, Vector3,
 };
 use nif::Nif;
-
-use crate::library::TextureLibrary;
-use crate::texture::decode_texture;
+use nif_wgpu::library::TextureLibrary;
+use nif_wgpu::texture::decode_texture;
 
 /// Structs small enough to read on one line rather than expand into their own section.
 const INLINE: [&str; 6] = [

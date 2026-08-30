@@ -1,12 +1,11 @@
 use std::collections::HashSet;
 
-use eframe::egui;
-use eframe::egui_wgpu::wgpu;
 use nif::blocks::Block;
 use nif::glam::{Mat4, Vec3, Vec4};
 use nif::Nif;
 
 use crate::scene::{cull_of, geometry_of, Viewpoint};
+use crate::Viewport;
 
 /// A shape the ray passed through.
 pub struct Hit {
@@ -29,14 +28,15 @@ pub struct Ray {
 pub fn ray_through(
     view_proj: Mat4,
     origin: Vec3,
-    rect: egui::Rect,
-    pointer: egui::Pos2,
+    viewport: Viewport,
+    pointer: [f32; 2],
 ) -> Option<Ray> {
-    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+    let [width, height] = viewport.size;
+    if width <= 0.0 || height <= 0.0 {
         return None;
     }
-    let x = 2.0 * (pointer.x - rect.left()) / rect.width() - 1.0;
-    let y = 1.0 - 2.0 * (pointer.y - rect.top()) / rect.height();
+    let x = 2.0 * (pointer[0] - viewport.min[0]) / width - 1.0;
+    let y = 1.0 - 2.0 * (pointer[1] - viewport.min[1]) / height;
 
     let inverse = view_proj.inverse();
     let unproject = |depth: f32| {
@@ -282,8 +282,11 @@ mod tests {
     /// origin while working on one near it.
     #[test]
     fn a_ray_comes_back_into_the_space_the_file_uses() {
-        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(100.0, 100.0));
-        let centre = egui::pos2(50.0, 50.0);
+        let rect = Viewport {
+            min: [0.0, 0.0],
+            size: [100.0, 100.0],
+        };
+        let centre = [50.0, 50.0];
         let eye = Vec3::new(0.0, -4.0, 0.0);
         let view = nif::glam::camera::rh::view::look_at_mat4(eye, Vec3::ZERO, Vec3::Z);
         let projection = nif::glam::camera::rh::proj::directx::perspective(1.0, 1.0, 0.1, 100.0);

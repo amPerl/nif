@@ -41,7 +41,7 @@ impl Default for Request {
             dir: PathBuf::from("captures"),
             step: 45.0,
             // the pitch the viewer opens at, so a capture matches what opening the file shows
-            pitch: crate::scene::Camera::default().pitch.to_degrees(),
+            pitch: nif_wgpu::scene::Camera::default().pitch.to_degrees(),
             size: [1280.0, 900.0],
             time: None,
         }

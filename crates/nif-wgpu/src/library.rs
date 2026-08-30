@@ -186,7 +186,7 @@ mod tests {
 
     /// Two roots, each holding a file with the same stem but different contents.
     fn two_roots(name: &str) -> (PathBuf, PathBuf) {
-        let base = std::env::temp_dir().join(format!("nifty-library-{name}"));
+        let base = std::env::temp_dir().join(format!("nif-library-{name}"));
         let _ = std::fs::remove_dir_all(&base);
         let first = base.join("first");
         let second = base.join("second/nested");

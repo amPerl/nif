@@ -1,4 +1,4 @@
-//! The shaders nifty can reproduce, keyed by the technique name a `NiGeometry` stores.
+//! The shaders this crate can reproduce, keyed by the technique name a `NiGeometry` stores.
 //!
 //! A shader is a WGSL fragment entry point written against the contract in `prelude.wgsl`, which
 //! is prepended to every one of them. Built ins are compiled in; a user can supply more by
@@ -7,8 +7,6 @@
 //!
 //! Only shaders whose source settles what they do belong here. A technique with no entry is
 //! reported as unhandled rather than approximated.
-
-use eframe::egui_wgpu::wgpu;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -151,7 +149,7 @@ impl Default for Pass {
     }
 }
 
-/// One shader nifty can draw with.
+/// One shader a scene can draw with.
 pub struct Shader {
     pub name: String,
     /// What it draws, in order. Never empty.

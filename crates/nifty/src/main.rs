@@ -16,13 +16,7 @@
 
 mod app;
 mod capture;
-mod dds;
 mod details;
-mod library;
-mod pick;
-mod scene;
-mod shaders;
-mod texture;
 
 use std::path::PathBuf;
 
@@ -119,7 +113,7 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         depth_buffer: 32,
-        multisampling: crate::scene::MSAA_SAMPLES as u16,
+        multisampling: nif_wgpu::scene::MSAA_SAMPLES as u16,
         viewport,
         ..Default::default()
     };
