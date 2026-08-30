@@ -1613,15 +1613,18 @@ impl Viewer<'_> {
         ui.painter().add(egui_wgpu::Callback::new_paint_callback(
             rect,
             PreviewCall {
-                camera: binding,
-                frame,
+                // one for now: the viewport draws a list, and this document holds one file
+                instances: vec![nif_wgpu::scene::Instance {
+                    scene,
+                    frame,
+                    camera: binding,
+                }],
                 lod_mode: self.state.lod_mode,
                 lod_distance: self.state.lod_distance,
-                scene,
                 wireframe: self.state.wireframe,
                 grid: self.state.grid,
                 cull: self.state.cull,
-                selected: self.state.selected,
+                selected: self.state.selected.map(|block| (0, block)),
                 eye,
                 right: view.row(0).truncate(),
                 up: view.row(1).truncate(),

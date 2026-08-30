@@ -256,10 +256,11 @@ pub struct Preview {
     /// What the texture group is laid out as, so a flipped combination can be assembled here
     /// rather than only where the scene is built.
     texture_layout: wgpu::BindGroupLayout,
-    /// Bind groups for combinations the animation has actually reached, by shape, pass and
-    /// combination. Built on demand: the cross product reaches 2,601 for one property in this
+    /// Bind groups for combinations the animation has actually reached, by instance, shape,
+    /// pass and combination. The instance is part of the key because a block index only names a
+    /// block within one file, and two files in a viewport both have a block 12. Built on demand: the cross product reaches 2,601 for one property in this
     /// corpus against 102 textures, so building it up front is not an option.
-    flipped: HashMap<(usize, usize, FlipState), wgpu::BindGroup>,
+    flipped: HashMap<(usize, usize, usize, FlipState), wgpu::BindGroup>,
 }
 
 /// The texture group's own layout, in one place because it is built both when a scene is made
@@ -492,9 +493,18 @@ pub struct ParticleMesh {
 
 /// Something drawn in the back to front pass, which sorts across both kinds.
 enum Sorted<'a> {
-    Shape(&'a Mesh),
-    /// The system and how many of its quads are alive this frame.
-    Particles(&'a ParticleMesh, usize),
+    /// Which instance it belongs to, since the pass sorts across all of them at once.
+    Shape(usize, &'a Mesh),
+    /// The instance, the system, and how many of its quads are alive this frame.
+    Particles(usize, &'a ParticleMesh, usize),
+}
+
+impl Sorted<'_> {
+    fn instance(&self) -> usize {
+        match self {
+            Sorted::Shape(at, _) | Sorted::Particles(at, _, _) => *at,
+        }
+    }
 }
 
 pub struct Scene {
@@ -2795,15 +2805,26 @@ fn uniform_entry(floats: u64) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-pub struct PreviewCall {
+/// One scene as it is being drawn: what it holds, where that has moved to this frame, and the
+/// view it is drawn through.
+///
+/// The view is per instance rather than per call because an instance placed somewhere is drawn
+/// through a camera that has been moved by the same amount, which leaves the geometry, the
+/// buffers and the shaders alone.
+pub struct Instance {
     pub scene: Arc<Scene>,
-    /// The view this call draws through. Held here rather than on the preview so that two of
-    /// these in one frame are two views rather than one written twice.
+    pub frame: Arc<Frame>,
     pub camera: Arc<CameraBinding>,
+}
+
+pub struct PreviewCall {
+    /// Every scene being drawn into this viewport, in the order they were opened.
+    pub instances: Vec<Instance>,
     pub wireframe: bool,
     pub grid: bool,
     pub cull: bool,
-    pub selected: Option<usize>,
+    /// Which instance, and which block within it.
+    pub selected: Option<(usize, usize)>,
     /// Blended shapes sort against this.
     pub eye: Vec3,
     /// The camera's own axes in world space, which is what a particle quad is built on.
@@ -2811,22 +2832,21 @@ pub struct PreviewCall {
     pub up: Vec3,
     pub lod_mode: LodMode,
     pub lod_distance: f32,
-    pub frame: Arc<Frame>,
 }
 
 impl PreviewCall {
     /// Where the shape's centre is this frame. A billboard turns and an animated node moves, so
     /// the centre the scene was built with is not where it is being drawn.
-    fn center(&self, mesh: &Mesh) -> Vec3 {
-        self.frame.center_of(mesh)
+    fn center(&self, instance: &Instance, mesh: &Mesh) -> Vec3 {
+        instance.frame.center_of(mesh)
     }
 
     /// One pass's textures as of this frame, which a flip controller may have swapped.
     /// What a texturing property is flipping to this frame, across every slot. A particle
     /// system asks the same question of the same map as a shape does.
-    fn flip_state(&self, texturing_block: Option<usize>) -> FlipState {
+    fn flip_state(&self, instance: &Instance, texturing_block: Option<usize>) -> FlipState {
         texturing_block
-            .and_then(|block| self.frame.flip.get(&block))
+            .and_then(|block| instance.frame.flip.get(&block))
             .copied()
             .unwrap_or_default()
     }
@@ -2834,11 +2854,13 @@ impl PreviewCall {
     fn texture_of<'a>(
         &'a self,
         preview: &'a Preview,
+        which: usize,
+        instance: &'a Instance,
         mesh: &'a Mesh,
         at: usize,
         pass: &'a MeshPass,
     ) -> &'a wgpu::BindGroup {
-        let state = self.flip_state(mesh.texturing_block);
+        let state = self.flip_state(instance, mesh.texturing_block);
         if state.is_empty() {
             return &pass.texture;
         }
@@ -2846,7 +2868,7 @@ impl PreviewCall {
         // was not prepared falls back to the shape's own maps rather than dropping the draw.
         preview
             .flipped
-            .get(&(mesh.shape_block, at, state))
+            .get(&(which, mesh.shape_block, at, state))
             .unwrap_or(&pass.texture)
     }
 
@@ -2856,38 +2878,40 @@ impl PreviewCall {
     fn particle_texture<'a>(
         &'a self,
         preview: &'a Preview,
+        which: usize,
+        instance: &'a Instance,
         mesh: &'a ParticleMesh,
     ) -> &'a wgpu::BindGroup {
-        let state = self.flip_state(mesh.texturing_block);
+        let state = self.flip_state(instance, mesh.texturing_block);
         if state.is_empty() {
             return &mesh.texture;
         }
         preview
             .flipped
-            .get(&(mesh.block, 0, state))
+            .get(&(which, mesh.block, 0, state))
             .unwrap_or(&mesh.texture)
     }
 
     /// The same question for a particle system, which carries its level like any other shape.
-    fn visible_particles(&self, mesh: &ParticleMesh) -> bool {
-        !self.frame.hidden.contains(&mesh.block)
-            && self.scene.shows(
+    fn visible_particles(&self, instance: &Instance, mesh: &ParticleMesh) -> bool {
+        !instance.frame.hidden.contains(&mesh.block)
+            && instance.scene.shows(
                 mesh.lod,
                 self.lod_mode,
                 self.lod_distance,
                 self.eye,
-                &self.frame.poses,
+                &instance.frame.poses,
             )
     }
 
-    fn visible(&self, mesh: &Mesh) -> bool {
-        !self.frame.hidden.contains(&mesh.shape_block)
-            && self.scene.shows(
+    fn visible(&self, instance: &Instance, mesh: &Mesh) -> bool {
+        !instance.frame.hidden.contains(&mesh.shape_block)
+            && instance.scene.shows(
                 mesh.lod,
                 self.lod_mode,
                 self.lod_distance,
                 self.eye,
-                &self.frame.poses,
+                &instance.frame.poses,
             )
     }
 }
@@ -2922,169 +2946,175 @@ impl PreviewCall {
     /// The model matrix is the first 64 bytes of the uniform, so a pose rewrites only that and
     /// leaves the material behind it alone.
     pub fn prepare(&self, device: &wgpu::Device, queue: &wgpu::Queue, preview: &mut Preview) {
-        // A flipped shape binds a group per combination of slot frames, built the first time the
-        // animation reaches that combination. Only combinations actually visited are built, which
-        // is what keeps this off the cross product.
-        let shapes = self
-            .scene
-            .meshes
-            .iter()
-            .filter(|m| self.visible(m))
-            .flat_map(|mesh| {
-                mesh.passes.iter().enumerate().map(move |(at, pass)| {
-                    (mesh.shape_block, at, mesh.texturing_block, &pass.bindings)
-                })
-            });
-        // a system has the one pass, numbered zero
-        let systems = self
-            .scene
-            .particles
-            .iter()
-            .filter(|m| self.visible_particles(m))
-            .map(|mesh| (mesh.block, 0, mesh.texturing_block, &mesh.bindings));
-        for (block, at, texturing, bindings) in shapes.chain(systems) {
-            let state = self.flip_state(texturing);
-            if state.is_empty() {
-                continue;
-            }
-            let key = (block, at, state);
-            if preview.flipped.contains_key(&key) {
-                continue;
-            }
-            let group = bindings.group(device, &preview.texture_layout, state);
-            preview.flipped.insert(key, group);
-        }
-        for mesh in &self.scene.meshes {
-            // a skinned shape's vertices arrive in world space, so its node pose is not its
-            // model matrix and writing one here would move it twice
-            if let Some(model) = (!mesh.skinned)
-                .then(|| self.frame.poses.get(&mesh.shape_block))
-                .flatten()
-            {
-                queue.write_buffer(
-                    &mesh.model_buffer,
-                    0,
-                    bytemuck::cast_slice(&drawn_at(self.scene.origin, *model).to_cols_array()),
-                );
-            }
-            if let Some(alpha) = mesh
-                .material_block
-                .and_then(|block| self.frame.alpha.get(&block))
-            {
-                queue.write_buffer(&mesh.model_buffer, ALPHA_OFFSET, bytemuck::bytes_of(alpha));
-            }
-            if let Some(rows) = self.frame.uv.get(&mesh.shape_block) {
-                queue.write_buffer(&mesh.model_buffer, UV_OFFSET, bytemuck::cast_slice(rows));
-            }
-            // a material colour controller replaces one channel and leaves the rest alone
-            if let Some((channel, value)) = mesh
-                .material_block
-                .and_then(|block| self.frame.material_color.get(&block))
-            {
-                let at = match channel {
-                    nif::blocks::MaterialColor::Ambient => Some(AMBIENT_OFFSET),
-                    nif::blocks::MaterialColor::SelfIllum => Some(EMISSIVE_OFFSET),
-                    // nothing in this game drives the other two
-                    _ => None,
-                };
-                if let Some(at) = at {
-                    queue.write_buffer(&mesh.model_buffer, at, bytemuck::cast_slice(value));
+        for (which, instance) in self.instances.iter().enumerate() {
+            // A flipped shape binds a group per combination of slot frames, built the first time the
+            // animation reaches that combination. Only combinations actually visited are built, which
+            // is what keeps this off the cross product.
+            let shapes = instance
+                .scene
+                .meshes
+                .iter()
+                .filter(|m| self.visible(instance, m))
+                .flat_map(|mesh| {
+                    mesh.passes.iter().enumerate().map(move |(at, pass)| {
+                        (mesh.shape_block, at, mesh.texturing_block, &pass.bindings)
+                    })
+                });
+            // a system has the one pass, numbered zero
+            let systems = instance
+                .scene
+                .particles
+                .iter()
+                .filter(|m| self.visible_particles(instance, m))
+                .map(|mesh| (mesh.block, 0, mesh.texturing_block, &mesh.bindings));
+            for (block, at, texturing, bindings) in shapes.chain(systems) {
+                let state = self.flip_state(instance, texturing);
+                if state.is_empty() {
+                    continue;
                 }
-            }
-            // a deform replaces the stored vertices outright, so the whole buffer goes back
-            // rather than the positions being poked one at a time
-            if let (Some(moved), Some(source)) = (
-                self.frame.deformed.get(&mesh.shape_block),
-                mesh.deform_source.as_ref(),
-            ) {
-                let mut attributes = source.clone();
-                for (vertex, at) in moved.positions.iter().enumerate() {
-                    let Some(slot) = attributes.get_mut(vertex * VERTEX_FLOATS..) else {
-                        break;
-                    };
-                    let Some(position) = slot.get_mut(..3) else {
-                        break;
-                    };
-                    position.copy_from_slice(&[at.x, at.y, at.z]);
+                let key = (which, block, at, state);
+                if preview.flipped.contains_key(&key) {
+                    continue;
                 }
-                // the normal lane follows the position lane, since bending or turning a lit
-                // surface changes which way it faces
-                for (vertex, at) in moved.normals.iter().flat_map(|n| n.iter()).enumerate() {
-                    let Some(slot) = attributes.get_mut(vertex * VERTEX_FLOATS + 3..) else {
-                        break;
-                    };
-                    let Some(normal) = slot.get_mut(..3) else {
-                        break;
-                    };
-                    normal.copy_from_slice(&[at.x, at.y, at.z]);
-                }
-                queue.write_buffer(&mesh.vertices, 0, bytemuck::cast_slice(&attributes));
+                let group = bindings.group(device, &preview.texture_layout, state);
+                preview.flipped.insert(key, group);
             }
-            if let Some(params) = self.frame.params.get(&mesh.shape_block) {
-                queue.write_buffer(
-                    &mesh.model_buffer,
-                    PARAMS_OFFSET,
-                    bytemuck::cast_slice(params),
-                );
-            }
-        }
-        // the quads are generated here rather than stored, since a particle moves every frame
-        for mesh in self
-            .scene
-            .particles
-            .iter()
-            .filter(|m| self.visible_particles(m))
-        {
-            let Some(particles) = self.frame.particles.get(&mesh.block) else {
-                continue;
-            };
-            // the pose the frame walked, so an animated system draws where it now is rather
-            // than where the scene was built. Picking walks at the same time, and the two have
-            // to agree or the ray tests empty space.
-            let model = particle_space(
-                self.frame
-                    .poses
-                    .get(&mesh.block)
-                    .copied()
-                    .unwrap_or(mesh.model),
-                mesh.world_space,
-            );
-            let scale = model.x_axis.truncate().length();
-            let model = drawn_at(self.scene.origin, model);
-            let (right, up) = self.quad_axes();
-            let mut vertices: Vec<f32> = Vec::with_capacity(particles.len() * 4 * VERTEX_FLOATS);
-            for particle in particles.iter().take(mesh.capacity) {
-                let centre = model.transform_point3(Vec3::from(&particle.position));
-                let colour = &particle.color;
-                // the radius is in the system's space, like the position it sits at, and the
-                // scale comes from the same matrix as the position so the two cannot disagree
-                // a grow and fade modifier scales the radius rather than replacing it
-                let half = particle.drawn_radius().max(0.0) * scale;
-                // A rotation modifier turns the sprite in the plane facing the camera rather
-                // than about an axis of its own, so the corners rotate and the axes do not.
-                let (sin, cos) = particle.rotation.sin_cos();
-                // a quad facing the camera, wound so the shared corners meet the index pattern
-                for (corner, uv) in [
-                    ((-1.0, -1.0), (0.0, 1.0)),
-                    ((1.0, -1.0), (1.0, 1.0)),
-                    ((1.0, 1.0), (1.0, 0.0)),
-                    ((-1.0, 1.0), (0.0, 0.0)),
-                ] {
-                    let (x, y) = (
-                        corner.0 * cos - corner.1 * sin,
-                        corner.0 * sin + corner.1 * cos,
+            for mesh in &instance.scene.meshes {
+                // a skinned shape's vertices arrive in world space, so its node pose is not its
+                // model matrix and writing one here would move it twice
+                if let Some(model) = (!mesh.skinned)
+                    .then(|| instance.frame.poses.get(&mesh.shape_block))
+                    .flatten()
+                {
+                    queue.write_buffer(
+                        &mesh.model_buffer,
+                        0,
+                        bytemuck::cast_slice(
+                            &drawn_at(instance.scene.origin, *model).to_cols_array(),
+                        ),
                     );
-                    let at = centre + right * (x * half) + up * (y * half);
-                    vertices.extend_from_slice(&[at.x, at.y, at.z]);
-                    // the normal faces the camera, so anything lighting it sees the quad flat on
-                    let normal = right.cross(up);
-                    vertices.extend_from_slice(&[normal.x, normal.y, normal.z]);
-                    vertices.extend_from_slice(&[colour.r, colour.g, colour.b, colour.a]);
-                    vertices.extend_from_slice(&[uv.0, uv.1, uv.0, uv.1, uv.0, uv.1]);
+                }
+                if let Some(alpha) = mesh
+                    .material_block
+                    .and_then(|block| instance.frame.alpha.get(&block))
+                {
+                    queue.write_buffer(&mesh.model_buffer, ALPHA_OFFSET, bytemuck::bytes_of(alpha));
+                }
+                if let Some(rows) = instance.frame.uv.get(&mesh.shape_block) {
+                    queue.write_buffer(&mesh.model_buffer, UV_OFFSET, bytemuck::cast_slice(rows));
+                }
+                // a material colour controller replaces one channel and leaves the rest alone
+                if let Some((channel, value)) = mesh
+                    .material_block
+                    .and_then(|block| instance.frame.material_color.get(&block))
+                {
+                    let at = match channel {
+                        nif::blocks::MaterialColor::Ambient => Some(AMBIENT_OFFSET),
+                        nif::blocks::MaterialColor::SelfIllum => Some(EMISSIVE_OFFSET),
+                        // nothing in this game drives the other two
+                        _ => None,
+                    };
+                    if let Some(at) = at {
+                        queue.write_buffer(&mesh.model_buffer, at, bytemuck::cast_slice(value));
+                    }
+                }
+                // a deform replaces the stored vertices outright, so the whole buffer goes back
+                // rather than the positions being poked one at a time
+                if let (Some(moved), Some(source)) = (
+                    instance.frame.deformed.get(&mesh.shape_block),
+                    mesh.deform_source.as_ref(),
+                ) {
+                    let mut attributes = source.clone();
+                    for (vertex, at) in moved.positions.iter().enumerate() {
+                        let Some(slot) = attributes.get_mut(vertex * VERTEX_FLOATS..) else {
+                            break;
+                        };
+                        let Some(position) = slot.get_mut(..3) else {
+                            break;
+                        };
+                        position.copy_from_slice(&[at.x, at.y, at.z]);
+                    }
+                    // the normal lane follows the position lane, since bending or turning a lit
+                    // surface changes which way it faces
+                    for (vertex, at) in moved.normals.iter().flat_map(|n| n.iter()).enumerate() {
+                        let Some(slot) = attributes.get_mut(vertex * VERTEX_FLOATS + 3..) else {
+                            break;
+                        };
+                        let Some(normal) = slot.get_mut(..3) else {
+                            break;
+                        };
+                        normal.copy_from_slice(&[at.x, at.y, at.z]);
+                    }
+                    queue.write_buffer(&mesh.vertices, 0, bytemuck::cast_slice(&attributes));
+                }
+                if let Some(params) = instance.frame.params.get(&mesh.shape_block) {
+                    queue.write_buffer(
+                        &mesh.model_buffer,
+                        PARAMS_OFFSET,
+                        bytemuck::cast_slice(params),
+                    );
                 }
             }
-            if !vertices.is_empty() {
-                queue.write_buffer(&mesh.vertices, 0, bytemuck::cast_slice(&vertices));
+            // the quads are generated here rather than stored, since a particle moves every frame
+            for mesh in instance
+                .scene
+                .particles
+                .iter()
+                .filter(|m| self.visible_particles(instance, m))
+            {
+                let Some(particles) = instance.frame.particles.get(&mesh.block) else {
+                    continue;
+                };
+                // the pose the frame walked, so an animated system draws where it now is rather
+                // than where the scene was built. Picking walks at the same time, and the two have
+                // to agree or the ray tests empty space.
+                let model = particle_space(
+                    instance
+                        .frame
+                        .poses
+                        .get(&mesh.block)
+                        .copied()
+                        .unwrap_or(mesh.model),
+                    mesh.world_space,
+                );
+                let scale = model.x_axis.truncate().length();
+                let model = drawn_at(instance.scene.origin, model);
+                let (right, up) = self.quad_axes();
+                let mut vertices: Vec<f32> =
+                    Vec::with_capacity(particles.len() * 4 * VERTEX_FLOATS);
+                for particle in particles.iter().take(mesh.capacity) {
+                    let centre = model.transform_point3(Vec3::from(&particle.position));
+                    let colour = &particle.color;
+                    // the radius is in the system's space, like the position it sits at, and the
+                    // scale comes from the same matrix as the position so the two cannot disagree
+                    // a grow and fade modifier scales the radius rather than replacing it
+                    let half = particle.drawn_radius().max(0.0) * scale;
+                    // A rotation modifier turns the sprite in the plane facing the camera rather
+                    // than about an axis of its own, so the corners rotate and the axes do not.
+                    let (sin, cos) = particle.rotation.sin_cos();
+                    // a quad facing the camera, wound so the shared corners meet the index pattern
+                    for (corner, uv) in [
+                        ((-1.0, -1.0), (0.0, 1.0)),
+                        ((1.0, -1.0), (1.0, 1.0)),
+                        ((1.0, 1.0), (1.0, 0.0)),
+                        ((-1.0, 1.0), (0.0, 0.0)),
+                    ] {
+                        let (x, y) = (
+                            corner.0 * cos - corner.1 * sin,
+                            corner.0 * sin + corner.1 * cos,
+                        );
+                        let at = centre + right * (x * half) + up * (y * half);
+                        vertices.extend_from_slice(&[at.x, at.y, at.z]);
+                        // the normal faces the camera, so anything lighting it sees the quad flat on
+                        let normal = right.cross(up);
+                        vertices.extend_from_slice(&[normal.x, normal.y, normal.z]);
+                        vertices.extend_from_slice(&[colour.r, colour.g, colour.b, colour.a]);
+                        vertices.extend_from_slice(&[uv.0, uv.1, uv.0, uv.1, uv.0, uv.1]);
+                    }
+                }
+                if !vertices.is_empty() {
+                    queue.write_buffer(&mesh.vertices, 0, bytemuck::cast_slice(&vertices));
+                }
             }
         }
     }
@@ -3092,29 +3122,40 @@ impl PreviewCall {
     /// Records the scene into a pass the caller has opened. Everything it binds was built by
     /// `prepare`, which has to have run for the same frame or the draw uses stale buffers.
     pub fn paint(&self, render_pass: &mut wgpu::RenderPass<'static>, preview: &Preview) {
-        render_pass.set_bind_group(0, &self.camera.group, &[]);
-
-        if self.grid {
-            let grid = &self.scene.grid;
-            render_pass.set_pipeline(&preview.grid);
-            render_pass.set_bind_group(1, &grid.model, &[]);
-            render_pass.set_bind_group(2, &grid.texture, &[]);
-            render_pass.set_vertex_buffer(0, grid.vertices.slice(..));
-            render_pass.draw(0..grid.count, 0..1);
+        // The grid is sized to the scene it was built for, so with several drawn together one of
+        // them has to stand for the viewport until their bounds are combined.
+        if let Some(first) = self.instances.first() {
+            render_pass.set_bind_group(0, &first.camera.group, &[]);
+            if self.grid {
+                let grid = &first.scene.grid;
+                render_pass.set_pipeline(&preview.grid);
+                render_pass.set_bind_group(1, &grid.model, &[]);
+                render_pass.set_bind_group(2, &grid.texture, &[]);
+                render_pass.set_vertex_buffer(0, grid.vertices.slice(..));
+                render_pass.draw(0..grid.count, 0..1);
+            }
         }
 
         if self.wireframe {
             render_pass.set_pipeline(&preview.wire);
-            for mesh in self.scene.meshes.iter().filter(|m| self.visible(m)) {
-                render_pass.set_bind_group(1, &mesh.bind_group, &[]);
-                render_pass.set_bind_group(
-                    2,
-                    self.texture_of(preview, mesh, 0, &mesh.passes[0]),
-                    &[],
-                );
-                render_pass.set_vertex_buffer(0, mesh.vertices.slice(..));
-                render_pass.set_index_buffer(mesh.edges.slice(..), wgpu::IndexFormat::Uint16);
-                render_pass.draw_indexed(0..mesh.edge_count, 0, 0..1);
+            for (which, instance) in self.instances.iter().enumerate() {
+                render_pass.set_bind_group(0, &instance.camera.group, &[]);
+                for mesh in instance
+                    .scene
+                    .meshes
+                    .iter()
+                    .filter(|m| self.visible(instance, m))
+                {
+                    render_pass.set_bind_group(1, &mesh.bind_group, &[]);
+                    render_pass.set_bind_group(
+                        2,
+                        self.texture_of(preview, which, instance, mesh, 0, &mesh.passes[0]),
+                        &[],
+                    );
+                    render_pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                    render_pass.set_index_buffer(mesh.edges.slice(..), wgpu::IndexFormat::Uint16);
+                    render_pass.draw_indexed(0..mesh.edge_count, 0, 0..1);
+                }
             }
         } else {
             // Everything that is not sorted draws first, in traversal order, and the sorted
@@ -3124,39 +3165,49 @@ impl PreviewCall {
             // A particle system is blended geometry like any other, so it sorts with the rest
             // rather than after it. Drawing it last put it behind anything blended that writes
             // depth, which is why particles inside a transparent shell vanished.
+            // One list across every instance rather than one each: several files drawn together
+            // are one scene as far as what is in front of what is concerned.
             let mut sorted: Vec<Sorted> = Vec::new();
             let mut immediate: Vec<Sorted> = Vec::new();
-            for mesh in self
-                .scene
-                .particles
-                .iter()
-                .filter(|m| self.visible_particles(m))
-            {
-                let quads = self
-                    .frame
+            for (which, instance) in self.instances.iter().enumerate() {
+                for mesh in instance
+                    .scene
                     .particles
-                    .get(&mesh.block)
-                    .map_or(0, |p| p.len().min(mesh.capacity));
-                if quads == 0 {
-                    continue;
+                    .iter()
+                    .filter(|m| self.visible_particles(instance, m))
+                {
+                    let quads = instance
+                        .frame
+                        .particles
+                        .get(&mesh.block)
+                        .map_or(0, |p| p.len().min(mesh.capacity));
+                    if quads == 0 {
+                        continue;
+                    }
+                    if mesh.sorted {
+                        sorted.push(Sorted::Particles(which, mesh, quads));
+                    } else {
+                        immediate.push(Sorted::Particles(which, mesh, quads));
+                    }
                 }
-                if mesh.sorted {
-                    sorted.push(Sorted::Particles(mesh, quads));
-                } else {
-                    immediate.push(Sorted::Particles(mesh, quads));
-                }
-            }
-            for mesh in self.scene.meshes.iter().filter(|m| self.visible(m)) {
-                if mesh.sorted {
-                    sorted.push(Sorted::Shape(mesh));
-                } else {
-                    immediate.push(Sorted::Shape(mesh));
+                for mesh in instance
+                    .scene
+                    .meshes
+                    .iter()
+                    .filter(|m| self.visible(instance, m))
+                {
+                    if mesh.sorted {
+                        sorted.push(Sorted::Shape(which, mesh));
+                    } else {
+                        immediate.push(Sorted::Shape(which, mesh));
+                    }
                 }
             }
             let centre = |item: &Sorted| match item {
-                Sorted::Shape(mesh) => self.center(mesh),
-                Sorted::Particles(mesh, _) => particle_space(
-                    self.frame
+                Sorted::Shape(which, mesh) => self.center(&self.instances[*which], mesh),
+                Sorted::Particles(which, mesh, _) => particle_space(
+                    self.instances[*which]
+                        .frame
                         .poses
                         .get(&mesh.block)
                         .copied()
@@ -3170,9 +3221,18 @@ impl PreviewCall {
                     .distance_squared(self.eye)
                     .total_cmp(&centre(a).distance_squared(self.eye))
             });
+            // the camera is rebound only where the walk crosses from one instance to another,
+            // since the sorted list interleaves them
+            let mut bound = usize::MAX;
             for item in immediate.into_iter().chain(sorted) {
+                let which = item.instance();
+                let instance = &self.instances[which];
+                if which != bound {
+                    render_pass.set_bind_group(0, &instance.camera.group, &[]);
+                    bound = which;
+                }
                 match item {
-                    Sorted::Shape(mesh) => {
+                    Sorted::Shape(_, mesh) => {
                         for (at, pass) in mesh.passes.iter().enumerate() {
                             let pipeline = if self.cull {
                                 &pass.pipeline
@@ -3183,14 +3243,18 @@ impl PreviewCall {
                                 render_pass,
                                 mesh,
                                 pipeline,
-                                self.texture_of(preview, mesh, at, pass),
+                                self.texture_of(preview, which, instance, mesh, at, pass),
                             );
                         }
                     }
-                    Sorted::Particles(mesh, quads) => {
+                    Sorted::Particles(_, mesh, quads) => {
                         render_pass.set_pipeline(&mesh.pipeline);
                         render_pass.set_bind_group(1, &mesh.bind_group, &[]);
-                        render_pass.set_bind_group(2, self.particle_texture(preview, mesh), &[]);
+                        render_pass.set_bind_group(
+                            2,
+                            self.particle_texture(preview, which, instance, mesh),
+                            &[],
+                        );
                         render_pass.set_vertex_buffer(0, mesh.vertices.slice(..));
                         render_pass
                             .set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint16);
@@ -3200,56 +3264,38 @@ impl PreviewCall {
             }
         }
 
-        for mesh in self
-            .scene
-            .particles
-            .iter()
-            .filter(|m| self.visible_particles(m))
-        {
-            let Some(particles) = self.frame.particles.get(&mesh.block) else {
-                continue;
-            };
-            let quads = particles.len().min(mesh.capacity);
-            if quads == 0 {
-                continue;
-            }
-            // the solid pass draws these among the blended shapes, so only the outlines are
-            // left here
-            if !self.wireframe {
-                continue;
-            }
-            render_pass.set_pipeline(&preview.wire);
-            render_pass.set_bind_group(1, &mesh.bind_group, &[]);
-            render_pass.set_bind_group(2, &mesh.texture, &[]);
-            render_pass.set_vertex_buffer(0, mesh.vertices.slice(..));
-            render_pass.set_index_buffer(mesh.edges.slice(..), wgpu::IndexFormat::Uint16);
-            render_pass.draw_indexed(0..(quads * 8) as u32, 0, 0..1);
-        }
-
         // The selected shape gets its wireframe drawn over everything, so it stays findable.
         // Drawn whether or not the shape itself is, since the highlight says what is selected
         // and a hidden shape is the case where that is hardest to work out otherwise.
-        let Some(selected) = self.selected else {
+        let Some((which, selected)) = self.selected else {
             return;
         };
+        let Some(instance) = self.instances.get(which) else {
+            return;
+        };
+        render_pass.set_bind_group(0, &instance.camera.group, &[]);
         render_pass.set_pipeline(&preview.highlight);
-        for mesh in self.scene.meshes.iter() {
+        for mesh in instance.scene.meshes.iter() {
             if mesh.shape_block != selected && mesh.data_block != selected {
                 continue;
             }
             render_pass.set_bind_group(1, &mesh.bind_group, &[]);
-            render_pass.set_bind_group(2, self.texture_of(preview, mesh, 0, &mesh.passes[0]), &[]);
+            render_pass.set_bind_group(
+                2,
+                self.texture_of(preview, which, instance, mesh, 0, &mesh.passes[0]),
+                &[],
+            );
             render_pass.set_vertex_buffer(0, mesh.vertices.slice(..));
             render_pass.set_index_buffer(mesh.edges.slice(..), wgpu::IndexFormat::Uint16);
             render_pass.draw_indexed(0..mesh.edge_count, 0, 0..1);
         }
         // a selected particle system outlines its quads the same way, and for the same reason
         // is outlined whether or not it is drawn
-        for mesh in self.scene.particles.iter() {
+        for mesh in instance.scene.particles.iter() {
             if mesh.block != selected {
                 continue;
             }
-            let Some(particles) = self.frame.particles.get(&mesh.block) else {
+            let Some(particles) = instance.frame.particles.get(&mesh.block) else {
                 continue;
             };
             let quads = particles.len().min(mesh.capacity);
