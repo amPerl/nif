@@ -51,8 +51,18 @@ struct Loaded {
     systems: Vec<nif::psys::System>,
 }
 
+/// A file drawn into the same viewport as the one being inspected. The panes address `loaded`
+/// alone; these are drawn beside it until the panes can address several.
+struct Companion {
+    loaded: Loaded,
+    scene: Arc<Scene>,
+    camera: Arc<nif_wgpu::scene::CameraBinding>,
+}
+
 struct State {
     loaded: Option<Loaded>,
+    /// Every other file opened alongside this one, in the order they were named.
+    companions: Vec<Companion>,
     selected: Option<usize>,
     scene: Option<Arc<Scene>>,
     /// The frame the last draw built. Framing a shape happens outside the draw and still has to
@@ -186,6 +196,7 @@ impl Default for State {
     fn default() -> Self {
         Self {
             loaded: None,
+            companions: Vec::new(),
             selected: None,
             scene: None,
             last_frame: Arc::default(),
@@ -308,10 +319,45 @@ impl Nifty {
     }
 
     /// Each file opens as its own document rather than replacing the current one.
+    /// Opens several files into one document, drawn into the same viewport. The first is the
+    /// one the panes address; the rest are drawn beside it.
+    ///
+    /// This is what a list of files on the command line means. A file arriving later, dropped on
+    /// the window or picked from the menu, still opens on its own.
+    pub fn open_together(&mut self, paths: Vec<PathBuf>) {
+        let mut paths = paths.into_iter();
+        let Some(first) = paths.next() else {
+            return;
+        };
+        let Some(mut state) = self.load(first) else {
+            return;
+        };
+        for path in paths {
+            let Some(beside) = self.load(path) else {
+                continue;
+            };
+            let (Some(loaded), Some(scene), Some(camera)) =
+                (beside.loaded, beside.scene, beside.camera_binding)
+            else {
+                continue;
+            };
+            state.companions.push(Companion {
+                loaded,
+                scene,
+                camera,
+            });
+        }
+        self.push(state);
+    }
+
     pub fn open(&mut self, path: PathBuf) {
         let Some(state) = self.load(path) else {
             return;
         };
+        self.push(state);
+    }
+
+    fn push(&mut self, state: State) {
         self.next_id += 1;
         self.documents.push_to_focused_leaf(Document {
             id: self.next_id,
@@ -979,231 +1025,6 @@ impl TabViewer for Viewer<'_> {
 }
 
 impl Viewer<'_> {
-    /// Where the shapes are and which of them are culled, for the frame about to be drawn.
-    /// Skipped entirely when the file holds nothing that moves or hides.
-    fn frame(&mut self, viewpoint: Viewpoint) -> Arc<Frame> {
-        let Some(loaded) = &self.state.loaded else {
-            return Arc::default();
-        };
-        // a particle system is animation even when nothing else in the file moves, and a block
-        // hidden by hand has to be resolved whether or not anything else in the file does
-        if viewpoint.is_static()
-            && !loaded.hideable
-            && !loaded.skinned
-            && loaded.systems.is_empty()
-            && self.state.hidden.is_empty()
-        {
-            return Arc::default();
-        }
-        let mut frame = Frame::default();
-        let mut concealed = Concealed::default();
-        for visit in viewpoint.walk(&loaded.nif) {
-            // every block, not only the shapes: a bone is a node the skinned shape does not
-            // own, and placing one means reaching it here
-            frame
-                .poses
-                .insert(visit.index, Mat4::from(&visit.transform));
-            // asked of every block for the same reason: what was hidden by hand is usually a
-            // node, and a node is not what gets drawn
-            let by_hand = concealed.visit(visit.index, visit.depth, &self.state.hidden);
-            if visit.block.av_object().is_none() {
-                continue;
-            }
-            if visit.hidden || by_hand {
-                frame.hidden.insert(visit.index);
-            }
-        }
-        // A skinned shape is placed by its bones whether or not anything animates, so its
-        // geometry is resolved every frame rather than only when the clock runs. The scene
-        // built the resting pose into the buffer, and this replaces it once bones move.
-        let scene = self.state.scene.iter();
-        for mesh in scene.flat_map(|scene| scene.meshes.iter()) {
-            if !mesh.skinned {
-                continue;
-            }
-            let Some(geometry) = loaded.nif.blocks.get(mesh.shape_block).and_then(Block::geometry)
-            else {
-                continue;
-            };
-            let skinned = nif::skin::deform(&loaded.nif.blocks, geometry, |index| {
-                frame.poses.get(&index).copied()
-            });
-            if let Some(skinned) = skinned {
-                frame.deformed.insert(
-                    mesh.shape_block,
-                    nif_wgpu::scene::Deformed {
-                        positions: skinned.positions,
-                        normals: skinned.normals,
-                    },
-                );
-            }
-        }
-        // an alpha controller hangs off the material rather than the shape, and one material
-        // can be shared, so these are collected by material block
-        if let Some(time) = viewpoint.time {
-            for (index, block) in loaded.nif.blocks.iter().enumerate() {
-                let Block::NiMaterialProperty(material) = block else {
-                    continue;
-                };
-                if let Some(alpha) = nif::anim::alpha_at(&loaded.nif.blocks, material, time) {
-                    // a quadratic track overshoots its keys, and files do drive alpha negative.
-                    // The fixed function pipeline clamped the material colour, so clamp here.
-                    frame.alpha.insert(index, alpha.clamp(0.0, 1.0));
-                }
-                // one channel of the material colour, clamped for the same reason
-                if let Some((channel, value)) =
-                    nif::anim::material_color_at(&loaded.nif.blocks, material, time)
-                {
-                    frame.material_color.insert(
-                        index,
-                        (
-                            channel,
-                            [
-                                value.x.clamp(0.0, 1.0),
-                                value.y.clamp(0.0, 1.0),
-                                value.z.clamp(0.0, 1.0),
-                                1.0,
-                            ],
-                        ),
-                    );
-                }
-            }
-            // a geometry morpher rewrites the shape's vertices rather than moving the shape,
-            // so it is resolved per frame like a pose and handed to the renderer the same way
-            let scene = self.state.scene.iter();
-            for mesh in scene.flat_map(|scene| scene.meshes.iter()) {
-                let Some(geometry) = loaded
-                    .nif
-                    .blocks
-                    .get(mesh.shape_block)
-                    .and_then(Block::geometry)
-                else {
-                    continue;
-                };
-                if let Some(positions) = nif::anim::morph_at(&loaded.nif.blocks, geometry, time) {
-                    // bending a surface leaves its resting shading behind, so the normals are
-                    // rebuilt from the moved vertices wherever the morpher asks for it
-                    let normals =
-                        nif::anim::morph_normals(&loaded.nif.blocks, geometry, &positions);
-                    frame.deformed.insert(
-                        mesh.shape_block,
-                        nif_wgpu::scene::Deformed { positions, normals },
-                    );
-                }
-            }
-            // an attribute can be driven over time, and a shader reads it from the same model
-            // uniform either way, so only the lane the controller names is replaced
-            let scene = self.state.scene.iter();
-            for mesh in scene.flat_map(|scene| scene.meshes.iter()) {
-                let (names, resolved) = mesh.attributes;
-                if names.iter().all(|name| name.is_empty()) {
-                    continue;
-                }
-                let Some(geometry) = loaded
-                    .nif
-                    .blocks
-                    .get(mesh.shape_block)
-                    .and_then(Block::av_object)
-                else {
-                    continue;
-                };
-                let mut params = resolved;
-                let mut driven = false;
-                for (lane, name) in names.iter().enumerate() {
-                    if name.is_empty() {
-                        continue;
-                    }
-                    if let Some(value) =
-                        nif::anim::float_extra_data_at(&loaded.nif.blocks, geometry, name, time)
-                    {
-                        params[lane] = value;
-                        driven = true;
-                    }
-                }
-                if driven {
-                    frame.params.insert(mesh.shape_block, params);
-                }
-            }
-            // a texture transform controller drives one member of one slot's transform, so a
-            // property can be the target of several at once and they are resolved together.
-            // Walked per shape rather than per property, since which slots a shape binds is its
-            // shader's choice.
-            // Both kinds, since a flip controller reaches a particle system's sprite exactly as
-            // it reaches a shape's map, and a quarter of them target one.
-            let shapes = self
-                .state
-                .scene
-                .iter()
-                .flat_map(|scene| scene.meshes.iter())
-                .map(|mesh| {
-                    (
-                        mesh.shape_block,
-                        mesh.texturing_block,
-                        mesh.bound,
-                        mesh.uv_pins,
-                    )
-                });
-            let systems = self
-                .state
-                .scene
-                .iter()
-                .flat_map(|scene| scene.particles.iter())
-                .map(|mesh| {
-                    (
-                        mesh.block,
-                        mesh.texturing_block,
-                        nif_wgpu::scene::DEFAULT_SLOTS,
-                        [None; nif_wgpu::scene::BOUND_SLOTS],
-                    )
-                });
-            for (shape_block, texturing_block, bound, uv_pins) in
-                shapes.chain(systems).collect::<Vec<_>>()
-            {
-                let property = match texturing_block.and_then(|i| loaded.nif.blocks.get(i)) {
-                    Some(Block::NiTexturingProperty(property)) => property,
-                    _ => continue,
-                };
-                frame.uv.insert(
-                    shape_block,
-                    nif_wgpu::scene::slot_uv_rows(
-                        &loaded.nif.blocks,
-                        Some(property),
-                        bound,
-                        uv_pins,
-                        time,
-                    ),
-                );
-                // every slot a flip controller is ever seen to drive, not just the base one:
-                // a property flipped on two at once is the common case
-                let mut flipped = nif_wgpu::scene::FlipState::default();
-                for slot in nif_wgpu::scene::FLIPPABLE {
-                    let source =
-                        nif::anim::flip_source_at(&loaded.nif.blocks, property, slot, time)
-                            .and_then(|r| r.index());
-                    if let Some(source) = source {
-                        flipped.set(slot, source);
-                    }
-                }
-                if let (false, Some(block)) = (flipped.is_empty(), texturing_block) {
-                    frame.flip.insert(block, flipped);
-                }
-            }
-        }
-
-        // the simulation carries state, so it is advanced here and the result handed to the
-        // renderer, which keeps the drawing side free of anything that has to persist
-        if let Some(loaded) = self.state.loaded.as_mut() {
-            let time = viewpoint.time.unwrap_or(0.0);
-            for system in &mut loaded.systems {
-                system.seek(&loaded.nif.blocks, time);
-                frame
-                    .particles
-                    .insert(system.block, system.particles().to_vec());
-            }
-        }
-        Arc::new(frame)
-    }
-
     /// The transport. Returns where the timeline sits, or None when nothing animates.
     fn timeline(&mut self, ui: &mut egui::Ui) -> Option<f32> {
         let loaded = self.state.loaded.as_ref()?;
@@ -1506,7 +1327,11 @@ impl Viewer<'_> {
                 direction: (-view.row(2).truncate()).into(),
             }),
         };
-        let frame = self.frame(viewpoint);
+        let State { loaded, hidden, .. } = &mut *self.state;
+        let frame = match loaded {
+            Some(loaded) => build_frame(loaded, Some(&scene), hidden, viewpoint),
+            None => Arc::default(),
+        };
         // kept so framing a shape, which happens outside the draw, asks the same frame the draw
         // used rather than the resting scene
         self.state.last_frame = frame.clone();
@@ -1607,18 +1432,39 @@ impl Viewer<'_> {
             &lights_now,
             scene.origin,
         );
+        // Every instance draws through its own camera, so each is given this frame's view. They
+        // are all the same while nothing is placed anywhere; the buffers are separate so that a
+        // placed instance can be drawn through a view moved by the same amount.
         gfx.write_camera(&binding, &uniform);
+        for companion in &self.state.companions {
+            gfx.write_camera(&companion.camera, &uniform);
+        }
+        // the inspected file first, then whatever was opened beside it
+        let mut instances = vec![nif_wgpu::scene::Instance {
+            scene: scene.clone(),
+            frame: frame.clone(),
+            camera: binding,
+        }];
+        let unhidden = HashSet::new();
+        for companion in &mut self.state.companions {
+            let beside = build_frame(
+                &mut companion.loaded,
+                Some(&companion.scene),
+                &unhidden,
+                viewpoint,
+            );
+            instances.push(nif_wgpu::scene::Instance {
+                scene: companion.scene.clone(),
+                frame: beside,
+                camera: companion.camera.clone(),
+            });
+        }
 
         self.state.preview_rect = Some(rect);
         ui.painter().add(egui_wgpu::Callback::new_paint_callback(
             rect,
             PreviewCall {
-                // one for now: the viewport draws a list, and this document holds one file
-                instances: vec![nif_wgpu::scene::Instance {
-                    scene,
-                    frame,
-                    camera: binding,
-                }],
+                instances,
                 lod_mode: self.state.lod_mode,
                 lod_distance: self.state.lod_distance,
                 wireframe: self.state.wireframe,
@@ -1893,6 +1739,228 @@ fn frame_selected(state: &mut State) {
     }
 }
 
+/// Where the shapes of one file are and which of them are culled, for the frame about to be
+/// drawn. Skipped entirely when the file holds nothing that moves or hides.
+///
+/// Free of the viewer because every open file needs one, not just the one being inspected.
+fn build_frame(
+    loaded: &mut Loaded,
+    built: Option<&Arc<Scene>>,
+    hidden: &HashSet<usize>,
+    viewpoint: Viewpoint,
+) -> Arc<Frame> {
+    // a particle system is animation even when nothing else in the file moves, and a block
+    // hidden by hand has to be resolved whether or not anything else in the file does
+    if viewpoint.is_static()
+        && !loaded.hideable
+        && !loaded.skinned
+        && loaded.systems.is_empty()
+        && hidden.is_empty()
+    {
+        return Arc::default();
+    }
+    let mut frame = Frame::default();
+    let mut concealed = Concealed::default();
+    for visit in viewpoint.walk(&loaded.nif) {
+        // every block, not only the shapes: a bone is a node the skinned shape does not
+        // own, and placing one means reaching it here
+        frame
+            .poses
+            .insert(visit.index, Mat4::from(&visit.transform));
+        // asked of every block for the same reason: what was hidden by hand is usually a
+        // node, and a node is not what gets drawn
+        let by_hand = concealed.visit(visit.index, visit.depth, hidden);
+        if visit.block.av_object().is_none() {
+            continue;
+        }
+        if visit.hidden || by_hand {
+            frame.hidden.insert(visit.index);
+        }
+    }
+    // A skinned shape is placed by its bones whether or not anything animates, so its
+    // geometry is resolved every frame rather than only when the clock runs. The scene
+    // built the resting pose into the buffer, and this replaces it once bones move.
+    let scene = built.iter();
+    for mesh in scene.flat_map(|scene| scene.meshes.iter()) {
+        if !mesh.skinned {
+            continue;
+        }
+        let Some(geometry) = loaded.nif.blocks.get(mesh.shape_block).and_then(Block::geometry)
+        else {
+            continue;
+        };
+        let skinned = nif::skin::deform(&loaded.nif.blocks, geometry, |index| {
+            frame.poses.get(&index).copied()
+        });
+        if let Some(skinned) = skinned {
+            frame.deformed.insert(
+                mesh.shape_block,
+                nif_wgpu::scene::Deformed {
+                    positions: skinned.positions,
+                    normals: skinned.normals,
+                },
+            );
+        }
+    }
+    // an alpha controller hangs off the material rather than the shape, and one material
+    // can be shared, so these are collected by material block
+    if let Some(time) = viewpoint.time {
+        for (index, block) in loaded.nif.blocks.iter().enumerate() {
+            let Block::NiMaterialProperty(material) = block else {
+                continue;
+            };
+            if let Some(alpha) = nif::anim::alpha_at(&loaded.nif.blocks, material, time) {
+                // a quadratic track overshoots its keys, and files do drive alpha negative.
+                // The fixed function pipeline clamped the material colour, so clamp here.
+                frame.alpha.insert(index, alpha.clamp(0.0, 1.0));
+            }
+            // one channel of the material colour, clamped for the same reason
+            if let Some((channel, value)) =
+                nif::anim::material_color_at(&loaded.nif.blocks, material, time)
+            {
+                frame.material_color.insert(
+                    index,
+                    (
+                        channel,
+                        [
+                            value.x.clamp(0.0, 1.0),
+                            value.y.clamp(0.0, 1.0),
+                            value.z.clamp(0.0, 1.0),
+                            1.0,
+                        ],
+                    ),
+                );
+            }
+        }
+        // a geometry morpher rewrites the shape's vertices rather than moving the shape,
+        // so it is resolved per frame like a pose and handed to the renderer the same way
+        let scene = built.iter();
+        for mesh in scene.flat_map(|scene| scene.meshes.iter()) {
+            let Some(geometry) = loaded
+                .nif
+                .blocks
+                .get(mesh.shape_block)
+                .and_then(Block::geometry)
+            else {
+                continue;
+            };
+            if let Some(positions) = nif::anim::morph_at(&loaded.nif.blocks, geometry, time) {
+                // bending a surface leaves its resting shading behind, so the normals are
+                // rebuilt from the moved vertices wherever the morpher asks for it
+                let normals = nif::anim::morph_normals(&loaded.nif.blocks, geometry, &positions);
+                frame.deformed.insert(
+                    mesh.shape_block,
+                    nif_wgpu::scene::Deformed { positions, normals },
+                );
+            }
+        }
+        // an attribute can be driven over time, and a shader reads it from the same model
+        // uniform either way, so only the lane the controller names is replaced
+        let scene = built.iter();
+        for mesh in scene.flat_map(|scene| scene.meshes.iter()) {
+            let (names, resolved) = mesh.attributes;
+            if names.iter().all(|name| name.is_empty()) {
+                continue;
+            }
+            let Some(geometry) = loaded
+                .nif
+                .blocks
+                .get(mesh.shape_block)
+                .and_then(Block::av_object)
+            else {
+                continue;
+            };
+            let mut params = resolved;
+            let mut driven = false;
+            for (lane, name) in names.iter().enumerate() {
+                if name.is_empty() {
+                    continue;
+                }
+                if let Some(value) =
+                    nif::anim::float_extra_data_at(&loaded.nif.blocks, geometry, name, time)
+                {
+                    params[lane] = value;
+                    driven = true;
+                }
+            }
+            if driven {
+                frame.params.insert(mesh.shape_block, params);
+            }
+        }
+        // a texture transform controller drives one member of one slot's transform, so a
+        // property can be the target of several at once and they are resolved together.
+        // Walked per shape rather than per property, since which slots a shape binds is its
+        // shader's choice.
+        // Both kinds, since a flip controller reaches a particle system's sprite exactly as
+        // it reaches a shape's map, and a quarter of them target one.
+        let shapes = built
+            .iter()
+            .flat_map(|scene| scene.meshes.iter())
+            .map(|mesh| {
+                (
+                    mesh.shape_block,
+                    mesh.texturing_block,
+                    mesh.bound,
+                    mesh.uv_pins,
+                )
+            });
+        let systems = built
+            .iter()
+            .flat_map(|scene| scene.particles.iter())
+            .map(|mesh| {
+                (
+                    mesh.block,
+                    mesh.texturing_block,
+                    nif_wgpu::scene::DEFAULT_SLOTS,
+                    [None; nif_wgpu::scene::BOUND_SLOTS],
+                )
+            });
+        for (shape_block, texturing_block, bound, uv_pins) in
+            shapes.chain(systems).collect::<Vec<_>>()
+        {
+            let property = match texturing_block.and_then(|i| loaded.nif.blocks.get(i)) {
+                Some(Block::NiTexturingProperty(property)) => property,
+                _ => continue,
+            };
+            frame.uv.insert(
+                shape_block,
+                nif_wgpu::scene::slot_uv_rows(
+                    &loaded.nif.blocks,
+                    Some(property),
+                    bound,
+                    uv_pins,
+                    time,
+                ),
+            );
+            // every slot a flip controller is ever seen to drive, not just the base one:
+            // a property flipped on two at once is the common case
+            let mut flipped = nif_wgpu::scene::FlipState::default();
+            for slot in nif_wgpu::scene::FLIPPABLE {
+                let source = nif::anim::flip_source_at(&loaded.nif.blocks, property, slot, time)
+                    .and_then(|r| r.index());
+                if let Some(source) = source {
+                    flipped.set(slot, source);
+                }
+            }
+            if let (false, Some(block)) = (flipped.is_empty(), texturing_block) {
+                frame.flip.insert(block, flipped);
+            }
+        }
+    }
+
+    // the simulation carries state, so it is advanced here and the result handed to the
+    // renderer, which keeps the drawing side free of anything that has to persist
+    {
+        let time = viewpoint.time.unwrap_or(0.0);
+        for system in &mut loaded.systems {
+            system.seek(&loaded.nif.blocks, time);
+            frame
+                .particles
+                .insert(system.block, system.particles().to_vec());
+        }
+    }
+    Arc::new(frame)
+}
 /// Whether a depth first walk is inside a block hidden by hand.
 ///
 /// Hiding a node hides everything under it, which is what the file's own cull flag does. The

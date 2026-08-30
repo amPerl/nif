@@ -131,9 +131,8 @@ fn main() -> eframe::Result {
             for root in args.roots {
                 app.add_root(root);
             }
-            for file in args.files {
-                app.open(file);
-            }
+            // every file named on the command line goes into one document, drawn together
+            app.open_together(args.files);
             app.focus_first();
             if let Some(request) = args.capture {
                 app.capture(request);
