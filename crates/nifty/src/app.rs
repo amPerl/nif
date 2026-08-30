@@ -96,6 +96,9 @@ struct State {
     openness: Vec<(usize, bool)>,
     /// Decoded images for the details pane, keyed by block.
     previews: Details,
+    /// This document's own view. Two previews on screen at once are two of these, since one
+    /// buffer between them would leave both drawing whichever was written last.
+    camera_binding: Option<Arc<nif_wgpu::scene::CameraBinding>>,
     /// Technique names this file asked for that no shader could draw, so the viewer can say the
     /// render is wrong rather than quietly showing the fixed function stand in.
     unhandled: Vec<String>,
@@ -220,6 +223,7 @@ impl Default for State {
             sync_tree: false,
             openness: Vec::new(),
             previews: Details::default(),
+            camera_binding: None,
             unhandled: Vec::new(),
             partial: Vec::new(),
         }
@@ -415,6 +419,7 @@ impl Nifty {
                 let shapes = scene.meshes.len();
                 let systems = scene.particles.len();
                 state.scene = Some(Arc::new(scene));
+                state.camera_binding = Some(Arc::new(gfx.camera()));
                 state.unhandled = unhandled;
                 state.partial = partial;
                 match systems {
@@ -1137,7 +1142,13 @@ impl Viewer<'_> {
         // an empty preview still fills a rectangle, and a capture photographs that rather than
         // waiting for a draw that is never going to come
         self.state.preview_rect = Some(ui.available_rect_before_wrap());
-        let (Some(scene), Some(gfx)) = (self.state.scene.clone(), self.gfx) else {
+        // the camera comes with the scene: both are built when the file loads and neither is
+        // any use without the other
+        let (Some(scene), Some(gfx), Some(binding)) = (
+            self.state.scene.clone(),
+            self.gfx,
+            self.state.camera_binding.clone(),
+        ) else {
             ui.centered_and_justified(|ui| ui.label("nothing to draw"));
             return;
         };
@@ -1450,13 +1461,13 @@ impl Viewer<'_> {
             &lights_now,
             scene.origin,
         );
-        gfx.queue
-            .write_buffer(&gfx.camera_buffer, 0, bytemuck::cast_slice(&uniform));
+        gfx.write_camera(&binding, &uniform);
 
         self.state.preview_rect = Some(rect);
         ui.painter().add(egui_wgpu::Callback::new_paint_callback(
             rect,
             PreviewCall {
+                camera: binding,
                 frame,
                 lod_mode: self.state.lod_mode,
                 lod_distance: self.state.lod_distance,

@@ -253,7 +253,6 @@ pub struct Preview {
     wire: wgpu::RenderPipeline,
     highlight: wgpu::RenderPipeline,
     grid: wgpu::RenderPipeline,
-    camera_bind_group: wgpu::BindGroup,
     /// What the texture group is laid out as, so a flipped combination can be assembled here
     /// rather than only where the scene is built.
     texture_layout: wgpu::BindGroupLayout,
@@ -328,7 +327,16 @@ pub struct Gfx {
     texture_layout: wgpu::BindGroupLayout,
     samplers: [wgpu::Sampler; ADDRESS_MODES.len() * ADDRESS_MODES.len() * 2],
     pipeline_layout: wgpu::PipelineLayout,
-    pub camera_buffer: wgpu::Buffer,
+    camera_layout: wgpu::BindGroupLayout,
+}
+
+/// One camera's uniform and the group that binds it.
+///
+/// Every view needs its own. The writes for a frame all reach the device before any of them
+/// draws, so two views sharing a buffer would both draw with whichever was written last.
+pub struct CameraBinding {
+    buffer: wgpu::Buffer,
+    group: wgpu::BindGroup,
 }
 
 pub struct Mesh {
@@ -1072,6 +1080,31 @@ impl Default for Camera {
 }
 
 impl Gfx {
+    /// A camera of its own for something that draws a scene. One per view, not one per device.
+    pub fn camera(&self) -> CameraBinding {
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("nif camera"),
+            size: CAMERA_FLOATS * 4,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("nif camera"),
+            layout: &self.camera_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
+        });
+        CameraBinding { buffer, group }
+    }
+
+    /// Puts this frame's view into a camera's own buffer.
+    pub fn write_camera(&self, camera: &CameraBinding, uniform: &[f32; CAMERA_FLOATS as usize]) {
+        self.queue
+            .write_buffer(&camera.buffer, 0, bytemuck::cast_slice(uniform));
+    }
+
     /// Returns the shared resources and the preview's pipelines together. Both are built from
     /// the one shader module and the one pipeline layout, so neither is worth building twice.
     pub fn new(
@@ -1111,21 +1144,6 @@ impl Gfx {
                 min_filter: filter,
                 ..Default::default()
             })
-        });
-
-        let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("nif camera"),
-            size: CAMERA_FLOATS * 4,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("nif camera"),
-            layout: &camera_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: camera_buffer.as_entire_binding(),
-            }],
         });
 
         // the wire, highlight and grid passes are the contract's own entry points, so they
@@ -1188,7 +1206,6 @@ impl Gfx {
             wire,
             highlight,
             grid,
-            camera_bind_group,
             texture_layout: texture_layout.clone(),
             flipped: HashMap::new(),
         };
@@ -1201,7 +1218,7 @@ impl Gfx {
             texture_layout,
             samplers,
             pipeline_layout: layout,
-            camera_buffer,
+            camera_layout,
         };
         (gfx, preview)
     }
@@ -2780,6 +2797,9 @@ fn uniform_entry(floats: u64) -> wgpu::BindGroupLayoutEntry {
 
 pub struct PreviewCall {
     pub scene: Arc<Scene>,
+    /// The view this call draws through. Held here rather than on the preview so that two of
+    /// these in one frame are two views rather than one written twice.
+    pub camera: Arc<CameraBinding>,
     pub wireframe: bool,
     pub grid: bool,
     pub cull: bool,
@@ -3072,7 +3092,7 @@ impl PreviewCall {
     /// Records the scene into a pass the caller has opened. Everything it binds was built by
     /// `prepare`, which has to have run for the same frame or the draw uses stale buffers.
     pub fn paint(&self, render_pass: &mut wgpu::RenderPass<'static>, preview: &Preview) {
-        render_pass.set_bind_group(0, &preview.camera_bind_group, &[]);
+        render_pass.set_bind_group(0, &self.camera.group, &[]);
 
         if self.grid {
             let grid = &self.scene.grid;
