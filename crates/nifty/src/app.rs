@@ -51,18 +51,8 @@ struct Loaded {
     systems: Vec<nif::psys::System>,
 }
 
-/// A file drawn into the same viewport as the one being inspected. The panes address `loaded`
-/// alone; these are drawn beside it until the panes can address several.
-struct Companion {
-    loaded: Loaded,
-    scene: Arc<Scene>,
-    camera: Arc<nif_wgpu::scene::CameraBinding>,
-}
-
 struct State {
     loaded: Option<Loaded>,
-    /// Every other file opened alongside this one, in the order they were named.
-    companions: Vec<Companion>,
     selected: Option<usize>,
     scene: Option<Arc<Scene>>,
     /// The frame the last draw built. Framing a shape happens outside the draw and still has to
@@ -196,7 +186,6 @@ impl Default for State {
     fn default() -> Self {
         Self {
             loaded: None,
-            companions: Vec::new(),
             selected: None,
             scene: None,
             last_frame: Arc::default(),
@@ -319,37 +308,6 @@ impl Nifty {
     }
 
     /// Each file opens as its own document rather than replacing the current one.
-    /// Opens several files into one document, drawn into the same viewport. The first is the
-    /// one the panes address; the rest are drawn beside it.
-    ///
-    /// This is what a list of files on the command line means. A file arriving later, dropped on
-    /// the window or picked from the menu, still opens on its own.
-    pub fn open_together(&mut self, paths: Vec<PathBuf>) {
-        let mut paths = paths.into_iter();
-        let Some(first) = paths.next() else {
-            return;
-        };
-        let Some(mut state) = self.load(first) else {
-            return;
-        };
-        for path in paths {
-            let Some(beside) = self.load(path) else {
-                continue;
-            };
-            let (Some(loaded), Some(scene), Some(camera)) =
-                (beside.loaded, beside.scene, beside.camera_binding)
-            else {
-                continue;
-            };
-            state.companions.push(Companion {
-                loaded,
-                scene,
-                camera,
-            });
-        }
-        self.push(state);
-    }
-
     pub fn open(&mut self, path: PathBuf) {
         let Some(state) = self.load(path) else {
             return;
@@ -1432,39 +1390,18 @@ impl Viewer<'_> {
             &lights_now,
             scene.origin,
         );
-        // Every instance draws through its own camera, so each is given this frame's view. They
-        // are all the same while nothing is placed anywhere; the buffers are separate so that a
-        // placed instance can be drawn through a view moved by the same amount.
         gfx.write_camera(&binding, &uniform);
-        for companion in &self.state.companions {
-            gfx.write_camera(&companion.camera, &uniform);
-        }
-        // the inspected file first, then whatever was opened beside it
-        let mut instances = vec![nif_wgpu::scene::Instance {
-            scene: scene.clone(),
-            frame: frame.clone(),
-            camera: binding,
-        }];
-        let unhidden = HashSet::new();
-        for companion in &mut self.state.companions {
-            let beside = build_frame(
-                &mut companion.loaded,
-                Some(&companion.scene),
-                &unhidden,
-                viewpoint,
-            );
-            instances.push(nif_wgpu::scene::Instance {
-                scene: companion.scene.clone(),
-                frame: beside,
-                camera: companion.camera.clone(),
-            });
-        }
 
         self.state.preview_rect = Some(rect);
         ui.painter().add(egui_wgpu::Callback::new_paint_callback(
             rect,
             PreviewCall {
-                instances,
+                // one file per document, so one scene in the viewport
+                instances: vec![nif_wgpu::scene::Instance {
+                    scene,
+                    frame,
+                    camera: binding,
+                }],
                 lod_mode: self.state.lod_mode,
                 lod_distance: self.state.lod_distance,
                 wireframe: self.state.wireframe,
