@@ -53,7 +53,6 @@ struct Loaded {
 
 struct State {
     loaded: Option<Loaded>,
-    status: Option<String>,
     selected: Option<usize>,
     scene: Option<Arc<Scene>>,
     /// The frame the last draw built. Framing a shape happens outside the draw and still has to
@@ -79,6 +78,8 @@ struct State {
     /// Draw the transport under the preview. The clock runs either way, so hiding it leaves an
     /// animation playing rather than stopping it.
     show_timeline: bool,
+    /// Watch this file and re-read it when it changes on disk.
+    auto_reload: bool,
     /// Let the clock run past the file's span instead of starting over at it.
     ///
     /// The span is the longest single controller. Where a shorter one does not divide it,
@@ -121,6 +122,10 @@ enum Tab {
 
 /// One open file: its own views, selection and camera.
 struct Document {
+    /// Names this document for as long as it is open. The dock reorders and reparents tabs, so
+    /// a position in the tree is not a name, and the panes inside a document need an egui id
+    /// that survives being dragged somewhere else.
+    id: usize,
     state: State,
     dock: DockState<Tab>,
 }
@@ -154,8 +159,10 @@ fn default_dock() -> DockState<Tab> {
 }
 
 pub struct Nifty {
-    documents: Vec<Document>,
-    active: usize,
+    /// The open files, as tabs. Nested docks: each document is one tab here and lays its own
+    /// panes out inside itself, so two files can be split side by side.
+    documents: DockState<Document>,
+    next_id: usize,
     error: Option<String>,
     gfx: Option<Gfx>,
     /// Shared across documents: where to look for the textures NIFs reference by name.
@@ -171,11 +178,6 @@ pub struct Nifty {
     show_shaders: bool,
     /// A `--capture` run, which turns each document through a circle and then closes the window.
     capture: Option<Capture>,
-    /// A document the top bar asked to re-read. Acted on at the top of the next frame, since the
-    /// bar draws from a borrow of the document list and cannot replace one mid draw.
-    reloading: Option<usize>,
-    /// Watch every open file and re-read it when it changes on disk.
-    auto_reload: bool,
     /// When the files were last checked, in the same seconds egui counts.
     polled: f64,
 }
@@ -184,7 +186,6 @@ impl Default for State {
     fn default() -> Self {
         Self {
             loaded: None,
-            status: None,
             selected: None,
             scene: None,
             last_frame: Arc::default(),
@@ -200,6 +201,7 @@ impl Default for State {
             lod_distance: 0.0,
             time: 0.0,
             show_timeline: true,
+            auto_reload: false,
             unbounded: false,
             playing: false,
             last_pick: None,
@@ -227,8 +229,8 @@ impl Nifty {
                 }));
         }
         Self {
-            documents: Vec::new(),
-            active: 0,
+            documents: DockState::new(Vec::new()),
+            next_id: 0,
             error: None,
             gfx: cc.wgpu_render_state.as_ref().map(Gfx::from_render_state),
             library: TextureLibrary::default(),
@@ -239,8 +241,6 @@ impl Nifty {
             shaders: Shaders::default(),
             show_shaders: false,
             capture: None,
-            reloading: None,
-            auto_reload: false,
             polled: 0.0,
         }
     }
@@ -253,7 +253,28 @@ impl Nifty {
 
     /// Selects the first open document, so opening several lands on the one named first.
     pub fn focus_first(&mut self) {
-        self.active = 0;
+        let first = self.documents.iter_all_tabs().next().map(|(path, _)| path);
+        if let Some(path) = first {
+            let _ = self.documents.set_active_tab(path);
+        }
+    }
+
+    /// The document the bar reports on and a reload or a frame key acts upon.
+    fn focused(&mut self) -> Option<&mut Document> {
+        front(&mut self.documents)
+    }
+
+    /// The document with this id, wherever the dock has since moved it to.
+    fn document(&mut self, id: usize) -> Option<&mut Document> {
+        self.documents
+            .iter_all_tabs_mut()
+            .map(|(_, tab)| tab)
+            .find(|tab| tab.id == id)
+    }
+
+    /// How many files are open. A capture walks them in this order.
+    fn count(&self) -> usize {
+        self.documents.iter_all_tabs().count()
     }
 
     /// Adds a directory to search. One root serves both purposes: the texture library indexes
@@ -273,7 +294,7 @@ impl Nifty {
         let Some(gfx) = &self.gfx else {
             return;
         };
-        for document in &mut self.documents {
+        for (_, document) in self.documents.iter_all_tabs_mut() {
             let Some(loaded) = &document.state.loaded else {
                 continue;
             };
@@ -291,20 +312,20 @@ impl Nifty {
         let Some(state) = self.load(path) else {
             return;
         };
-        self.documents.push(Document {
+        self.next_id += 1;
+        self.documents.push_to_focused_leaf(Document {
+            id: self.next_id,
             state,
             dock: default_dock(),
         });
-        self.active = self.documents.len() - 1;
     }
 
     /// Reads the document at `index` again from the path it came from, keeping where the camera
     /// is and where the timeline sits. Both are kept because a reload is for looking at an edit
     /// to the same file, and returning to the default view would hide what changed.
-    pub fn reload(&mut self, index: usize) {
+    pub fn reload(&mut self, id: usize) {
         let Some(path) = self
-            .documents
-            .get(index)
+            .document(id)
             .and_then(|d| d.state.loaded.as_ref())
             .map(|loaded| loaded.path.clone())
         else {
@@ -313,7 +334,7 @@ impl Nifty {
         let Some(mut state) = self.load(path) else {
             return;
         };
-        let Some(document) = self.documents.get_mut(index) else {
+        let Some(document) = self.document(id) else {
             return;
         };
         let was = &document.state;
@@ -333,6 +354,7 @@ impl Nifty {
         state.lod_mode = was.lod_mode;
         state.lod_distance = was.lod_distance;
         state.playing = was.playing;
+        state.auto_reload = was.auto_reload;
         state.show_timeline = was.show_timeline;
         // The selection is a block index, and an edited file can mean a different block sits at
         // it. Restored only when the block there still has the same type and name, so a reload
@@ -362,16 +384,18 @@ impl Nifty {
     fn poll_for_changes(&mut self) {
         let changed: Vec<usize> = self
             .documents
-            .iter()
-            .enumerate()
-            .filter_map(|(index, document)| {
+            .iter_all_tabs()
+            .filter_map(|(_, document)| {
+                if !document.state.auto_reload {
+                    return None;
+                }
                 let loaded = document.state.loaded.as_ref()?;
                 let now = written_at(&loaded.path);
-                (now.is_some() && now != loaded.written).then_some(index)
+                (now.is_some() && now != loaded.written).then_some(document.id)
             })
             .collect();
-        for index in changed {
-            self.reload(index);
+        for id in changed {
+            self.reload(id);
         }
     }
 
@@ -397,26 +421,13 @@ impl Nifty {
         };
 
         let mut state = State::default();
-        state.status = Some(match &self.gfx {
-            Some(gfx) => {
-                let (scene, unhandled, partial) =
-                    gfx.build_scene(&nif, &self.library, &self.shaders);
-                let shapes = scene.meshes.len();
-                let systems = scene.particles.len();
-                state.scene = Some(Arc::new(scene));
-                state.camera_binding = Some(Arc::new(gfx.camera()));
-                state.unhandled = unhandled;
-                state.partial = partial;
-                match systems {
-                    0 => format!("{} blocks, {} shapes", nif.blocks.len(), shapes),
-                    n => format!(
-                        "{} blocks, {shapes} shapes, {n} particle systems",
-                        nif.blocks.len()
-                    ),
-                }
-            }
-            None => format!("{} blocks", nif.blocks.len()),
-        });
+        if let Some(gfx) = &self.gfx {
+            let (scene, unhandled, partial) = gfx.build_scene(&nif, &self.library, &self.shaders);
+            state.scene = Some(Arc::new(scene));
+            state.camera_binding = Some(Arc::new(gfx.camera()));
+            state.unhandled = unhandled;
+            state.partial = partial;
+        }
         state.time = nif::anim::span(&nif.blocks).map_or(0.0, |(start, _)| start);
         let mut systems = nif::psys::systems(&nif.blocks);
         place_emitters(&nif, &mut systems);
@@ -608,6 +619,137 @@ struct Viewer<'a> {
     light: &'a Light,
 }
 
+/// How both docks are drawn.
+///
+/// egui_dock fills a tab bar with `extreme_bg_color`, which is what a text field is filled with
+/// rather than what chrome is: nearly black under a dark theme and pure white under a light one,
+/// against a panel that is neither. Part of the way from there to the panel's own fill sets the
+/// bar off from what it labels without either standing out. Mixed rather than named, since the
+/// two ends swap round between a light theme and a dark one and a fixed grey would only suit one.
+///
+/// Not half way: an inactive tab is filled with exactly that mix, and matching it would leave
+/// the tabs indistinguishable from the bar they sit in. The bar stays past them, so they read
+/// as raised out of it the way they did before.
+///
+/// Every tab body is outlined in the same colour the separator between two of them is drawn in,
+/// so two panes side by side are divided by three lines that all look alike. Only the separator
+/// does anything: it is what the pointer grabs to resize them. The other two go.
+///
+/// A body is padded by the window margin, which read as the inside of a box while the outline
+/// was drawn around it. With the outline gone there is nothing for it to be inside of, so it
+/// reads as the pane floating clear of its own edges instead. Enough is kept that the content
+/// does not touch the separator it sits against.
+fn dock_style(ui: &egui::Ui) -> Style {
+    let mut style = Style::from_egui(ui.style().as_ref());
+    style.tab_bar.bg_fill = ui
+        .visuals()
+        .panel_fill
+        .lerp_to_gamma(ui.visuals().extreme_bg_color, 0.75);
+    style.tab.tab_body.stroke = egui::Stroke::NONE;
+    style.tab.tab_body.inner_margin = egui::Margin::same(2);
+    style
+}
+
+/// The document in front: the one the dock has focused, or the first open where it has focused
+/// none. A nested dock can leave the outer one with no focused leaf, and the bar reporting on
+/// nothing while files are open reads as though none were.
+fn front(documents: &mut DockState<Document>) -> Option<&mut Document> {
+    let id = documents
+        .find_active_focused()
+        .map(|(_, tab)| tab.id)
+        .or_else(|| documents.iter_all_tabs().next().map(|(_, tab)| tab.id))?;
+    documents
+        .iter_all_tabs_mut()
+        .map(|(_, tab)| tab)
+        .find(|tab| tab.id == id)
+}
+
+/// One open file as a tab of its own: the toolbar for it, and its panes laid out underneath.
+struct Desk<'a> {
+    gfx: Option<&'a Gfx>,
+    library: &'a TextureLibrary,
+    light: &'a Light,
+}
+
+impl Desk<'_> {
+    /// What is true of one open file, and what is true of the viewer, on one row. Drawn inside
+    /// the document it is about, so nothing here is reachable until a file is open.
+    /// Whatever the file turned out not to be drawn faithfully as. Only drawn when there is
+    /// something to say, so a file the viewer can draw in full gives its panes the whole height.
+    fn warnings(&mut self, ui: &mut egui::Ui, document: &Document) -> bool {
+        let unhandled = document.state.unhandled.as_slice();
+        let partial = document.state.partial.as_slice();
+        if unhandled.is_empty() && partial.is_empty() {
+            return false;
+        }
+        // the dock below is flush with the document's edges, and this row would be too
+        egui::Frame::new()
+            .inner_margin(egui::Margin::symmetric(4, 0))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    // a technique nothing can draw renders as the fixed function stand in, which
+                    // looks like an answer. Say so rather than let it pass for one.
+                    if !unhandled.is_empty() {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(230, 170, 70),
+                            format!("unhandled shader: {}", unhandled.join(", ")),
+                        )
+                        .on_hover_text(
+                            "drawn with the fixed function stand in, which is wrong for these",
+                        );
+                    }
+                    if !partial.is_empty() {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(200, 190, 120),
+                            format!("partly drawn: {}", partial.join(", ")),
+                        )
+                        .on_hover_text("the technique draws, but not everything it asks for");
+                    }
+                });
+            });
+        true
+    }
+}
+
+impl TabViewer for Desk<'_> {
+    type Tab = Document;
+
+    fn title(&mut self, tab: &mut Self::Tab) -> WidgetText {
+        tab.title().into()
+    }
+
+    /// The document's own id rather than its title, since two files can share a name and the
+    /// dock would then treat them as the same tab.
+    fn id(&mut self, tab: &mut Self::Tab) -> egui::Id {
+        egui::Id::new(("document", tab.id))
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab) {
+        // the dock below draws no edge of its own, so without this whatever sits above it and
+        // the tabs under it would share one unbroken surface
+        if self.warnings(ui, tab) {
+            ui.separator();
+        }
+        DockArea::new(&mut tab.dock)
+            .id(egui::Id::new(("panes", tab.id)))
+            // Collapsing a leaf hides its body and leaves the bar behind, which is not
+            // something to want of a pane whose whole purpose is what is in it. Closing every
+            // pane at once leaves a document with nothing in it and no way to ask for one back.
+            .show_leaf_collapse_buttons(false)
+            .show_leaf_close_all_buttons(false)
+            .style(dock_style(ui))
+            .show_inside(
+                ui,
+                &mut Viewer {
+                    state: &mut tab.state,
+                    gfx: self.gfx,
+                    library: self.library,
+                    light: self.light,
+                },
+            );
+    }
+}
+
 impl TabViewer for Viewer<'_> {
     type Tab = Tab;
 
@@ -704,7 +846,6 @@ impl TabViewer for Viewer<'_> {
                 // Sideways scrolling put the eye on each row past the right edge of what was on
                 // screen, which is where it is least use.
                 let mut area = egui::ScrollArea::vertical().auto_shrink(false);
-
                 if let Some(offset) = offset {
                     area = area.vertical_scroll_offset(offset);
                 }
@@ -1912,8 +2053,9 @@ impl eframe::App for Nifty {
         // A capture aims before anything draws, so the yaw it sets is the yaw that gets painted
         // and then photographed. Delivering first frees the camera to turn in the same frame the
         // previous shot arrives in.
+        let open = self.count();
         if let Some(capture) = &mut self.capture {
-            if capture.deliver(ui.ctx(), self.documents.len()) {
+            if capture.deliver(ui.ctx(), open) {
                 capture.report();
                 let failed = capture.failed();
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1922,8 +2064,15 @@ impl eframe::App for Nifty {
                     std::process::exit(1);
                 }
             } else if let Some(aim) = capture.aim() {
-                self.active = aim.document;
-                if let Some(document) = self.documents.get_mut(aim.document) {
+                let at = self
+                    .documents
+                    .iter_all_tabs()
+                    .nth(aim.document)
+                    .map(|(path, _)| path);
+                if let Some(path) = at {
+                    let _ = self.documents.set_active_tab(path);
+                }
+                if let Some((_, document)) = self.documents.iter_all_tabs_mut().nth(aim.document) {
                     if let Some(time) = aim.time {
                         document.state.time = time;
                     }
@@ -1948,7 +2097,12 @@ impl eframe::App for Nifty {
                 self.open(path);
             }
         }
-        if self.auto_reload {
+        // one timer for the lot, since a poll is one metadata call per file that wants one
+        let watching = self
+            .documents
+            .iter_all_tabs()
+            .any(|(_, document)| document.state.auto_reload);
+        if watching {
             let now = ui.ctx().input(|i| i.time);
             if now - self.polled >= POLL_SECONDS {
                 self.polled = now;
@@ -1959,11 +2113,8 @@ impl eframe::App for Nifty {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_secs_f64(POLL_SECONDS));
         }
-        if let Some(index) = self.reloading.take() {
-            self.reload(index);
-        }
         if ui.ctx().input(|i| i.key_pressed(egui::Key::F)) {
-            if let Some(document) = self.documents.get_mut(self.active) {
+            if let Some(document) = self.focused() {
                 document.focus_selected();
             }
         }
@@ -2185,129 +2336,128 @@ impl eframe::App for Nifty {
             }
         }
 
-        let Nifty {
-            documents,
-            active,
-            error,
-            gfx,
-            library,
-            show_library,
-            root_input: _,
-            light,
-            show_light,
-            shaders,
-            show_shaders,
-            capture,
-            reloading,
-            auto_reload,
-            polled: _,
-        } = self;
-
-        egui::Panel::top("bar").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                if documents.is_empty() {
-                    ui.label("drop a .nif here");
-                }
-
-                let mut close = None;
-                for (index, document) in documents.iter().enumerate() {
-                    if ui
-                        .selectable_label(index == *active, document.title())
-                        .clicked()
-                    {
-                        *active = index;
-                    }
-                    if ui
-                        .small_button(icon::ARROW_CLOCKWISE)
-                        .on_hover_text("read this file again, keeping the camera and the time")
-                        .clicked()
-                    {
-                        *reloading = Some(index);
-                    }
-                    if ui.small_button(icon::X).clicked() {
-                        close = Some(index);
+        // Drawn before the fields are taken apart, since opening a file needs the whole app.
+        // A top panel has to be added before the central one either way.
+        let mut chosen = Vec::new();
+        let mut reload = None;
+        egui::Panel::top("menu").show(ui, |ui| {
+            egui::MenuBar::new().ui(ui, |ui| {
+                ui.menu_button("File", |ui| {
+                    if ui.button("Open...").clicked() {
+                        ui.close();
+                        chosen = rfd::FileDialog::new()
+                            .add_filter("NIF", &["nif"])
+                            .pick_files()
+                            .unwrap_or_default();
                     }
                     ui.separator();
-                }
-                if let Some(index) = close {
-                    documents.remove(index);
-                    *active = (*active).min(documents.len().saturating_sub(1));
-                }
-
-                if let Some(status) = documents.get(*active).and_then(|d| d.state.status.as_ref()) {
-                    ui.label(status);
-                }
-                if let Some(error) = error {
-                    ui.colored_label(egui::Color32::from_rgb(220, 120, 90), error.as_str());
-                }
-                // a technique nothing can draw renders as the fixed function stand in, which
-                // looks like an answer. Say so rather than let it pass for one.
-                let unhandled = documents
-                    .get(*active)
-                    .map(|d| d.state.unhandled.as_slice())
-                    .unwrap_or_default();
-                let partial = documents
-                    .get(*active)
-                    .map(|d| d.state.partial.as_slice())
-                    .unwrap_or_default();
-                if !unhandled.is_empty() {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(230, 170, 70),
-                        format!("unhandled shader: {}", unhandled.join(", ")),
-                    )
-                    .on_hover_text(
-                        "drawn with the fixed function stand in, which is wrong for these",
-                    );
-                }
-                if !partial.is_empty() {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(200, 190, 120),
-                        format!("partly drawn: {}", partial.join(", ")),
-                    )
-                    .on_hover_text("the technique draws, but not everything it asks for");
-                }
-
+                    // Both act on the file in front, which is the one the dock last focused.
+                    // With nothing open there is nothing for them to act on, so they are shown
+                    // as unavailable rather than left out: a menu that changes shape is harder
+                    // to learn than one that greys out.
+                    match front(&mut self.documents) {
+                        Some(document) => {
+                            if ui
+                                .button("Reload")
+                                .on_hover_text(
+                                    "read this file again, keeping the camera and the time",
+                                )
+                                .clicked()
+                            {
+                                reload = Some(document.id);
+                                ui.close();
+                            }
+                            ui.checkbox(&mut document.state.auto_reload, "Auto reload")
+                                .on_hover_text("re-read this file when it changes on disk");
+                        }
+                        None => {
+                            ui.add_enabled(false, egui::Button::new("Reload"));
+                            ui.add_enabled(false, egui::Checkbox::new(&mut false, "Auto reload"));
+                        }
+                    }
+                    ui.separator();
+                    if ui.button("Exit").clicked() {
+                        ui.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                });
+                // These are the viewer's, not one file's: every document resolves against the
+                // same texture roots, the same shaders and the same stand in light.
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let label = match library.roots().len() {
+                    let label = match self.library.roots().len() {
                         0 => "textures: none".to_string(),
-                        n => format!("textures: {n} dirs, {} files", library.indexed()),
+                        n => format!("textures: {n} dirs, {} files", self.library.indexed()),
                     };
                     if ui.button(label).clicked() {
-                        *show_library = true;
+                        self.show_library = true;
                     }
                     if ui.button("light").clicked() {
-                        *show_light = true;
+                        self.show_light = true;
                     }
-                    if ui.button(format!("shaders: {}", shaders.count())).clicked() {
-                        *show_shaders = true;
+                    if ui
+                        .button(format!("shaders: {}", self.shaders.count()))
+                        .clicked()
+                    {
+                        self.show_shaders = true;
                     }
-                    ui.checkbox(auto_reload, "auto reload")
-                        .on_hover_text("re-read every open file when it changes on disk");
+                    // a failed read belongs to the viewer too, since the file it names never
+                    // became a document to say it in
+                    if let Some(error) = &self.error {
+                        ui.colored_label(egui::Color32::from_rgb(220, 120, 90), error.as_str());
+                    }
                 });
             });
         });
+        if let Some(id) = reload {
+            self.reload(id);
+        }
+        for path in chosen {
+            self.open(path);
+        }
 
-        egui::CentralPanel::default().show(ui, |ui| {
-            let Some(document) = documents.get_mut(*active) else {
-                ui.centered_and_justified(|ui| ui.label("no file open"));
+        // Only the fields the panels below need. The menu row and the settings windows are
+        // drawn while the whole app is still reachable, so what they use is not taken apart here.
+        let Nifty {
+            documents,
+            next_id: _,
+            error: _,
+            gfx,
+            library,
+            show_library: _,
+            root_input: _,
+            light,
+            show_light: _,
+            shaders: _,
+            show_shaders: _,
+            capture,
+            polled: _,
+        } = self;
+
+        let panel = egui::Frame::central_panel(ui.style().as_ref()).inner_margin(0);
+        egui::CentralPanel::default().frame(panel).show(ui, |ui| {
+            // nothing open means nothing to act on, so the window says the one thing it can
+            if documents.iter_all_tabs().next().is_none() {
+                ui.centered_and_justified(|ui| ui.label("drop a .nif here"));
                 return;
+            }
+            let mut desk = Desk {
+                gfx: gfx.as_ref(),
+                library,
+                light,
             };
-            DockArea::new(&mut document.dock)
-                .id(egui::Id::new("dock").with(*active))
-                .style(Style::from_egui(ui.style().as_ref()))
-                .show_inside(
-                    ui,
-                    &mut Viewer {
-                        state: &mut document.state,
-                        gfx: gfx.as_ref(),
-                        library,
-                        light,
-                    },
-                );
+            let mut style = dock_style(ui);
+            // A document's body holds a dock rather than content, so padding it only pushes the
+            // inner tab bar off the outer one. What is drawn directly in it pads itself.
+            style.tab.tab_body.inner_margin = egui::Margin::ZERO;
+            DockArea::new(documents)
+                .id(egui::Id::new("documents"))
+                .show_leaf_collapse_buttons(false)
+                .show_leaf_close_all_buttons(false)
+                .style(style)
+                .show_inside(ui, &mut desk);
         });
 
         // the preview has drawn by now, so both the pixels and the rectangle they are in exist
-        if let (Some(capture), Some(document)) = (capture, documents.get(*active)) {
+        if let (Some(capture), Some(document)) = (capture, front(documents)) {
             if let Some(rect) = document.state.preview_rect {
                 let stem = document
                     .state

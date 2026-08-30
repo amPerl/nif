@@ -17,3 +17,4 @@ egui-phosphor = "0.13.0"
 bytemuck = "1.25.2"
 facet-reflect = "0.50.0-rc.6"
 image = { version = "0.25.10", default-features = false, features = ["bmp", "png", "tga"] }
+rfd = "0.17.2"
