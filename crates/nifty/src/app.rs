@@ -715,7 +715,11 @@ impl TabViewer for Viewer<'_> {
 
                 let mut requested = Vec::new();
                 let mut toggled = Vec::new();
-                let mut area = egui::ScrollArea::both().auto_shrink(false);
+                // Vertical only: a name wider than the pane is cut rather than scrolled to.
+                // Sideways scrolling put the eye on each row past the right edge of what was on
+                // screen, which is where it is least use.
+                let mut area = egui::ScrollArea::vertical().auto_shrink(false);
+
                 if let Some(offset) = offset {
                     area = area.vertical_scroll_offset(offset);
                 }
@@ -1758,7 +1762,35 @@ impl Concealed {
 /// all of them would put a column of identical icons down the tree. A hidden node keeps its eye
 /// whatever the pointer does, since that is the only thing saying it is hidden.
 fn node_label(ui: &mut egui::Ui, label: &LayoutJob, hidden: bool, hideable: bool, flip: &mut bool) {
-    ui.add(egui::Label::new(label.clone()).selectable(false));
+    // The scroll bar draws over the right edge of the row, so the eye is held clear of where it
+    // lands. Taken from the style rather than fixed, since the bar is a different width when it
+    // is a solid one, and asking for the allocated width instead returns nothing for a floating
+    // bar: that kind allocates no space and draws over the content.
+    let bar = {
+        let scroll = &ui.spacing().scroll;
+        scroll.bar_inner_margin + scroll.bar_width + scroll.bar_outer_margin
+    };
+    // The tree lays its rows out to the widest one it has ever been asked to hold and never
+    // narrows again, so a row reaches past the right of what is on screen once the pane is made
+    // smaller. Both the name and the eye are placed against the visible edge rather than against
+    // the row, or the eye lands where it cannot be seen or clicked.
+    let edge = ui.clip_rect().right() - bar;
+    let eye = match hideable {
+        true => ui.spacing().icon_width + ui.spacing().button_padding.x * 2.0,
+        false => 0.0,
+    };
+    // A name with no room left for it is cut rather than drawn under the eye. The whole of it is
+    // still readable on hover.
+    let mut job = label.clone();
+    job.wrap.max_width = (edge - eye - ui.cursor().min.x).max(0.0);
+    job.wrap.max_rows = 1;
+    job.wrap.overflow_character = Some('\u{2026}');
+    let galley = ui.painter().layout_job(job);
+    let cut = galley.elided;
+    let response = ui.add(egui::Label::new(galley).selectable(false));
+    if cut {
+        response.on_hover_text(label.text.clone());
+    }
     if !hideable {
         return;
     }
@@ -1777,24 +1809,17 @@ fn node_label(ui: &mut egui::Ui, label: &LayoutJob, hidden: bool, hideable: bool
         true => (icon::EYE_SLASH, "show this and everything under it"),
         false => (icon::EYE, "hide this and everything under it"),
     };
-    // The scroll bar draws over the right edge of the row, so the eye is held clear of where it
-    // lands. Taken from the style rather than fixed, since the bar is a different width when it
-    // is a solid one, and asking for the allocated width instead returns nothing for a floating
-    // bar: that kind allocates no space and draws over the content.
-    let bar = {
-        let scroll = &ui.spacing().scroll;
-        scroll.bar_inner_margin + scroll.bar_width + scroll.bar_outer_margin
-    };
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        ui.add_space(bar);
-        if ui
-            .add(egui::Button::new(glyph).frame(false))
-            .on_hover_text(hint)
-            .clicked()
-        {
-            *flip = true;
-        }
-    });
+    let at = egui::Rect::from_min_max(
+        egui::pos2(edge - eye, row.top()),
+        egui::pos2(edge, row.bottom()),
+    );
+    if ui
+        .put(at, egui::Button::new(glyph).frame(false))
+        .on_hover_text(hint)
+        .clicked()
+    {
+        *flip = true;
+    }
 }
 
 fn add_node(
