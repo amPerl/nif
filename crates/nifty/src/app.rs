@@ -76,6 +76,9 @@ struct State {
     lod_distance: f32,
     /// Where the timeline sits, in the file's own seconds.
     time: f32,
+    /// Draw the transport under the preview. The clock runs either way, so hiding it leaves an
+    /// animation playing rather than stopping it.
+    show_timeline: bool,
     /// Let the clock run past the file's span instead of starting over at it.
     ///
     /// The span is the longest single controller. Where a shorter one does not divide it,
@@ -136,27 +139,7 @@ impl Document {
 
     /// Frame the selected shape, or the whole scene when the selection has no geometry.
     fn focus_selected(&mut self) {
-        let Some(scene) = &self.state.scene else {
-            return;
-        };
-        let mesh = self.state.selected.and_then(|index| {
-            scene
-                .meshes
-                .iter()
-                .find(|m| m.shape_block == index || m.data_block == index)
-        });
-
-        match mesh {
-            Some(mesh) => {
-                // where it is at the moment being drawn, not where the file leaves it
-                self.state.camera.pan = self.state.last_frame.center_of(mesh) - scene.center;
-                self.state.camera.distance = Some(mesh.radius * 2.5);
-            }
-            None => {
-                self.state.camera.pan = Vec3::ZERO;
-                self.state.camera.distance = None;
-            }
-        }
+        frame_selected(&mut self.state);
     }
 }
 
@@ -216,6 +199,7 @@ impl Default for State {
             lod_mode: LodMode::Auto,
             lod_distance: 0.0,
             time: 0.0,
+            show_timeline: true,
             unbounded: false,
             playing: false,
             last_pick: None,
@@ -349,6 +333,7 @@ impl Nifty {
         state.lod_mode = was.lod_mode;
         state.lod_distance = was.lod_distance;
         state.playing = was.playing;
+        state.show_timeline = was.show_timeline;
         // The selection is a block index, and an edited file can mean a different block sits at
         // it. Restored only when the block there still has the same type and name, so a reload
         // never silently moves the selection to something else.
@@ -1103,6 +1088,10 @@ impl Viewer<'_> {
             ui.ctx().request_repaint();
         }
 
+        if !self.state.show_timeline {
+            return Some(self.state.time);
+        }
+
         ui.horizontal_wrapped(|ui| {
             let label = if self.state.playing { "pause" } else { "play" };
             if ui.button(label).clicked() {
@@ -1163,43 +1152,55 @@ impl Viewer<'_> {
         }
 
         ui.horizontal_wrapped(|ui| {
-            ui.checkbox(&mut self.state.wireframe, "wireframe");
-            ui.checkbox(&mut self.state.cull, "cull backfaces");
-            ui.checkbox(&mut self.state.colors, "material colours");
-            ui.checkbox(&mut self.state.textures, "textures");
-            ui.checkbox(&mut self.state.grid, "grid");
-            if ui.button("reset view").clicked() {
-                self.state.camera = Camera::default();
-            }
-            // a file carries at most one camera, so this is a choice between two rather than a
-            // list. The picker is left out entirely for a file that carries none.
-            if let Some(cam) = scene.camera {
-                let mut through = self.state.scene_camera;
-                egui::ComboBox::from_id_salt("camera")
-                    .selected_text(match through {
-                        true => "scene camera",
-                        false => "orbit",
-                    })
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut through, false, "orbit");
-                        ui.selectable_value(&mut through, true, "scene camera");
-                    });
-                self.state.scene_camera = through;
-                if through {
-                    ui.label(format!(
-                        "{:.0} deg at {:.2}:1",
-                        cam.fov.to_degrees(),
-                        cam.aspect
-                    ));
+            // Five toggles in a row is most of the width for something rarely touched. Held
+            // open on a click, since these are usually changed a few at a time and a menu that
+            // shut after each one would have to be opened five times.
+            egui::containers::menu::MenuButton::from_button(
+                egui::Button::new("visibility").right_text(icon::CARET_DOWN),
+            )
+            .config(
+                egui::containers::menu::MenuConfig::new()
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside),
+            )
+            .ui(ui, |ui| {
+                ui.checkbox(&mut self.state.wireframe, "wireframe");
+                ui.checkbox(&mut self.state.cull, "cull backfaces");
+                ui.checkbox(&mut self.state.colors, "material colours");
+                ui.checkbox(&mut self.state.textures, "textures");
+                ui.checkbox(&mut self.state.grid, "grid");
+            });
+            // Where the view is pointed and what it is pointed through, which are the same
+            // question. Each of these settles it, so the menu shuts on a click.
+            egui::containers::menu::MenuButton::from_button(
+                egui::Button::new("camera").right_text(icon::CARET_DOWN),
+            )
+            .ui(ui, |ui| {
+                if ui.button("reset view").clicked() {
+                    self.state.camera = Camera::default();
                 }
+                if ui
+                    .add(egui::Button::new("frame selected").shortcut_text("F"))
+                    .clicked()
+                {
+                    frame_selected(self.state);
+                }
+                // a file carries at most one camera, so this is a choice between two rather
+                // than a list. Left out entirely for a file that carries none.
+                if scene.camera.is_some() {
+                    ui.separator();
+                    ui.selectable_value(&mut self.state.scene_camera, false, "orbit");
+                    ui.selectable_value(&mut self.state.scene_camera, true, "scene camera");
+                }
+            });
+            // the shape of the file's own camera, while the view is through it
+            if let (Some(cam), true) = (scene.camera, self.state.scene_camera) {
+                ui.label(format!(
+                    "{:.0} deg at {:.2}:1",
+                    cam.fov.to_degrees(),
+                    cam.aspect
+                ));
             }
-            ui.separator();
-            ui.label(format!(
-                "{} shapes, radius {:.1}, grid {}  ·  F frames the selection",
-                scene.meshes.len(),
-                scene.radius,
-                format_spacing(scene.grid.spacing)
-            ));
+            ui.checkbox(&mut self.state.show_timeline, "animation controls");
         });
 
         if !scene.lods.is_empty() {
@@ -1634,12 +1635,6 @@ fn ancestors_of(links: &[Vec<Link>], roots: &[usize], target: usize) -> Vec<usiz
     path
 }
 
-/// A grid spacing reads as a number, not as an exponent: 0.1 rather than 1e-1.
-fn format_spacing(spacing: f32) -> String {
-    let decimals = (-spacing.log10().floor()).clamp(0.0, 6.0) as usize;
-    format!("{spacing:.decimals$}/cell")
-}
-
 /// What the tree lays every row out at, from `interact_size` plus the spacing between rows.
 fn row_height(ui: &egui::Ui) -> f32 {
     ui.spacing().interact_size.y + ui.spacing().item_spacing.y
@@ -1726,6 +1721,32 @@ fn subtree_of(links: &[Vec<Link>], index: usize) -> Vec<usize> {
 fn discard(ctx: &egui::Context, reason: &'static str) {
     ctx.request_discard(reason);
     ctx.request_repaint();
+}
+
+/// Points the camera at the selected shape, or back at the whole scene where nothing is
+/// selected. Reached from the preview's own menu and from the key that does the same.
+fn frame_selected(state: &mut State) {
+    let Some(scene) = &state.scene else {
+        return;
+    };
+    let mesh = state.selected.and_then(|index| {
+        scene
+            .meshes
+            .iter()
+            .find(|m| m.shape_block == index || m.data_block == index)
+    });
+
+    match mesh {
+        Some(mesh) => {
+            // where it is at the moment being drawn, not where the file leaves it
+            state.camera.pan = state.last_frame.center_of(mesh) - scene.center;
+            state.camera.distance = Some(mesh.radius * 2.5);
+        }
+        None => {
+            state.camera.pan = Vec3::ZERO;
+            state.camera.distance = None;
+        }
+    }
 }
 
 /// Whether a depth first walk is inside a block hidden by hand.
