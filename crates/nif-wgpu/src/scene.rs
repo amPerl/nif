@@ -588,6 +588,9 @@ impl Viewpoint {
 
 /// What the walk found for the frame being drawn: where shapes have moved, and which are culled.
 /// Empty when the file has nothing that moves or hides.
+///
+/// `hidden` holds every culled `NiAVObject`, not only the drawable ones, so a caller that hides
+/// a node by hand can ask about a light or a bone as readily as about a shape.
 #[derive(Default)]
 pub struct Frame {
     pub poses: HashMap<usize, Mat4>,
@@ -3203,12 +3206,14 @@ impl PreviewCall {
             render_pass.draw_indexed(0..(quads * 8) as u32, 0, 0..1);
         }
 
-        // the selected shape gets its wireframe drawn over everything, so it stays findable
+        // The selected shape gets its wireframe drawn over everything, so it stays findable.
+        // Drawn whether or not the shape itself is, since the highlight says what is selected
+        // and a hidden shape is the case where that is hardest to work out otherwise.
         let Some(selected) = self.selected else {
             return;
         };
         render_pass.set_pipeline(&preview.highlight);
-        for mesh in self.scene.meshes.iter().filter(|m| self.visible(m)) {
+        for mesh in self.scene.meshes.iter() {
             if mesh.shape_block != selected && mesh.data_block != selected {
                 continue;
             }
@@ -3218,14 +3223,9 @@ impl PreviewCall {
             render_pass.set_index_buffer(mesh.edges.slice(..), wgpu::IndexFormat::Uint16);
             render_pass.draw_indexed(0..mesh.edge_count, 0, 0..1);
         }
-        // a selected particle system outlines its quads the same way, so picking one shows what
-        // was picked rather than leaving the selection invisible
-        for mesh in self
-            .scene
-            .particles
-            .iter()
-            .filter(|m| self.visible_particles(m))
-        {
+        // a selected particle system outlines its quads the same way, and for the same reason
+        // is outlined whether or not it is drawn
+        for mesh in self.scene.particles.iter() {
             if mesh.block != selected {
                 continue;
             }
