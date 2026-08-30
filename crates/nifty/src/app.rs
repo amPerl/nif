@@ -86,6 +86,10 @@ struct State {
     playing: bool,
     /// Where the last pick happened, so clicking the same spot cycles through what is behind.
     last_pick: Option<egui::Pos2>,
+    /// Blocks hidden by hand from the tree, which hide whatever sits under them the way the
+    /// file's own cull flag does. Separate from the flag the file carries, so hiding something
+    /// here says nothing about what the file asked for.
+    hidden: HashSet<usize>,
     /// Set when the selection changed outside the tree, so the tree can catch up.
     sync_tree: bool,
     /// Nodes to open or close before the tree is next drawn.
@@ -212,6 +216,7 @@ impl Default for State {
             unbounded: false,
             playing: false,
             last_pick: None,
+            hidden: HashSet::new(),
             sync_tree: false,
             openness: Vec::new(),
             previews: Details::default(),
@@ -352,6 +357,14 @@ impl Nifty {
             // the tree opens the ancestors and scrolls to it, the way a pick does
             state.sync_tree = true;
         }
+        // Hidden blocks are indices too, so each is kept only where the block at it is still
+        // the same one. Dropping the rest is better than hiding something nobody chose.
+        state.hidden = was
+            .hidden
+            .iter()
+            .copied()
+            .filter(|at| identity(was, *at) == identity(&state, *at))
+            .collect();
         document.state = state;
     }
 
@@ -640,15 +653,28 @@ impl TabViewer for Viewer<'_> {
                     blocks,
                     links: &loaded.links,
                     palette: &palette,
+                    hidden: &self.state.hidden,
                 };
 
                 let mut all = None;
+                let mut reveal = false;
+                let concealed = tree.hidden.len();
                 ui.horizontal(|ui| {
                     if ui.button("expand all").clicked() {
                         all = Some(true);
                     }
                     if ui.button("collapse all").clicked() {
                         all = Some(false);
+                    }
+                    // Shown only when there is something to show, and it says how many. A node
+                    // hidden inside a closed parent is otherwise nowhere on screen, so without
+                    // this the only way back is to remember where it was.
+                    if concealed > 0
+                        && ui
+                            .button(format!("{} show {concealed} hidden", icon::EYE))
+                            .clicked()
+                    {
+                        reveal = true;
                     }
                 });
                 if let Some(open) = all {
@@ -683,6 +709,7 @@ impl TabViewer for Viewer<'_> {
                 }
 
                 let mut requested = Vec::new();
+                let mut toggled = Vec::new();
                 let mut area = egui::ScrollArea::both().auto_shrink(false);
                 if let Some(offset) = offset {
                     area = area.vertical_scroll_offset(offset);
@@ -698,6 +725,7 @@ impl TabViewer for Viewer<'_> {
                                 &mut path,
                                 0,
                                 &mut requested,
+                                &mut toggled,
                             );
                         }
                     });
@@ -707,6 +735,14 @@ impl TabViewer for Viewer<'_> {
                         }
                     }
                 });
+                if reveal {
+                    self.state.hidden.clear();
+                }
+                for index in toggled {
+                    if !self.state.hidden.insert(index) {
+                        self.state.hidden.remove(&index);
+                    }
+                }
                 if !requested.is_empty() {
                     // a context menu names one node; the request covers its whole subtree
                     for (index, open) in requested {
@@ -814,22 +850,31 @@ impl Viewer<'_> {
         let Some(loaded) = &self.state.loaded else {
             return Arc::default();
         };
-        // a particle system is animation even when nothing else in the file moves
-        if viewpoint.is_static() && !loaded.hideable && !loaded.skinned && loaded.systems.is_empty()
+        // a particle system is animation even when nothing else in the file moves, and a block
+        // hidden by hand has to be resolved whether or not anything else in the file does
+        if viewpoint.is_static()
+            && !loaded.hideable
+            && !loaded.skinned
+            && loaded.systems.is_empty()
+            && self.state.hidden.is_empty()
         {
             return Arc::default();
         }
         let mut frame = Frame::default();
+        let mut concealed = Concealed::default();
         for visit in viewpoint.walk(&loaded.nif) {
             // every block, not only the shapes: a bone is a node the skinned shape does not
             // own, and placing one means reaching it here
             frame
                 .poses
                 .insert(visit.index, Mat4::from(&visit.transform));
-            if visit.block.geometry().is_none() {
+            // asked of every block for the same reason: what was hidden by hand is usually a
+            // node, and a node is not what gets drawn
+            let by_hand = concealed.visit(visit.index, visit.depth, &self.state.hidden);
+            if visit.block.av_object().is_none() {
                 continue;
             }
-            if visit.hidden {
+            if visit.hidden || by_hand {
                 frame.hidden.insert(visit.index);
             }
         }
@@ -1385,6 +1430,17 @@ impl Viewer<'_> {
                 .collect(),
             _ => scene.lights.clone(),
         };
+        // A light under something hidden stops lighting, the way geometry under it stops
+        // drawing. Without this an eye on a light block would show and do nothing.
+        let lights_now: Vec<nif::light::Lit> = match frame.hidden.is_empty() {
+            true => lights_now,
+            false => lights_now
+                .into_iter()
+                .zip(scene.light_blocks.iter())
+                .filter(|(_, block)| !frame.hidden.contains(block))
+                .map(|(lit, _)| lit)
+                .collect(),
+        };
         let uniform = nif_wgpu::scene::camera_uniform(
             view_proj,
             eye - scene.origin,
@@ -1429,6 +1485,59 @@ fn letterbox(within: egui::Rect, aspect: f32) -> egui::Rect {
         false => (within.width(), within.width() / aspect),
     };
     egui::Rect::from_center_size(within.center(), egui::vec2(w, h))
+}
+
+#[cfg(test)]
+mod concealed_tests {
+    use super::Concealed;
+    use std::collections::HashSet;
+
+    /// One depth first walk, as (block, depth) pairs in the order the walk reaches them.
+    fn walked(nodes: &[(usize, usize)], hidden: &[usize]) -> Vec<usize> {
+        let hidden: HashSet<usize> = hidden.iter().copied().collect();
+        let mut concealed = Concealed::default();
+        nodes
+            .iter()
+            .filter(|(index, depth)| concealed.visit(*index, *depth, &hidden))
+            .map(|(index, _)| *index)
+            .collect()
+    }
+
+    /// 0 holds 1, which holds 2 and 3; 4 is 1's sibling and holds 5.
+    const TREE: [(usize, usize); 6] = [(0, 0), (1, 1), (2, 2), (3, 2), (4, 1), (5, 2)];
+
+    #[test]
+    fn hiding_a_node_hides_what_is_under_it() {
+        assert_eq!(walked(&TREE, &[1]), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn a_subtree_ends_where_the_depth_returns() {
+        // 4 and 5 are past 1's subtree, so hiding 1 leaves them alone
+        let out = walked(&TREE, &[1]);
+        assert!(!out.contains(&4) && !out.contains(&5));
+    }
+
+    #[test]
+    fn two_hidden_siblings_each_hide_their_own() {
+        assert_eq!(walked(&TREE, &[1, 4]), vec![1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn a_hidden_node_inside_a_hidden_node_does_not_end_early() {
+        // 2 sits inside 1, so leaving 2 must not reveal 3, which is still inside 1
+        assert_eq!(walked(&TREE, &[1, 2]), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn hiding_the_root_hides_the_file() {
+        assert_eq!(walked(&TREE, &[0]), vec![0, 1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn hiding_nothing_hides_nothing() {
+        assert!(walked(&TREE, &[]).is_empty());
+    }
 }
 
 #[cfg(test)]
@@ -1575,6 +1684,7 @@ struct Tree<'a> {
     blocks: &'a [Block],
     links: &'a [Vec<Link>],
     palette: &'a Palette,
+    hidden: &'a HashSet<usize>,
 }
 
 /// Every node reachable from `index`, including itself.
@@ -1603,6 +1713,79 @@ fn discard(ctx: &egui::Context, reason: &'static str) {
     ctx.request_repaint();
 }
 
+/// Whether a depth first walk is inside a block hidden by hand.
+///
+/// Hiding a node hides everything under it, which is what the file's own cull flag does. The
+/// walk reaches a block before any of its children and never returns to a depth it has left,
+/// so the depth of the block that was hidden is enough to say where its subtree ends.
+#[derive(Default)]
+struct Concealed {
+    /// The depth of the outermost hidden block the walk has entered and not yet left.
+    at: Option<usize>,
+}
+
+impl Concealed {
+    /// Called once per visit, in walk order. Answers whether this block is hidden, by itself
+    /// or by something above it.
+    fn visit(&mut self, index: usize, depth: usize, hidden: &HashSet<usize>) -> bool {
+        // left first, then entered: a hidden block can be the next sibling of a hidden block,
+        // and testing in the other order would let the first one's depth swallow the second
+        if self.at.is_some_and(|entered| depth <= entered) {
+            self.at = None;
+        }
+        if self.at.is_none() && hidden.contains(&index) {
+            self.at = Some(depth);
+        }
+        self.at.is_some()
+    }
+}
+
+/// A node's label, and the eye that hides what the label names.
+///
+/// Only an `NiAVObject` can be hidden, so nothing else is offered one. The eye for a shown node
+/// appears under the pointer and nowhere else: nearly every node is shown, and drawing an eye on
+/// all of them would put a column of identical icons down the tree. A hidden node keeps its eye
+/// whatever the pointer does, since that is the only thing saying it is hidden.
+fn node_label(ui: &mut egui::Ui, label: &LayoutJob, hidden: bool, hideable: bool, flip: &mut bool) {
+    ui.add(egui::Label::new(label.clone()).selectable(false));
+    if !hideable {
+        return;
+    }
+    // A row is a band across the whole tree, so the pointer's height decides which row it is
+    // over and the tree's own clip rect decides whether it is over the tree at all. Testing the
+    // label's rectangle instead would lose the pointer over the icon to the left of it.
+    let row = ui.max_rect();
+    let hovered = ui
+        .ctx()
+        .pointer_hover_pos()
+        .is_some_and(|at| at.y >= row.top() && at.y <= row.bottom() && ui.clip_rect().contains(at));
+    if !hidden && !hovered {
+        return;
+    }
+    let (glyph, hint) = match hidden {
+        true => (icon::EYE_SLASH, "show this and everything under it"),
+        false => (icon::EYE, "hide this and everything under it"),
+    };
+    // The scroll bar draws over the right edge of the row, so the eye is held clear of where it
+    // lands. Taken from the style rather than fixed, since the bar is a different width when it
+    // is a solid one, and asking for the allocated width instead returns nothing for a floating
+    // bar: that kind allocates no space and draws over the content.
+    let bar = {
+        let scroll = &ui.spacing().scroll;
+        scroll.bar_inner_margin + scroll.bar_width + scroll.bar_outer_margin
+    };
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.add_space(bar);
+        if ui
+            .add(egui::Button::new(glyph).frame(false))
+            .on_hover_text(hint)
+            .clicked()
+        {
+            *flip = true;
+        }
+    });
+}
+
 fn add_node(
     builder: &mut egui_ltreeview::TreeViewBuilder<'_, usize>,
     tree: &Tree<'_>,
@@ -1610,16 +1793,27 @@ fn add_node(
     path: &mut HashSet<usize>,
     depth: usize,
     requested: &mut Vec<(usize, bool)>,
+    toggled: &mut Vec<usize>,
 ) {
     let index = link.index;
     let label = label_for(tree.blocks, index, link.slot.as_deref(), tree.palette);
     let glyph = tree.blocks.get(index).map(icon_for).unwrap_or(icon::CIRCLE);
     let children = tree.links.get(index).map(Vec::as_slice).unwrap_or_default();
+    let hideable = tree.blocks.get(index).and_then(Block::av_object).is_some();
+    let hidden = tree.hidden.contains(&index);
+    let mut flip = false;
 
     if children.is_empty() || !path.insert(index) {
-        builder.node(NodeBuilder::leaf(index).label(label).icon(move |ui| {
-            ui.label(glyph);
-        }));
+        builder.node(
+            NodeBuilder::leaf(index)
+                .label_ui(|ui| node_label(ui, &label, hidden, hideable, &mut flip))
+                .icon(move |ui| {
+                    ui.label(glyph);
+                }),
+        );
+        if flip {
+            toggled.push(index);
+        }
         return;
     }
 
@@ -1628,7 +1822,7 @@ fn add_node(
         NodeBuilder::dir(index)
             // the root opens so a new file is not a single closed row
             .default_open(depth == 0)
-            .label(label)
+            .label_ui(|ui| node_label(ui, &label, hidden, hideable, &mut flip))
             .icon(move |ui| {
                 ui.label(glyph);
             })
@@ -1646,8 +1840,11 @@ fn add_node(
     if let Some(open) = menu {
         requested.push((index, open));
     }
+    if flip {
+        toggled.push(index);
+    }
     for child in children {
-        add_node(builder, tree, child, path, depth + 1, requested);
+        add_node(builder, tree, child, path, depth + 1, requested, toggled);
     }
     builder.close_dir();
     path.remove(&index);
