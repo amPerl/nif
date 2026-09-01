@@ -327,7 +327,7 @@ pub struct Gfx {
     pub target: wgpu::TextureFormat,
     model_layout: wgpu::BindGroupLayout,
     texture_layout: wgpu::BindGroupLayout,
-    samplers: [wgpu::Sampler; ADDRESS_MODES.len() * ADDRESS_MODES.len() * 2],
+    samplers: [wgpu::Sampler; shaders::FILTERS.len() * ADDRESS_MODES.len() * ADDRESS_MODES.len()],
     anisotropy: u16,
     pipeline_layout: wgpu::PipelineLayout,
     camera_layout: wgpu::BindGroupLayout,
@@ -513,42 +513,41 @@ impl Sorted<'_> {
 /// of level. Anything above this is the viewer's, not the engine's.
 pub const NO_ANISOTROPY: u16 = 1;
 
-/// One sampler per address mode pair, twice over for the two filters. `TexClampMode` is per map
-/// and glow maps clamp about as often as they wrap, and a shader can pin its own: for instance
-/// `ActionSpecularBand` mirrors in u.
+/// One sampler per filter and address mode pair. Both are per map: `TexClampMode` because glow
+/// maps clamp about as often as they wrap, `TexFilterMode` because a map can ask not to be
+/// mipmapped at all. A shader can pin either, and does: `ActionSpecularBand` mirrors in u and a
+/// toon ramp clamps and point samples.
+///
+/// A filter that switches mipmapping off is built as a sampler pinned to the largest level,
+/// since wgpu has no "no mipmapping" filter and a texture keeps its levels either way.
 ///
 /// `anisotropy` is the number of samples taken along the long axis of a footprint seen at an
 /// angle. wgpu requires every filter to be linear above one and clamps the value to what the
 /// device supports, falling back to one where there is no support at all, so a caller does not
-/// have to ask what the hardware can do. Only the linear half of the array takes it: a toon ramp
-/// asked for point sampling and several taps of it would be neither one thing nor the other.
+/// have to ask what the hardware can do.
 fn build_samplers(
     device: &wgpu::Device,
     anisotropy: u16,
-) -> [wgpu::Sampler; ADDRESS_MODES.len() * ADDRESS_MODES.len() * 2] {
+) -> [wgpu::Sampler; shaders::FILTERS.len() * ADDRESS_MODES.len() * ADDRESS_MODES.len()] {
     std::array::from_fn(|i| {
         let modes = ADDRESS_MODES.len();
-        // a toon ramp asks for point sampling, which is what gives it hard bands
-        let smooth = i / (modes * modes) == 0;
-        let filter = if smooth {
-            wgpu::FilterMode::Linear
-        } else {
-            wgpu::FilterMode::Nearest
-        };
+        let filter = shaders::FILTERS[i / (modes * modes)];
+        let (mag, min, mip) = filter.modes();
         device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("nif sampler"),
             address_mode_u: ADDRESS_MODES[(i / modes) % modes],
             address_mode_v: ADDRESS_MODES[i % modes],
-            mag_filter: filter,
-            min_filter: filter,
-            // levels blend into one another where the shape does, and are picked outright
-            // where a ramp asked for point sampling, so its bands stay hard at every size
-            mipmap_filter: if smooth {
-                wgpu::MipmapFilterMode::Linear
+            mag_filter: mag,
+            min_filter: min,
+            mipmap_filter: mip.unwrap_or(wgpu::MipmapFilterMode::Nearest),
+            // a map that asked for no mipmapping reads its largest level however small it is
+            // drawn, which is what the engine's D3DTEXF_NONE did
+            lod_max_clamp: if mip.is_some() { 32.0 } else { 0.0 },
+            anisotropy_clamp: if filter.takes_anisotropy() {
+                anisotropy
             } else {
-                wgpu::MipmapFilterMode::Nearest
+                NO_ANISOTROPY
             },
-            anisotropy_clamp: if smooth { anisotropy } else { NO_ANISOTROPY },
             ..Default::default()
         })
     })
@@ -1304,7 +1303,10 @@ impl Gfx {
     fn sampler(&self, sampling: shaders::Sampling) -> wgpu::Sampler {
         let at = |mode| ADDRESS_MODES.iter().position(|m| *m == mode).unwrap_or(0);
         let (u, v) = sampling.address;
-        let filter = usize::from(sampling.filter == wgpu::FilterMode::Nearest);
+        let filter = shaders::FILTERS
+            .iter()
+            .position(|f| *f == sampling.filter)
+            .unwrap_or(0);
         let modes = ADDRESS_MODES.len();
         self.samplers[filter * modes * modes + at(u) * modes + at(v)].clone()
     }
@@ -1524,7 +1526,7 @@ impl Gfx {
             std::array::from_fn(|position| neutral[pass.absent[position] as usize].clone());
         let default_sampling = shaders::Sampling {
             address: (wgpu::AddressMode::Repeat, wgpu::AddressMode::Repeat),
-            filter: wgpu::FilterMode::Linear,
+            filter: shaders::Filter::default(),
         };
         let mut samplers: [wgpu::Sampler; BOUND_SLOTS] = std::array::from_fn(|position| {
             self.sampler(pass.address[position].unwrap_or(default_sampling))
@@ -1536,7 +1538,13 @@ impl Gfx {
                 wgpu::AddressMode::ClampToEdge,
                 wgpu::AddressMode::ClampToEdge,
             ),
-            filter: wgpu::FilterMode::Linear,
+            // an effect names its own filtering the way a slot does, rather than inheriting one
+            filter: match environment.get(&nif.blocks) {
+                Some(Block::NiTextureEffect(effect)) => {
+                    shaders::Filter::from(&effect.texture_filtering)
+                }
+                _ => shaders::Filter::default(),
+            },
         };
         let mut env_view = neutral[shaders::Absent::Black as usize].clone();
 
@@ -1571,17 +1579,17 @@ impl Gfx {
                         })
                         .unwrap_or_else(|| missing.clone());
                     }
-                    // the shader's own sampler state beats the map's clamp mode
+                    // the shader's own sampler state beats the map's own clamp and filter
                     samplers[position] =
                         self.sampler(pass.address[position].unwrap_or(shaders::Sampling {
                             address: address_of(&desc.clamp_mode),
-                            filter: wgpu::FilterMode::Linear,
+                            filter: shaders::Filter::from(&desc.filter_mode),
                         }));
                 }
             }
         }
         // A sphere map reflects whatever the effect names. Every one in this game asks for the
-        // same filtering and clamping, so only the source varies.
+        // same filtering, and the clamping is the reflection's own rather than the map's.
         // A cube map is a second binding kind rather than another slot, so it is resolved
         // separately and the blank one stands in wherever a shape reflects nothing.
         let mut cube_view = blank_cube.clone();
@@ -2466,7 +2474,7 @@ impl Gfx {
 
         let samplers_for_grid = self.sampler(shaders::Sampling {
             address: (wgpu::AddressMode::Repeat, wgpu::AddressMode::Repeat),
-            filter: wgpu::FilterMode::Linear,
+            filter: shaders::Filter::default(),
         });
         // sized to the scene, not to how far the scene is from the origin, and placed on the
         // ground below it. The z stays at the world's own floor so height still reads truthfully.

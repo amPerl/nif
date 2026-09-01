@@ -75,16 +75,89 @@ pub enum Source {
     },
 }
 
+/// How a map is filtered, as the engine's own six settings rather than as three independent
+/// wgpu ones. Two of them switch mipmapping off outright, so this is not a quality knob: a map
+/// asking for `Bilerp` is asking to be drawn from its largest level however small it appears.
+///
+/// A `TexDesc` carries one of these per slot, and `NiTextureEffect` carries one for its map.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Filter {
+    Nearest,
+    Bilerp,
+    #[default]
+    Trilerp,
+    NearestMipNearest,
+    NearestMipLerp,
+    BilerpMipNearest,
+}
+
+/// Every filter, so the samplers can be built once and picked by index.
+pub const FILTERS: [Filter; 6] = [
+    Filter::Nearest,
+    Filter::Bilerp,
+    Filter::Trilerp,
+    Filter::NearestMipNearest,
+    Filter::NearestMipLerp,
+    Filter::BilerpMipNearest,
+];
+
+impl Filter {
+    /// The three wgpu filters this stands for, magnifying, minifying and between levels.
+    /// `None` for the last means no mipmapping at all, which is what `D3DTEXF_NONE` did: the
+    /// largest level is read whatever the footprint.
+    pub fn modes(
+        self,
+    ) -> (
+        wgpu::FilterMode,
+        wgpu::FilterMode,
+        Option<wgpu::MipmapFilterMode>,
+    ) {
+        use wgpu::FilterMode::{Linear, Nearest};
+        use wgpu::MipmapFilterMode as Mip;
+        match self {
+            Filter::Nearest => (Nearest, Nearest, None),
+            Filter::Bilerp => (Linear, Linear, None),
+            Filter::Trilerp => (Linear, Linear, Some(Mip::Linear)),
+            Filter::NearestMipNearest => (Nearest, Nearest, Some(Mip::Nearest)),
+            Filter::NearestMipLerp => (Nearest, Nearest, Some(Mip::Linear)),
+            Filter::BilerpMipNearest => (Linear, Linear, Some(Mip::Nearest)),
+        }
+    }
+
+    /// Whether several taps along the footprint can be asked for, which wgpu allows only where
+    /// every filter is linear. Only `Trilerp` qualifies, and it is what nearly every map asks.
+    pub fn takes_anisotropy(self) -> bool {
+        matches!(self, Filter::Trilerp)
+    }
+}
+
+impl From<&nif::blocks::TexFilterMode> for Filter {
+    fn from(mode: &nif::blocks::TexFilterMode) -> Self {
+        use nif::blocks::TexFilterMode as Mode;
+        match mode {
+            Mode::Nearest => Filter::Nearest,
+            Mode::Bilerp => Filter::Bilerp,
+            Mode::Trilerp => Filter::Trilerp,
+            Mode::NearestMipNearest => Filter::NearestMipNearest,
+            Mode::NearestMipLerp => Filter::NearestMipLerp,
+            Mode::BilerpMipNearest => Filter::BilerpMipNearest,
+            // nothing in this game stores one, and the engine would index its table out of
+            // range, so the setting all but every map asks for stands in
+            Mode::Unknown(_) => Filter::Trilerp,
+        }
+    }
+}
+
 /// Sampling a shader pins for a slot, since a pass sets its own sampler state and that beats the
-/// map's own `TexClampMode`. Point sampling is how a toon ramp gets hard bands, not a blend.
+/// map's own `TexClampMode` and filter. Point sampling is how a toon ramp gets hard bands.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Sampling {
     pub address: (wgpu::AddressMode, wgpu::AddressMode),
-    pub filter: wgpu::FilterMode,
+    pub filter: Filter,
 }
 
 impl Sampling {
-    pub fn clamped(filter: wgpu::FilterMode) -> Sampling {
+    pub fn clamped(filter: Filter) -> Sampling {
         Sampling {
             address: (
                 wgpu::AddressMode::ClampToEdge,
@@ -238,12 +311,7 @@ fn toon_shading_pass() -> Pass {
             None,
         ],
         // clamped and point sampled, which is what keeps the bands hard
-        address: [
-            None,
-            Some(Sampling::clamped(wgpu::FilterMode::Nearest)),
-            None,
-            None,
-        ],
+        address: [None, Some(Sampling::clamped(Filter::Nearest)), None, None],
         ..Pass::default()
     }
 }
@@ -332,8 +400,8 @@ fn built_ins() -> Vec<Shader> {
                 absent: [Absent::White, Absent::Black, Absent::Black, Absent::White],
                 address: [
                     None,
-                    Some(Sampling::clamped(wgpu::FilterMode::Linear)),
-                    Some(Sampling::clamped(wgpu::FilterMode::Linear)),
+                    Some(Sampling::clamped(Filter::Trilerp)),
+                    Some(Sampling::clamped(Filter::Trilerp)),
                     None,
                 ],
                 ..Pass::default()
@@ -383,7 +451,7 @@ fn built_ins() -> Vec<Shader> {
                 address: [
                     Some(Sampling {
                         address: (wgpu::AddressMode::MirrorRepeat, wgpu::AddressMode::Repeat),
-                        filter: wgpu::FilterMode::Linear,
+                        filter: Filter::Trilerp,
                     }),
                     None,
                     None,
@@ -640,5 +708,55 @@ impl Shaders {
             found += 1;
         }
         found
+    }
+}
+
+#[cfg(test)]
+mod filtering {
+    use super::*;
+
+    /// The engine's own table, transcribed from the mapping it builds at startup. Two of the six
+    /// switch mipmapping off, which is the part that is easy to lose.
+    #[test]
+    fn every_filter_maps_the_way_the_engine_mapped_it() {
+        use wgpu::FilterMode::{Linear, Nearest};
+        use wgpu::MipmapFilterMode as Mip;
+
+        assert_eq!(Filter::Nearest.modes(), (Nearest, Nearest, None));
+        assert_eq!(Filter::Bilerp.modes(), (Linear, Linear, None));
+        assert_eq!(Filter::Trilerp.modes(), (Linear, Linear, Some(Mip::Linear)));
+        assert_eq!(
+            Filter::NearestMipNearest.modes(),
+            (Nearest, Nearest, Some(Mip::Nearest))
+        );
+        assert_eq!(
+            Filter::NearestMipLerp.modes(),
+            (Nearest, Nearest, Some(Mip::Linear))
+        );
+        assert_eq!(
+            Filter::BilerpMipNearest.modes(),
+            (Linear, Linear, Some(Mip::Nearest))
+        );
+    }
+
+    /// wgpu refuses anisotropy unless every filter is linear, so what may ask for it and what the
+    /// table says have to agree.
+    #[test]
+    fn only_a_fully_linear_filter_may_ask_for_anisotropy() {
+        for filter in FILTERS {
+            let (mag, min, mip) = filter.modes();
+            let linear = mag == wgpu::FilterMode::Linear
+                && min == wgpu::FilterMode::Linear
+                && mip == Some(wgpu::MipmapFilterMode::Linear);
+            assert_eq!(filter.takes_anisotropy(), linear, "{filter:?}");
+        }
+    }
+
+    /// Every mode the parser can produce has to land somewhere, including the one it never sees.
+    #[test]
+    fn an_unknown_mode_falls_back_to_what_all_but_every_map_asks() {
+        use nif::blocks::TexFilterMode as Mode;
+        assert_eq!(Filter::from(&Mode::Bilerp), Filter::Bilerp);
+        assert_eq!(Filter::from(&Mode::Unknown(9)), Filter::Trilerp);
     }
 }
