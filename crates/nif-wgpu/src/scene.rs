@@ -256,11 +256,12 @@ pub struct Preview {
     /// What the texture group is laid out as, so a flipped combination can be assembled here
     /// rather than only where the scene is built.
     texture_layout: wgpu::BindGroupLayout,
-    /// Bind groups for combinations the animation has actually reached, by instance, shape,
-    /// pass and combination. The instance is part of the key because a block index only names a
-    /// block within one file, and two files in a viewport both have a block 12. Built on demand: the cross product reaches 2,601 for one property in this
-    /// corpus against 102 textures, so building it up front is not an option.
-    flipped: HashMap<(usize, usize, usize, FlipState), wgpu::BindGroup>,
+    /// Bind groups for combinations the animation has actually reached, by scene, shape, pass
+    /// and combination. The scene is part of the key because a block index only names a block
+    /// within one build of one file, and this map outlives both. Built on demand: the cross
+    /// product reaches 2,601 for one property in this corpus against 102 textures, so building
+    /// it up front is not an option.
+    flipped: HashMap<(u64, usize, usize, FlipState), wgpu::BindGroup>,
 }
 
 /// The texture group's own layout, in one place because it is built both when a scene is made
@@ -507,7 +508,14 @@ impl Sorted<'_> {
     }
 }
 
+/// Counts scenes as they are built, which is all `Scene::id` has to do: tell one from another.
+static SCENES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 pub struct Scene {
+    /// What tells one build of a scene from another. A scene is rebuilt whenever the texture
+    /// roots or the sampling change, and the preview's caches outlive the scene they were
+    /// filled for, so anything they key on a block index has to carry this too.
+    pub id: u64,
     /// Where the scene is drawn from. Everything uploaded to the GPU is relative to this, and
     /// everything the CPU reasons about, bounds, picking, LOD distances, stays in the file's own
     /// world space.
@@ -2476,6 +2484,7 @@ impl Gfx {
         partial.dedup();
         (
             Scene {
+                id: SCENES.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
                 camera: scene_camera,
                 lights: scene_lights,
                 light_blocks,
@@ -2879,7 +2888,6 @@ impl PreviewCall {
     fn texture_of<'a>(
         &'a self,
         preview: &'a Preview,
-        which: usize,
         instance: &'a Instance,
         mesh: &'a Mesh,
         at: usize,
@@ -2893,7 +2901,7 @@ impl PreviewCall {
         // was not prepared falls back to the shape's own maps rather than dropping the draw.
         preview
             .flipped
-            .get(&(which, mesh.shape_block, at, state))
+            .get(&(instance.scene.id, mesh.shape_block, at, state))
             .unwrap_or(&pass.texture)
     }
 
@@ -2903,7 +2911,6 @@ impl PreviewCall {
     fn particle_texture<'a>(
         &'a self,
         preview: &'a Preview,
-        which: usize,
         instance: &'a Instance,
         mesh: &'a ParticleMesh,
     ) -> &'a wgpu::BindGroup {
@@ -2913,7 +2920,7 @@ impl PreviewCall {
         }
         preview
             .flipped
-            .get(&(which, mesh.block, 0, state))
+            .get(&(instance.scene.id, mesh.block, 0, state))
             .unwrap_or(&mesh.texture)
     }
 
@@ -2971,7 +2978,7 @@ impl PreviewCall {
     /// The model matrix is the first 64 bytes of the uniform, so a pose rewrites only that and
     /// leaves the material behind it alone.
     pub fn prepare(&self, device: &wgpu::Device, queue: &wgpu::Queue, preview: &mut Preview) {
-        for (which, instance) in self.instances.iter().enumerate() {
+        for instance in &self.instances {
             // A flipped shape binds a group per combination of slot frames, built the first time the
             // animation reaches that combination. Only combinations actually visited are built, which
             // is what keeps this off the cross product.
@@ -2997,7 +3004,7 @@ impl PreviewCall {
                 if state.is_empty() {
                     continue;
                 }
-                let key = (which, block, at, state);
+                let key = (instance.scene.id, block, at, state);
                 if preview.flipped.contains_key(&key) {
                     continue;
                 }
@@ -3163,7 +3170,7 @@ impl PreviewCall {
 
         if self.wireframe {
             render_pass.set_pipeline(&preview.wire);
-            for (which, instance) in self.instances.iter().enumerate() {
+            for instance in &self.instances {
                 render_pass.set_bind_group(0, &instance.camera.group, &[]);
                 for mesh in instance
                     .scene
@@ -3174,7 +3181,7 @@ impl PreviewCall {
                     render_pass.set_bind_group(1, &mesh.bind_group, &[]);
                     render_pass.set_bind_group(
                         2,
-                        self.texture_of(preview, which, instance, mesh, 0, &mesh.passes[0]),
+                        self.texture_of(preview, instance, mesh, 0, &mesh.passes[0]),
                         &[],
                     );
                     render_pass.set_vertex_buffer(0, mesh.vertices.slice(..));
@@ -3268,7 +3275,7 @@ impl PreviewCall {
                                 render_pass,
                                 mesh,
                                 pipeline,
-                                self.texture_of(preview, which, instance, mesh, at, pass),
+                                self.texture_of(preview, instance, mesh, at, pass),
                             );
                         }
                     }
@@ -3277,7 +3284,7 @@ impl PreviewCall {
                         render_pass.set_bind_group(1, &mesh.bind_group, &[]);
                         render_pass.set_bind_group(
                             2,
-                            self.particle_texture(preview, which, instance, mesh),
+                            self.particle_texture(preview, instance, mesh),
                             &[],
                         );
                         render_pass.set_vertex_buffer(0, mesh.vertices.slice(..));
@@ -3307,7 +3314,7 @@ impl PreviewCall {
             render_pass.set_bind_group(1, &mesh.bind_group, &[]);
             render_pass.set_bind_group(
                 2,
-                self.texture_of(preview, which, instance, mesh, 0, &mesh.passes[0]),
+                self.texture_of(preview, instance, mesh, 0, &mesh.passes[0]),
                 &[],
             );
             render_pass.set_vertex_buffer(0, mesh.vertices.slice(..));
