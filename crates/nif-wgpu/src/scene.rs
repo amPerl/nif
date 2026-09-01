@@ -14,7 +14,7 @@ use wgpu::util::DeviceExt as _;
 
 use crate::library::{self, TextureLibrary};
 use crate::shaders::{self, Shader, Shaders};
-use crate::texture::decode_texture;
+use crate::texture::{decode_texture, Decoded};
 
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
@@ -1141,7 +1141,8 @@ impl Gfx {
         let samplers = std::array::from_fn(|i| {
             let modes = ADDRESS_MODES.len();
             // a toon ramp asks for point sampling, which is what gives it hard bands
-            let filter = if i / (modes * modes) == 0 {
+            let smooth = i / (modes * modes) == 0;
+            let filter = if smooth {
                 wgpu::FilterMode::Linear
             } else {
                 wgpu::FilterMode::Nearest
@@ -1152,6 +1153,13 @@ impl Gfx {
                 address_mode_v: ADDRESS_MODES[i % modes],
                 mag_filter: filter,
                 min_filter: filter,
+                // levels blend into one another where the shape does, and are picked outright
+                // where a ramp asked for point sampling, so its bands stay hard at every size
+                mipmap_filter: if smooth {
+                    wgpu::MipmapFilterMode::Linear
+                } else {
+                    wgpu::MipmapFilterMode::Nearest
+                },
                 ..Default::default()
             })
         });
@@ -1255,17 +1263,19 @@ impl Gfx {
         self.samplers[filter * modes * modes + at(u) * modes + at(v)].clone()
     }
 
-    fn upload_texture(&self, width: u32, height: u32, rgba: &[u8]) -> wgpu::TextureView {
+    /// A texture and every smaller level the file carried, so that a surface drawn small or at
+    /// an angle reads a level that matches its footprint rather than aliasing against the
+    /// largest one.
+    fn upload_texture(&self, decoded: &Decoded) -> wgpu::TextureView {
         let device = &self.device;
-        let size = wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        };
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("nif texture"),
-            size,
-            mip_level_count: 1,
+            size: wgpu::Extent3d {
+                width: decoded.width,
+                height: decoded.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: decoded.levels.len() as u32,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             // Not the Srgb variant: nothing here encodes gamma on output, so decoding sRGB at
@@ -1276,16 +1286,28 @@ impl Gfx {
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        self.queue.write_texture(
-            texture.as_image_copy(),
-            rgba,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(width * 4),
-                rows_per_image: Some(height),
-            },
-            size,
-        );
+        for (at, level) in decoded.levels.iter().enumerate() {
+            let (width, height) = decoded.size(at as u32);
+            self.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: at as u32,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                level,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(width * 4),
+                    rows_per_image: Some(height),
+                },
+                wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
 
         texture.create_view(&wgpu::TextureViewDescriptor::default())
     }
@@ -1315,8 +1337,7 @@ impl Gfx {
         // most source textures name a file rather than carrying pixels
         if source.use_external {
             let requested = source.file_name.to_string_lossy().into_owned();
-            let (width, height, rgba) = library.load(&requested)?;
-            return Some(self.upload_texture(width, height, &rgba));
+            return Some(self.upload_texture(&library.load(&requested)?));
         }
 
         let Some(Block::NiPixelData(pixels)) = source.pixel_data_ref.get(&nif.blocks) else {
@@ -1326,24 +1347,21 @@ impl Gfx {
             Some(Block::NiPalette(palette)) => Some(palette),
             _ => None,
         };
-        let (width, height, rgba) = decode_texture(pixels, palette)?;
-        Some(self.upload_texture(width, height, &rgba))
+        Some(self.upload_texture(&decode_texture(pixels, palette)?))
     }
 
-    /// Six faces as one cube texture. Every cube map in this game is one mipmap level, so only
-    /// the top of each face is read, and they share a format and a size the way the device
-    /// requires.
-    fn upload_cube(&self, size: u32, faces: &[Vec<u8>; 6]) -> wgpu::TextureView {
+    /// Six faces as one cube texture. They share a format, a size and a level count, the way
+    /// the device requires, and nearly every cube map here is a single level.
+    fn upload_cube(&self, size: u32, levels: u32, faces: &[Decoded; 6]) -> wgpu::TextureView {
         let device = &self.device;
-        let extent = wgpu::Extent3d {
-            width: size,
-            height: size,
-            depth_or_array_layers: 6,
-        };
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("nif cube"),
-            size: extent,
-            mip_level_count: 1,
+            size: wgpu::Extent3d {
+                width: size,
+                height: size,
+                depth_or_array_layers: 6,
+            },
+            mip_level_count: levels,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             // the same gamma space every other texture is uploaded in, for the same reason:
@@ -1353,29 +1371,32 @@ impl Gfx {
             view_formats: &[],
         });
         for (at, face) in faces.iter().enumerate() {
-            self.queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d {
-                        x: 0,
-                        y: 0,
-                        z: at as u32,
+            for level in 0..levels {
+                let side = (size >> level).max(1);
+                self.queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &texture,
+                        mip_level: level,
+                        origin: wgpu::Origin3d {
+                            x: 0,
+                            y: 0,
+                            z: at as u32,
+                        },
+                        aspect: wgpu::TextureAspect::All,
                     },
-                    aspect: wgpu::TextureAspect::All,
-                },
-                face,
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(size * 4),
-                    rows_per_image: Some(size),
-                },
-                wgpu::Extent3d {
-                    width: size,
-                    height: size,
-                    depth_or_array_layers: 1,
-                },
-            );
+                    &face.levels[level as usize],
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(side * 4),
+                        rows_per_image: Some(side),
+                    },
+                    wgpu::Extent3d {
+                        width: side,
+                        height: side,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
         }
         texture.create_view(&wgpu::TextureViewDescriptor {
             dimension: Some(wgpu::TextureViewDimension::Cube),
@@ -1412,18 +1433,21 @@ impl Gfx {
             _ => None,
         };
         let mut size = 0;
-        let mut collected: Vec<Vec<u8>> = Vec::with_capacity(6);
+        let mut levels = u32::MAX;
+        let mut collected: Vec<Decoded> = Vec::with_capacity(6);
         for at in 0..6 {
-            let (width, height, rgba) = crate::texture::decode_face(pixels, palette, at)?;
+            let face = crate::texture::decode_face(pixels, palette, at)?;
             // a cube face is square and every face matches, which the device insists on
-            if width != height || (size != 0 && width != size) {
+            if face.width != face.height || (size != 0 && face.width != size) {
                 return None;
             }
-            size = width;
-            collected.push(rgba);
+            size = face.width;
+            // a face that stops its chain early decides how far the whole cube goes
+            levels = levels.min(face.levels.len() as u32);
+            collected.push(face);
         }
-        let faces: [Vec<u8>; 6] = collected.try_into().ok()?;
-        (size > 0).then(|| self.upload_cube(size, &faces))
+        let faces: [Decoded; 6] = collected.try_into().ok()?;
+        (size > 0 && levels > 0).then(|| self.upload_cube(size, levels, &faces))
     }
 
     /// A draw per shape, each carrying its own transform, not one merged mesh.
@@ -1476,10 +1500,10 @@ impl Gfx {
                 // a texture the shader names itself rather than one the file points at, so
                 // it resolves by name through the library and root order picks the copy
                 shaders::Source::Named(name) => {
-                    if let Some((width, height, rgba)) = library.load(name) {
+                    if let Some(decoded) = library.load(name) {
                         views[position] = named_textures
                             .entry(*name)
-                            .or_insert_with(|| self.upload_texture(width, height, &rgba))
+                            .or_insert_with(|| self.upload_texture(&decoded))
                             .clone();
                     }
                 }
@@ -1765,22 +1789,23 @@ impl Gfx {
         // one per Absent variant, since what an unread slot stands in with depends on how the
         // slot combines: white where it multiplies, black where it adds, half where it doubles
         // a shape reflecting nothing samples a black cube, since the reflection adds
-        let blank_cube = self.upload_cube(1, &std::array::from_fn(|_| vec![0u8, 0, 0, 255]));
+        let blank_cube = self.upload_cube(
+            1,
+            1,
+            &std::array::from_fn(|_| Decoded::flat(1, 1, vec![0u8, 0, 0, 255])),
+        );
         let neutral: [wgpu::TextureView; 3] = std::array::from_fn(|i| {
             let texel = match i {
                 0 => shaders::Absent::White,
                 1 => shaders::Absent::Black,
                 _ => shaders::Absent::Half,
             };
-            self.upload_texture(1, 1, &texel.texel())
+            self.upload_texture(&Decoded::flat(1, 1, texel.texel().to_vec()))
         });
         let white = neutral[shaders::Absent::White as usize].clone();
         let black = neutral[shaders::Absent::Black as usize].clone();
         // shapes whose texture could not be loaded get a checker rather than white
-        let missing = {
-            let (width, height, rgba) = library::placeholder();
-            self.upload_texture(width, height, &rgba)
-        };
+        let missing = self.upload_texture(&library::placeholder());
         let mut cache: HashMap<usize, wgpu::TextureView> = HashMap::new();
         let mut named_textures: HashMap<&'static str, wgpu::TextureView> = HashMap::new();
         // keyed by shader name and pass index, since a shader's passes are separate modules

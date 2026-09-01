@@ -1,11 +1,14 @@
 //! Minimal DDS reader.
 //!
-//! Handles DXT1, DXT3, DXT5 and uncompressed layouts, decoding the first surface to RGBA8.
+//! Handles DXT1, DXT3, DXT5 and uncompressed layouts, decoding every mipmap level to RGBA8.
+
+use crate::texture::Decoded;
 
 const MAGIC: &[u8; 4] = b"DDS ";
 const HEADER_END: usize = 128;
 const DX10_HEADER_END: usize = 148;
 
+const FLAG_MIPMAPCOUNT: u32 = 0x2_0000;
 const FLAG_FOURCC: u32 = 0x4;
 const FLAG_RGB: u32 = 0x40;
 const FLAG_ALPHAPIXELS: u32 = 0x1;
@@ -38,13 +41,15 @@ impl Channel {
     }
 }
 
-/// Decode the first surface of a DDS to RGBA8.
-pub fn decode(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+/// Decode a DDS to RGBA8, largest level first. A file with no chain gives one level.
+pub fn decode(bytes: &[u8]) -> Option<Decoded> {
     if bytes.get(..4)? != MAGIC {
         return None;
     }
+    let header_flags = u32_at(bytes, 8)?;
     let height = u32_at(bytes, 12)?;
     let width = u32_at(bytes, 16)?;
+    let mip_count = u32_at(bytes, 28)?;
     let pixel_flags = u32_at(bytes, 80)?;
     let four_cc = bytes.get(84..88)?;
     let bit_count = u32_at(bytes, 88)?;
@@ -58,10 +63,16 @@ pub fn decode(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
     if width == 0 || height == 0 || width > 16384 || height > 16384 {
         return None;
     }
-    let count = (width as usize).checked_mul(height as usize)?;
+    // the count is only meaningful where the writer said it set it, and a file claiming more
+    // levels than the size allows is reading its own header wrong
+    let levels = if header_flags & FLAG_MIPMAPCOUNT != 0 {
+        mip_count.clamp(1, width.max(height).ilog2() + 1)
+    } else {
+        1
+    };
 
-    if pixel_flags & FLAG_FOURCC != 0 {
-        let (format, data) = match four_cc {
+    let (layout, payload) = if pixel_flags & FLAG_FOURCC != 0 {
+        let (format, payload) = match four_cc {
             b"DXT1" => (texpresso::Format::Bc1, bytes.get(HEADER_END..)?),
             b"DXT3" => (texpresso::Format::Bc2, bytes.get(HEADER_END..)?),
             b"DXT5" => (texpresso::Format::Bc3, bytes.get(HEADER_END..)?),
@@ -77,48 +88,104 @@ pub fn decode(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
             }
             _ => return None,
         };
-        let blocks = (width as usize).div_ceil(4) * (height as usize).div_ceil(4);
-        let needed = blocks.checked_mul(format.block_size())?;
-        let src = data.get(..needed)?;
-        let mut rgba = vec![255u8; count.checked_mul(4)?];
-        format.decompress(src, width as usize, height as usize, &mut rgba);
-        return Some((width, height, rgba));
-    }
-
-    if pixel_flags & FLAG_RGB == 0 {
-        return None;
-    }
-    let bytes_per_pixel = match bit_count {
-        16 | 24 | 32 => (bit_count / 8) as usize,
-        _ => return None,
+        (Layout::Block(format), payload)
+    } else {
+        if pixel_flags & FLAG_RGB == 0 {
+            return None;
+        }
+        let bytes_per_pixel = match bit_count {
+            16 | 24 | 32 => (bit_count / 8) as usize,
+            _ => return None,
+        };
+        let channels = Channels {
+            has_alpha: pixel_flags & FLAG_ALPHAPIXELS != 0,
+            masks,
+            channels: [
+                Channel::new(masks[0]),
+                Channel::new(masks[1]),
+                Channel::new(masks[2]),
+                Channel::new(masks[3]),
+            ],
+            bytes_per_pixel,
+        };
+        (Layout::Loose(channels), bytes.get(HEADER_END..)?)
     };
-    let has_alpha = pixel_flags & FLAG_ALPHAPIXELS != 0;
-    let channels = [
-        Channel::new(masks[0]),
-        Channel::new(masks[1]),
-        Channel::new(masks[2]),
-        Channel::new(masks[3]),
-    ];
-    let src = bytes
-        .get(HEADER_END..)?
-        .get(..count.checked_mul(bytes_per_pixel)?)?;
 
-    let mut rgba = vec![255u8; count.checked_mul(4)?];
-    for (i, chunk) in src.chunks_exact(bytes_per_pixel).enumerate() {
-        let mut pixel = 0u32;
-        for (byte, shift) in chunk.iter().zip((0..).step_by(8)) {
-            pixel |= u32::from(*byte) << shift;
-        }
-        let out = rgba.get_mut(i * 4..i * 4 + 4)?;
-        for (slot, (channel, mask)) in channels.iter().zip(masks).enumerate() {
-            let Some(channel) = channel else { continue };
-            if slot == 3 && !has_alpha {
-                continue;
+    // the levels follow one another with no padding between them, so each one starts where the
+    // last ended and a file that stops early ends the chain there
+    let mut decoded = Decoded {
+        width,
+        height,
+        levels: Vec::with_capacity(levels as usize),
+    };
+    let mut at = 0usize;
+    for level in 0..levels {
+        let (width, height) = decoded.size(level);
+        let stored = layout.stored(width, height)?;
+        let Some(src) = payload.get(at..at.checked_add(stored)?) else {
+            break;
+        };
+        decoded.levels.push(layout.decode(width, height, src)?);
+        at += stored;
+    }
+
+    (!decoded.levels.is_empty()).then_some(decoded)
+}
+
+/// How the texels of one level are stored: in compressed blocks, or loose behind channel masks.
+enum Layout {
+    Block(texpresso::Format),
+    Loose(Channels),
+}
+
+struct Channels {
+    has_alpha: bool,
+    masks: [u32; 4],
+    channels: [Option<Channel>; 4],
+    bytes_per_pixel: usize,
+}
+
+impl Layout {
+    /// The bytes one level of this size occupies in the file.
+    fn stored(&self, width: u32, height: u32) -> Option<usize> {
+        let count = (width as usize).checked_mul(height as usize)?;
+        match self {
+            Layout::Block(format) => {
+                let blocks = (width as usize).div_ceil(4) * (height as usize).div_ceil(4);
+                blocks.checked_mul(format.block_size())
             }
-            out[slot] = channel.sample(pixel, mask);
+            Layout::Loose(loose) => count.checked_mul(loose.bytes_per_pixel),
         }
     }
-    Some((width, height, rgba))
+
+    fn decode(&self, width: u32, height: u32, src: &[u8]) -> Option<Vec<u8>> {
+        let count = (width as usize).checked_mul(height as usize)?;
+        let mut rgba = vec![255u8; count.checked_mul(4)?];
+        match self {
+            Layout::Block(format) => {
+                format.decompress(src, width as usize, height as usize, &mut rgba);
+            }
+            Layout::Loose(loose) => {
+                for (i, chunk) in src.chunks_exact(loose.bytes_per_pixel).enumerate() {
+                    let mut pixel = 0u32;
+                    for (byte, shift) in chunk.iter().zip((0..).step_by(8)) {
+                        pixel |= u32::from(*byte) << shift;
+                    }
+                    let out = rgba.get_mut(i * 4..i * 4 + 4)?;
+                    for (slot, (channel, mask)) in
+                        loose.channels.iter().zip(loose.masks).enumerate()
+                    {
+                        let Some(channel) = channel else { continue };
+                        if slot == 3 && !loose.has_alpha {
+                            continue;
+                        }
+                        out[slot] = channel.sample(pixel, mask);
+                    }
+                }
+            }
+        }
+        Some(rgba)
+    }
 }
 
 #[cfg(test)]
@@ -147,9 +214,10 @@ mod tests {
     #[test]
     fn reads_uncompressed_argb() {
         let file = argb8888(2, 1, &[[10, 20, 30, 40], [200, 150, 100, 255]]);
-        let (w, h, rgba) = decode(&file).expect("decodes");
-        assert_eq!((w, h), (2, 1));
-        assert_eq!(&rgba, &[10, 20, 30, 40, 200, 150, 100, 255]);
+        let decoded = decode(&file).expect("decodes");
+        assert_eq!((decoded.width, decoded.height), (2, 1));
+        assert_eq!(decoded.levels.len(), 1);
+        assert_eq!(decoded.top(), &[10, 20, 30, 40, 200, 150, 100, 255]);
     }
 
     #[test]
@@ -162,6 +230,31 @@ mod tests {
         let mut file = argb8888(4, 4, &[[1, 2, 3, 4]]);
         file.truncate(HEADER_END + 8);
         assert!(decode(&file).is_none());
+    }
+
+    /// Two levels one after the other, with the count flagged the way a writer that means it does.
+    #[test]
+    fn reads_a_chain_level_by_level() {
+        let mut file = argb8888(2, 2, &[[1, 1, 1, 255]; 4]);
+        file[8..12].copy_from_slice(&(FLAG_MIPMAPCOUNT).to_le_bytes());
+        file[28..32].copy_from_slice(&2u32.to_le_bytes());
+        file.extend_from_slice(&[9, 9, 9, 255]);
+
+        let decoded = decode(&file).expect("decodes");
+        assert_eq!(decoded.levels.len(), 2);
+        assert_eq!(decoded.size(1), (1, 1));
+        assert_eq!(decoded.levels[1], &[9, 9, 9, 255]);
+    }
+
+    /// A count the file cannot back up ends the chain rather than failing the whole read.
+    #[test]
+    fn a_chain_that_stops_early_keeps_what_is_there() {
+        let mut file = argb8888(2, 2, &[[1, 1, 1, 255]; 4]);
+        file[8..12].copy_from_slice(&(FLAG_MIPMAPCOUNT).to_le_bytes());
+        file[28..32].copy_from_slice(&2u32.to_le_bytes());
+
+        let decoded = decode(&file).expect("decodes");
+        assert_eq!(decoded.levels.len(), 1);
     }
 
     #[test]

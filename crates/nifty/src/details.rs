@@ -15,7 +15,7 @@ use nif::common::{
 };
 use nif::Nif;
 use nif_wgpu::library::TextureLibrary;
-use nif_wgpu::texture::decode_texture;
+use nif_wgpu::texture::{decode_texture, Decoded};
 
 /// Structs small enough to read on one line rather than expand into their own section.
 const INLINE: [&str; 6] = [
@@ -85,14 +85,15 @@ impl Details {
         &mut self,
         ui: &egui::Ui,
         index: usize,
-        decode: impl FnOnce() -> Option<(u32, u32, Vec<u8>)>,
+        decode: impl FnOnce() -> Option<Decoded>,
     ) -> Option<&egui::TextureHandle> {
         self.images
             .entry(index)
             .or_insert_with(|| {
-                let (width, height, rgba) = decode()?;
-                let size = [width as usize, height as usize];
-                let image = egui::ColorImage::from_rgba_unmultiplied(size, &rgba);
+                // the preview shows the largest level; the smaller ones are the device's business
+                let decoded = decode()?;
+                let size = [decoded.width as usize, decoded.height as usize];
+                let image = egui::ColorImage::from_rgba_unmultiplied(size, decoded.top());
                 Some(ui.ctx().load_texture(
                     format!("block-{index}"),
                     image,

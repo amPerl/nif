@@ -12,6 +12,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::texture::Decoded;
+
 /// Indexable extensions, most preferred first. Other files in a texture directory (`.nif`,
 /// `.hit`, `.dat`) are skipped so they cannot match a texture stem.
 const EXTENSIONS: [&str; 5] = ["dds", "tga", "bmp", "png", "jpg"];
@@ -123,12 +125,12 @@ impl TextureLibrary {
     }
 
     /// Resolves and decodes. `None` means not found or not decodable.
-    pub fn load(&self, requested: &str) -> Option<(u32, u32, Vec<u8>)> {
+    pub fn load(&self, requested: &str) -> Option<Decoded> {
         decode_file(self.resolve(requested)?)
     }
 }
 
-fn decode_file(path: &Path) -> Option<(u32, u32, Vec<u8>)> {
+fn decode_file(path: &Path) -> Option<Decoded> {
     let bytes = std::fs::read(path).ok()?;
     if path
         .extension()
@@ -136,12 +138,17 @@ fn decode_file(path: &Path) -> Option<(u32, u32, Vec<u8>)> {
     {
         return crate::dds::decode(&bytes);
     }
+    // the other formats store one image, so these arrive with no smaller levels
     let image = image::load_from_memory(&bytes).ok()?.to_rgba8();
-    Some((image.width(), image.height(), image.into_raw()))
+    Some(Decoded::flat(
+        image.width(),
+        image.height(),
+        image.into_raw(),
+    ))
 }
 
 /// A magenta and grey checker, drawn where a texture could not be loaded.
-pub fn placeholder() -> (u32, u32, Vec<u8>) {
+pub fn placeholder() -> Decoded {
     const SIZE: u32 = 16;
     let mut rgba = Vec::with_capacity((SIZE * SIZE * 4) as usize);
     for y in 0..SIZE {
@@ -155,7 +162,7 @@ pub fn placeholder() -> (u32, u32, Vec<u8>) {
             rgba.extend_from_slice(&pixel);
         }
     }
-    (SIZE, SIZE, rgba)
+    Decoded::flat(SIZE, SIZE, rgba)
 }
 
 #[cfg(test)]
