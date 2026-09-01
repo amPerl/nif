@@ -328,6 +328,7 @@ pub struct Gfx {
     model_layout: wgpu::BindGroupLayout,
     texture_layout: wgpu::BindGroupLayout,
     samplers: [wgpu::Sampler; ADDRESS_MODES.len() * ADDRESS_MODES.len() * 2],
+    anisotropy: u16,
     pipeline_layout: wgpu::PipelineLayout,
     camera_layout: wgpu::BindGroupLayout,
 }
@@ -506,6 +507,51 @@ impl Sorted<'_> {
             Sorted::Shape(at, _) | Sorted::Particles(at, _, _) => *at,
         }
     }
+}
+
+/// What `anisotropy` means when nothing is asking for it: one sample, the device's own choice
+/// of level. Anything above this is the viewer's, not the engine's.
+pub const NO_ANISOTROPY: u16 = 1;
+
+/// One sampler per address mode pair, twice over for the two filters. `TexClampMode` is per map
+/// and glow maps clamp about as often as they wrap, and a shader can pin its own: for instance
+/// `ActionSpecularBand` mirrors in u.
+///
+/// `anisotropy` is the number of samples taken along the long axis of a footprint seen at an
+/// angle. wgpu requires every filter to be linear above one and clamps the value to what the
+/// device supports, falling back to one where there is no support at all, so a caller does not
+/// have to ask what the hardware can do. Only the linear half of the array takes it: a toon ramp
+/// asked for point sampling and several taps of it would be neither one thing nor the other.
+fn build_samplers(
+    device: &wgpu::Device,
+    anisotropy: u16,
+) -> [wgpu::Sampler; ADDRESS_MODES.len() * ADDRESS_MODES.len() * 2] {
+    std::array::from_fn(|i| {
+        let modes = ADDRESS_MODES.len();
+        // a toon ramp asks for point sampling, which is what gives it hard bands
+        let smooth = i / (modes * modes) == 0;
+        let filter = if smooth {
+            wgpu::FilterMode::Linear
+        } else {
+            wgpu::FilterMode::Nearest
+        };
+        device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("nif sampler"),
+            address_mode_u: ADDRESS_MODES[(i / modes) % modes],
+            address_mode_v: ADDRESS_MODES[i % modes],
+            mag_filter: filter,
+            min_filter: filter,
+            // levels blend into one another where the shape does, and are picked outright
+            // where a ramp asked for point sampling, so its bands stay hard at every size
+            mipmap_filter: if smooth {
+                wgpu::MipmapFilterMode::Linear
+            } else {
+                wgpu::MipmapFilterMode::Nearest
+            },
+            anisotropy_clamp: if smooth { anisotropy } else { NO_ANISOTROPY },
+            ..Default::default()
+        })
+    })
 }
 
 /// Counts scenes as they are built, which is all `Scene::id` has to do: tell one from another.
@@ -1117,6 +1163,23 @@ impl Gfx {
         CameraBinding { buffer, group }
     }
 
+    /// How many samples a surface seen at an angle takes along the long axis of its footprint.
+    pub fn anisotropy(&self) -> u16 {
+        self.anisotropy
+    }
+
+    /// Changes it, returning whether anything moved. The samplers are rebuilt, so every scene
+    /// built against the old ones has to be built again: a sampler is bound with the texture it
+    /// reads and the bind groups holding the pair belong to the scene.
+    pub fn set_anisotropy(&mut self, anisotropy: u16) -> bool {
+        if anisotropy == self.anisotropy {
+            return false;
+        }
+        self.anisotropy = anisotropy;
+        self.samplers = build_samplers(&self.device, anisotropy);
+        true
+    }
+
     /// Puts this frame's view into a camera's own buffer.
     pub fn write_camera(&self, camera: &CameraBinding, uniform: &[f32; CAMERA_FLOATS as usize]) {
         self.queue
@@ -1144,33 +1207,7 @@ impl Gfx {
             label: Some("nif texture"),
             entries: &slot_layout_entries(),
         });
-        // one per address mode pair. TexClampMode is per map and glow maps clamp about as
-        // often as they wrap, and a shader can pin its own: ActionSpecularBand mirrors in u.
-        let samplers = std::array::from_fn(|i| {
-            let modes = ADDRESS_MODES.len();
-            // a toon ramp asks for point sampling, which is what gives it hard bands
-            let smooth = i / (modes * modes) == 0;
-            let filter = if smooth {
-                wgpu::FilterMode::Linear
-            } else {
-                wgpu::FilterMode::Nearest
-            };
-            device.create_sampler(&wgpu::SamplerDescriptor {
-                label: Some("nif sampler"),
-                address_mode_u: ADDRESS_MODES[(i / modes) % modes],
-                address_mode_v: ADDRESS_MODES[i % modes],
-                mag_filter: filter,
-                min_filter: filter,
-                // levels blend into one another where the shape does, and are picked outright
-                // where a ramp asked for point sampling, so its bands stay hard at every size
-                mipmap_filter: if smooth {
-                    wgpu::MipmapFilterMode::Linear
-                } else {
-                    wgpu::MipmapFilterMode::Nearest
-                },
-                ..Default::default()
-            })
-        });
+        let samplers = build_samplers(device, NO_ANISOTROPY);
 
         // the wire, highlight and grid passes are the contract's own entry points, so they
         // come from the fixed function module rather than from whichever shader a shape names
@@ -1237,6 +1274,7 @@ impl Gfx {
         };
 
         let gfx = Self {
+            anisotropy: NO_ANISOTROPY,
             device: device.clone(),
             queue,
             target,

@@ -15,7 +15,9 @@ use nif::glam::{Mat4, Vec3};
 use nif::{blocks::Block, Nif};
 use nif_wgpu::library::TextureLibrary;
 use nif_wgpu::pick;
-use nif_wgpu::scene::{Camera, Frame, Gfx, Light, LodMode, PreviewCall, Scene, Viewpoint};
+use nif_wgpu::scene::{
+    Camera, Frame, Gfx, Light, LodMode, PreviewCall, Scene, Viewpoint, NO_ANISOTROPY,
+};
 use nif_wgpu::shaders::Shaders;
 use nif_wgpu::Viewport;
 
@@ -1737,6 +1739,15 @@ fn discard(ctx: &egui::Context, reason: &'static str) {
 
 /// How many frames the metrics average over. Two seconds at sixty, which is long enough for the
 /// worst frame in it to mean something and short enough to answer to what the pointer is doing.
+/// How a sampling level reads. One tap is what every sampler did before this was offered.
+fn taps(level: u16) -> String {
+    if level <= NO_ANISOTROPY {
+        "off".to_string()
+    } else {
+        format!("{level}x")
+    }
+}
+
 const PERF_WINDOW: usize = 120;
 
 /// Points the camera at the selected shape, or back at the whole scene where nothing is
@@ -2437,6 +2448,7 @@ impl eframe::App for Nifty {
         // A top panel has to be added before the central one either way.
         let mut chosen = Vec::new();
         let mut reload = None;
+        let mut filtering = None;
         egui::Panel::top("menu").show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
@@ -2496,6 +2508,19 @@ impl eframe::App for Nifty {
                     {
                         self.show_shaders = true;
                     }
+                    // viewer wide rather than per document, since the samplers it rebuilds
+                    // are part of the shared resources
+                    let level = self.gfx.as_ref().map_or(NO_ANISOTROPY, Gfx::anisotropy);
+                    ui.menu_button(format!("filtering: {}", taps(level)), |ui| {
+                        for choice in [NO_ANISOTROPY, 2, 4, 8, 16] {
+                            if ui.selectable_label(choice == level, taps(choice)).clicked() {
+                                filtering = Some(choice);
+                                ui.close();
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text("anisotropic filtering");
                     // a failed read belongs to the viewer too, since the file it names never
                     // became a document to say it in
                     if let Some(error) = &self.error {
@@ -2506,6 +2531,17 @@ impl eframe::App for Nifty {
         });
         if let Some(id) = reload {
             self.reload(id);
+        }
+        // The samplers live with the shared resources, and a scene binds one alongside every
+        // texture it reads, so changing them is a rebuild rather than a uniform.
+        if let Some(level) = filtering {
+            if self
+                .gfx
+                .as_mut()
+                .is_some_and(|gfx| gfx.set_anisotropy(level))
+            {
+                self.rebuild_scenes();
+            }
         }
         for path in chosen {
             self.open(path);
