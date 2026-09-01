@@ -75,6 +75,17 @@ struct State {
     lod_distance: f32,
     /// Where the timeline sits, in the file's own seconds.
     time: f32,
+    /// Draw what the preview costs. Off by default, since reading it truthfully means asking
+    /// for a repaint every frame, which is work a viewer sitting idle should not be doing.
+    show_perf: bool,
+    /// Frame to frame times in milliseconds, newest last, capped at `PERF_WINDOW`.
+    frames: Vec<f32>,
+    /// What the last walk cost: sampling controllers, skinning, morphing and stepping the
+    /// particles. Separate from the frame time because vsync hides everything under its budget,
+    /// and this is the part that grows with the file rather than with the window.
+    walk_ms: f32,
+    /// What building this scene cost, from the read that produced it.
+    build_ms: f32,
     /// Draw the transport under the preview. The clock runs either way, so hiding it leaves an
     /// animation playing rather than stopping it.
     show_timeline: bool,
@@ -200,6 +211,10 @@ impl Default for State {
             lod_mode: LodMode::Auto,
             lod_distance: 0.0,
             time: 0.0,
+            show_perf: false,
+            frames: Vec::new(),
+            walk_ms: 0.0,
+            build_ms: 0.0,
             show_timeline: true,
             auto_reload: false,
             unbounded: false,
@@ -360,6 +375,7 @@ impl Nifty {
         state.playing = was.playing;
         state.auto_reload = was.auto_reload;
         state.show_timeline = was.show_timeline;
+        state.show_perf = was.show_perf;
         // The selection is a block index, and an edited file can mean a different block sits at
         // it. Restored only when the block there still has the same type and name, so a reload
         // never silently moves the selection to something else.
@@ -426,7 +442,9 @@ impl Nifty {
 
         let mut state = State::default();
         if let Some(gfx) = &self.gfx {
+            let built = std::time::Instant::now();
             let (scene, unhandled, partial) = gfx.build_scene(&nif, &self.library, &self.shaders);
+            state.build_ms = built.elapsed().as_secs_f32() * 1e3;
             state.scene = Some(Arc::new(scene));
             state.camera_binding = Some(Arc::new(gfx.camera()));
             state.unhandled = unhandled;
@@ -984,6 +1002,51 @@ impl TabViewer for Viewer<'_> {
 
 impl Viewer<'_> {
     /// The transport. Returns where the timeline sits, or None when nothing animates.
+    /// What the preview costs, as a row under its controls.
+    ///
+    /// The frame time is what the window achieved, so under vsync it sits at the refresh rate
+    /// however little work there is. The walk beside it is not capped by anything, which is what
+    /// makes it the number to watch: while it stays well under the frame time there is headroom,
+    /// and when it approaches it the file has outgrown the budget.
+    fn perf(&mut self, ui: &mut egui::Ui, scene: &Scene) {
+        let frames = &self.state.frames;
+        if frames.is_empty() {
+            return;
+        }
+        let count = frames.len() as f32;
+        let avg = frames.iter().sum::<f32>() / count;
+        let low = frames.iter().copied().fold(f32::MAX, f32::min);
+        let high = frames.iter().copied().fold(0.0f32, f32::max);
+        // the worst one frame in twenty, which says what the stutter is without letting a single
+        // outlier stand for the whole window the way the maximum does
+        let mut ordered = frames.clone();
+        ordered.sort_by(f32::total_cmp);
+        let p95 = ordered[((ordered.len() as f32 * 0.95) as usize).min(ordered.len() - 1)];
+
+        ui.horizontal_wrapped(|ui| {
+            ui.label(format!(
+                "frame {avg:.1} ms ({:.0} fps)  ·  {low:.1} min  ·  {p95:.1} p95  ·  {high:.1} max",
+                1e3 / avg.max(1e-3)
+            ))
+            .on_hover_text("measured over the last two seconds of frames");
+            ui.separator();
+            ui.label(format!("walk {:.2} ms", self.state.walk_ms))
+                .on_hover_text(
+                    "sampling controllers, skinning, morphing and stepping the particles, which                      is the part that grows with the file",
+                );
+            ui.separator();
+            ui.label(format!("scene built in {:.0} ms", self.state.build_ms))
+                .on_hover_text("decoding and uploading this file's textures, and building its pipelines");
+            ui.separator();
+            ui.weak(format!(
+                "{} shapes, {} systems, {} LOD nodes",
+                scene.meshes.len(),
+                scene.particles.len(),
+                scene.lods.len()
+            ));
+        });
+    }
+
     fn timeline(&mut self, ui: &mut egui::Ui) -> Option<f32> {
         let loaded = self.state.loaded.as_ref()?;
         let (start, end) = loaded.span?;
@@ -1121,7 +1184,27 @@ impl Viewer<'_> {
                 ));
             }
             ui.checkbox(&mut self.state.show_timeline, "animation controls");
+            ui.checkbox(&mut self.state.show_perf, "perf metrics")
+                .on_hover_text("what the preview costs, measured every frame while it is on");
         });
+
+        if self.state.show_perf {
+            // Nothing here means anything unless the frames keep coming: egui draws on input, so
+            // an idle window would report the gap since the pointer last moved. Asking for the
+            // next frame is what makes the numbers a measurement rather than an artefact, and it
+            // is why this is off by default.
+            ui.ctx().request_repaint();
+            let dt = ui.input(|i| i.unstable_dt) * 1e3;
+            // discard the first frame after switching on, which carries the idle gap
+            if dt < 1e3 {
+                self.state.frames.push(dt);
+            }
+            let over = self.state.frames.len().saturating_sub(PERF_WINDOW);
+            self.state.frames.drain(..over);
+            self.perf(ui, &scene);
+        } else if !self.state.frames.is_empty() {
+            self.state.frames.clear();
+        }
 
         if !scene.lods.is_empty() {
             ui.horizontal_wrapped(|ui| {
@@ -1286,10 +1369,12 @@ impl Viewer<'_> {
             }),
         };
         let State { loaded, hidden, .. } = &mut *self.state;
+        let walked = std::time::Instant::now();
         let frame = match loaded {
             Some(loaded) => build_frame(loaded, Some(&scene), hidden, viewpoint),
             None => Arc::default(),
         };
+        self.state.walk_ms = walked.elapsed().as_secs_f32() * 1e3;
         // kept so framing a shape, which happens outside the draw, asks the same frame the draw
         // used rather than the resting scene
         self.state.last_frame = frame.clone();
@@ -1649,6 +1734,10 @@ fn discard(ctx: &egui::Context, reason: &'static str) {
     ctx.request_discard(reason);
     ctx.request_repaint();
 }
+
+/// How many frames the metrics average over. Two seconds at sixty, which is long enough for the
+/// worst frame in it to mean something and short enough to answer to what the pointer is doing.
+const PERF_WINDOW: usize = 120;
 
 /// Points the camera at the selected shape, or back at the whole scene where nothing is
 /// selected. Reached from the preview's own menu and from the key that does the same.

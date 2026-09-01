@@ -13,6 +13,8 @@
 //!   --pitch=DEG       height above the horizon to capture from, default the viewer's own.
 //!   --time=SECONDS    where on the timeline to capture, default the resting pose.
 //!   --size=WxH        the window to open, which decides how large the captured images are.
+//!   --no-vsync        present without waiting for the display, so the perf metrics measure
+//!                     the scene rather than the refresh rate.
 
 mod app;
 mod capture;
@@ -28,10 +30,13 @@ struct Args {
     roots: Vec<PathBuf>,
     files: Vec<PathBuf>,
     capture: Option<capture::Request>,
+    /// Present without waiting for the display, so a frame costs what it costs.
+    uncapped: bool,
 }
 
 fn parse(raw: impl Iterator<Item = String>) -> Result<Args, String> {
     let (mut roots, mut files) = (Vec::new(), Vec::new());
+    let mut uncapped = false;
     let mut request = capture::Request::default();
     let mut capturing = false;
 
@@ -74,6 +79,7 @@ fn parse(raw: impl Iterator<Item = String>) -> Result<Args, String> {
                 };
                 request.size = [side(width)?, side(height)?];
             }
+            "--no-vsync" => uncapped = true,
             _ if flag.starts_with("--") => return Err(format!("unknown option `{arg}`")),
             _ => {
                 let path = PathBuf::from(&arg);
@@ -92,6 +98,7 @@ fn parse(raw: impl Iterator<Item = String>) -> Result<Args, String> {
         roots,
         files,
         capture: capturing.then_some(request),
+        uncapped,
     })
 }
 
@@ -110,11 +117,20 @@ fn main() -> eframe::Result {
     if let Some(request) = &args.capture {
         viewport = viewport.with_inner_size(request.size);
     }
+    // Frame to frame time includes the wait for the display, so under vsync it reads as the
+    // refresh interval however little work there is. Presenting without the wait is what makes
+    // the perf metrics measure the scene rather than the monitor. Off by default: it spends a
+    // whole core and tears, which is not what a viewer should do while it sits there.
+    let mut wgpu_options = eframe::egui_wgpu::WgpuConfiguration::default();
+    if args.uncapped {
+        wgpu_options.surface.present_mode = eframe::egui_wgpu::wgpu::PresentMode::AutoNoVsync;
+    }
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         depth_buffer: 32,
         multisampling: nif_wgpu::scene::MSAA_SAMPLES as u16,
         viewport,
+        wgpu_options,
         ..Default::default()
     };
 
