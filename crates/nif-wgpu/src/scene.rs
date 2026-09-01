@@ -1839,6 +1839,7 @@ impl Gfx {
         shaders: &Shaders,
     ) -> (Scene, Vec<String>, Vec<String>) {
         let lod_of = lod_ancestry(nif);
+        let unsorted = unsorted_subtrees(nif);
         let device = &self.device;
         // one per Absent variant, since what an unread slot stands in with depends on how the
         // slot combines: white where it multiplies, black where it adds, half where it doubles
@@ -2019,6 +2020,8 @@ impl Gfx {
                 );
                 if let Some(mut mesh) = mesh {
                     mesh.lod = lod_of.get(&visit.index).copied();
+                    // and a system under a sort adjust node leaves the pass like any shape
+                    mesh.sorted &= !unsorted.contains(&visit.index);
                     // A particle starts at the object its emitter names, not at the system's own
                     // node, so the bounds are taken around each of those. Measuring from the node
                     // put the floor and the framing somewhere the particles never reach whenever
@@ -2413,7 +2416,7 @@ impl Gfx {
             meshes.push(Mesh {
                 shape_block: visit.index,
                 lod: lod_of.get(&visit.index).copied(),
-                sorted: sorts(blend.is_some(), alpha),
+                sorted: sorts(blend.is_some(), alpha) && !unsorted.contains(&visit.index),
                 deform_source,
                 skinned,
                 uv_pins,
@@ -2735,6 +2738,51 @@ fn grid_lines(reach: f32) -> (Vec<f32>, f32, f32) {
 
 /// Maps every block under a NiLODNode to that node and the level it belongs to. A nested LOD
 /// wins over an outer one, since the walk assigns as it descends.
+/// Every block under a `NiSortAdjustNode` that takes its subtree out of the back to front
+/// pass. The engine walks the objects a subtree made visible and clears the sort flag on each of
+/// them, so the nearest such node decides and one inside another overrides it.
+///
+/// Only the suppressing direction is reproduced. The engine also sets the flag for the other
+/// mode, which would force a shape to sort against its own alpha property, and nothing in this
+/// corpus asks for that: all 8 of these nodes say `SORTING_OFF`.
+///
+/// Nor does any of the 8 have geometry under it, so this returns empty for every file here and
+/// the walk is skipped outright where the block is absent. It is reproduced because the rule is
+/// the file's to state, not because anything in this corpus draws differently for it.
+fn unsorted_subtrees(nif: &Nif) -> HashSet<usize> {
+    let mut out = HashSet::new();
+    if !nif
+        .blocks
+        .iter()
+        .any(|block| matches!(block, Block::NiSortAdjustNode(_)))
+    {
+        return out;
+    }
+    let mut seen = HashSet::new();
+    let mut stack: Vec<(usize, bool)> = nif.roots().map(|(index, _)| (index, false)).collect();
+
+    while let Some((index, suppressed)) = stack.pop() {
+        if !seen.insert(index) {
+            continue;
+        }
+        if suppressed {
+            out.insert(index);
+        }
+        let Some(block) = nif.blocks.get(index) else {
+            continue;
+        };
+        let below = match block {
+            Block::NiSortAdjustNode(node) => node.suppresses_sorting(),
+            _ => suppressed,
+        };
+        for child in block.child_refs().unwrap_or_default() {
+            let Some(child) = child.index() else { continue };
+            stack.push((child, below));
+        }
+    }
+    out
+}
+
 fn lod_ancestry(nif: &Nif) -> HashMap<usize, (usize, usize)> {
     let mut out = HashMap::new();
     let mut seen = HashSet::new();
