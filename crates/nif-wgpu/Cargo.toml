@@ -12,10 +12,13 @@ license = "MIT"
 nif = { path = "../nif", features = ["glam"] }
 wgpu = "29.0.4"
 bytemuck = "1.25.2"
-pollster = "0.4.0"
 texpresso = "2.0.2"
 walkdir = "2.5.0"
 image = { version = "0.25.10", default-features = false, features = ["bmp", "png", "tga"] }
+
+# reading a wgpu error scope means waiting on the device, which only the native build does
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+pollster = "0.4.0"
 
 # the raw wgpu example draws into a window of its own, with no egui in the way
 [dev-dependencies]

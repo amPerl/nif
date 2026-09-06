@@ -3241,15 +3241,21 @@ fn compile(
     name: &str,
     pass: &shaders::Pass,
 ) -> Result<wgpu::ShaderModule, String> {
+    // Reading the error scope means waiting for the device, and a caller that cannot block has
+    // to be given the module anyway. Where the wait is not available the scope is left unread
+    // and the device's uncaptured error handler reports the failure instead, so a shader that
+    // will not compile is still heard about, just not attributed to its own name here.
+    #[cfg(not(target_arch = "wasm32"))]
     let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(name),
         source: wgpu::ShaderSource::Wgsl(pass.module_source().into()),
     });
-    match pollster::block_on(scope.pop()) {
-        Some(error) => Err(error.to_string()),
-        None => Ok(module),
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(error) = pollster::block_on(scope.pop()) {
+        return Err(error.to_string());
     }
+    Ok(module)
 }
 
 /// A texture and sampler pair per bound slot, in binding order.

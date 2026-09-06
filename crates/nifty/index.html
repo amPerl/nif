@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+    <title>nifty</title>
+    <link data-trunk rel="rust" data-wasm-opt="2" />
+    <style>
+        html,
+        body {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            overflow: hidden;
+            background: #0d0d0f;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        /* Replaced by the canvas once the module has started, so a blank page never means
+           "nothing happened". */
+        #boot {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #6e6e78;
+            font: 14px system-ui, sans-serif;
+        }
+    </style>
+</head>
+
+<body>
+    <canvas id="nifty"></canvas>
+    <div id="boot">loading…</div>
+    <script>
+        // the canvas is only painted once eframe has the module, so the notice clears itself
+        const boot = document.getElementById('boot');
+        new MutationObserver(() => boot.remove())
+            .observe(document.getElementById('nifty'), { attributes: true });
+    </script>
+</body>
+
+</html>

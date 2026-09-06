@@ -1,5 +1,7 @@
 use std::{collections::HashSet, io::Cursor, path::PathBuf, sync::Arc};
 
+use crate::Instant;
+
 use eframe::egui::{self, text::LayoutJob, Color32, FontId, TextFormat, WidgetText};
 use eframe::egui_wgpu;
 use egui_dock::{DockArea, DockState, Style, TabViewer};
@@ -227,6 +229,7 @@ impl Default for State {
     }
 }
 
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 impl Nifty {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         // wgpu reports validation failures through `log`, and nothing here installs a logger.
@@ -419,9 +422,16 @@ impl Nifty {
     }
 
     /// Reads and parses one file into a fresh state, or reports why it could not be.
+    /// Opens a file that arrived as bytes rather than as a path, which is how a browser
+    /// delivers one. It has no path, so it cannot be reloaded or watched.
+    pub fn open_bytes(&mut self, name: &str, bytes: Vec<u8>) {
+        if let Some(state) = self.load_bytes(PathBuf::from(name), bytes) {
+            self.push(state);
+        }
+    }
+
     fn load(&mut self, path: PathBuf) -> Option<State> {
         self.error = None;
-
         let bytes = match std::fs::read(&path) {
             Ok(bytes) => bytes,
             Err(e) => {
@@ -429,6 +439,11 @@ impl Nifty {
                 return None;
             }
         };
+        self.load_bytes(path, bytes)
+    }
+
+    fn load_bytes(&mut self, path: PathBuf, bytes: Vec<u8>) -> Option<State> {
+        self.error = None;
 
         let mut reader = Cursor::new(&bytes);
         let nif = match Nif::parse(&mut reader) {
@@ -441,7 +456,7 @@ impl Nifty {
 
         let mut state = State::default();
         if let Some(gfx) = &self.gfx {
-            let built = std::time::Instant::now();
+            let built = Instant::now();
             let (scene, unhandled, partial) = gfx.build_scene(&nif, &self.library, &self.shaders);
             state.build_ms = built.elapsed().as_secs_f32() * 1e3;
             state.scene = Some(Arc::new(scene));
@@ -1368,7 +1383,7 @@ impl Viewer<'_> {
             }),
         };
         let State { loaded, hidden, .. } = &mut *self.state;
-        let walked = std::time::Instant::now();
+        let walked = Instant::now();
         let frame = match loaded {
             Some(loaded) => build_frame(loaded, Some(&scene), hidden, viewpoint),
             None => Arc::default(),
@@ -1876,17 +1891,15 @@ impl eframe::App for Nifty {
                 }
             }
         }
-        for path in ui.ctx().input(|i| {
-            i.raw
-                .dropped_files
-                .iter()
-                .filter_map(|f| f.path.clone())
-                .collect::<Vec<_>>()
-        }) {
-            if path.is_dir() {
-                self.add_root(path);
-            } else {
-                self.open(path);
+        // A drop carries a path where there is a filesystem to name, and the bytes themselves
+        // where there is not. Both are read, since a browser gives only the second.
+        let dropped = ui.ctx().input(|i| i.raw.dropped_files.clone());
+        for file in dropped {
+            match (file.path.clone(), file.bytes.clone()) {
+                (Some(path), _) if path.is_dir() => self.add_root(path),
+                (Some(path), _) => self.open(path),
+                (None, Some(bytes)) => self.open_bytes(&file.name, bytes.to_vec()),
+                (None, None) => {}
             }
         }
         // one timer for the lot, since a poll is one metadata call per file that wants one
@@ -2130,12 +2143,15 @@ impl eframe::App for Nifty {
 
         // Drawn before the fields are taken apart, since opening a file needs the whole app.
         // A top panel has to be added before the central one either way.
+        // the file dialog fills this, and there is no dialog in a browser
+        #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
         let mut chosen = Vec::new();
         let mut reload = None;
         let mut filtering = None;
         egui::Panel::top("menu").show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
+                    #[cfg(not(target_arch = "wasm32"))]
                     if ui.button("Open...").clicked() {
                         ui.close();
                         chosen = rfd::FileDialog::new()
@@ -2143,6 +2159,8 @@ impl eframe::App for Nifty {
                             .pick_files()
                             .unwrap_or_default();
                     }
+                    #[cfg(target_arch = "wasm32")]
+                    ui.label("Drop a .nif onto the window to open it.");
                     ui.separator();
                     // Both act on the file in front, which is the one the dock last focused.
                     // With nothing open there is nothing for them to act on, so they are shown
