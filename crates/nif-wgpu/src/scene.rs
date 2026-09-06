@@ -16,11 +16,44 @@ use crate::library::{self, TextureLibrary};
 use crate::shaders::{self, Shader, Shaders};
 use crate::texture::{decode_texture, Decoded};
 
+/// What a pass gets for its depth attachment unless the caller says otherwise.
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
-/// Fixed when the window is created, since the colour and depth targets are built against it.
-/// Every pipeline here has to agree with it or wgpu rejects the draw.
-pub const MSAA_SAMPLES: u32 = 4;
+/// The attachments a caller's render pass provides. Every pipeline built here is compiled
+/// against these, and a pass that disagrees is rejected on the first `set_pipeline`.
+///
+/// The caller owns them because the caller owns the pass: under egui they come from how eframe
+/// was configured, and in a window of one's own from how the surface and its depth texture were
+/// made.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Target {
+    /// A linear format. Nothing here encodes gamma on output, so an `Srgb` target draws dark.
+    pub color: wgpu::TextureFormat,
+    pub depth: wgpu::TextureFormat,
+    /// Samples per pixel, where 1 is no multisampling.
+    pub samples: u32,
+}
+
+impl Target {
+    /// A single sampled target with the usual depth format.
+    pub fn new(color: wgpu::TextureFormat) -> Self {
+        Self {
+            color,
+            depth: DEPTH_FORMAT,
+            samples: 1,
+        }
+    }
+
+    pub fn with_samples(mut self, samples: u32) -> Self {
+        self.samples = samples;
+        self
+    }
+
+    pub fn with_depth(mut self, depth: wgpu::TextureFormat) -> Self {
+        self.depth = depth;
+        self
+    }
+}
 
 /// Where the diffuse alpha sits in the model uniform, so a controller can rewrite that float
 /// alone and leave the rest of the material behind it.
@@ -324,7 +357,7 @@ pub struct Gfx {
     ///
     /// A linear format, not an Srgb one. Nothing here encodes gamma on output and textures
     /// upload in gamma space, so an Srgb target darkens the whole scene.
-    pub target: wgpu::TextureFormat,
+    pub target: Target,
     model_layout: wgpu::BindGroupLayout,
     texture_layout: wgpu::BindGroupLayout,
     samplers: [wgpu::Sampler; shaders::FILTERS.len() * ADDRESS_MODES.len() * ADDRESS_MODES.len()],
@@ -1187,11 +1220,7 @@ impl Gfx {
 
     /// Returns the shared resources and the preview's pipelines together. Both are built from
     /// the one shader module and the one pipeline layout, so neither is worth building twice.
-    pub fn new(
-        device: wgpu::Device,
-        queue: wgpu::Queue,
-        target: wgpu::TextureFormat,
-    ) -> (Self, Preview) {
+    pub fn new(device: wgpu::Device, queue: wgpu::Queue, target: Target) -> (Self, Preview) {
         let device = &device;
 
         let camera_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -2813,7 +2842,7 @@ fn build_pipeline(
     device: &wgpu::Device,
     layout: &wgpu::PipelineLayout,
     shader: &wgpu::ShaderModule,
-    target_format: wgpu::TextureFormat,
+    target: Target,
     state: DrawState,
     topology: wgpu::PrimitiveTopology,
     fragment_entry: &str,
@@ -2847,7 +2876,7 @@ fn build_pipeline(
             module: shader,
             entry_point: Some(fragment_entry),
             targets: &[Some(wgpu::ColorTargetState {
-                format: target_format,
+                format: target.color,
                 blend,
                 write_mask: wgpu::ColorWrites::ALL,
             })],
@@ -2863,14 +2892,14 @@ fn build_pipeline(
             ..Default::default()
         },
         depth_stencil: Some(wgpu::DepthStencilState {
-            format: DEPTH_FORMAT,
+            format: target.depth,
             depth_write_enabled: Some(state.depth_write),
             depth_compare: Some(state.depth),
             stencil: Default::default(),
             bias: Default::default(),
         }),
         multisample: wgpu::MultisampleState {
-            count: MSAA_SAMPLES,
+            count: target.samples,
             ..Default::default()
         },
         multiview_mask: None,

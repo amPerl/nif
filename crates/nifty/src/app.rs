@@ -249,7 +249,10 @@ impl Nifty {
             documents: DockState::new(Vec::new()),
             next_id: 0,
             error: None,
-            gfx: cc.wgpu_render_state.as_ref().map(Gfx::from_render_state),
+            gfx: cc
+                .wgpu_render_state
+                .as_ref()
+                .map(|state| Gfx::from_render_state(state, crate::MULTISAMPLING)),
             library: TextureLibrary::default(),
             show_library: false,
             root_input: String::new(),

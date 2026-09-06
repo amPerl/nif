@@ -3,7 +3,7 @@
 //! The draw is `PreviewCall`'s own `prepare` and `paint`, neither of which knows about egui.
 //! This hands them what a paint callback is given.
 
-use crate::scene::{Gfx, Preview, PreviewCall};
+use crate::scene::{Gfx, Preview, PreviewCall, Target};
 use crate::Viewport;
 
 impl From<egui::Rect> for Viewport {
@@ -19,11 +19,15 @@ impl Gfx {
     /// Builds against egui's own device and target, and leaves the preview in
     /// `callback_resources`. That map is the only thing a paint callback is handed, so the
     /// preview has to live there rather than on the application.
-    pub fn from_render_state(render_state: &egui_wgpu::RenderState) -> Self {
+    ///
+    /// `samples` is what the application asked eframe for. `RenderState` carries the colour
+    /// format but not the sample count, so the caller that configured eframe has to repeat it
+    /// here and the two have to agree.
+    pub fn from_render_state(render_state: &egui_wgpu::RenderState, samples: u32) -> Self {
         let (gfx, preview) = Gfx::new(
             render_state.device.clone(),
             render_state.queue.clone(),
-            render_state.target_format,
+            Target::new(render_state.target_format).with_samples(samples),
         );
         render_state
             .renderer

@@ -18,6 +18,10 @@
 
 mod app;
 mod capture;
+
+/// Samples per pixel to ask eframe for, and to build the renderer's pipelines against. The two
+/// have to agree: the pass is eframe's and a pipeline that disagrees with it is rejected.
+pub const MULTISAMPLING: u32 = 4;
 mod details;
 
 use std::path::PathBuf;
@@ -128,7 +132,7 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         depth_buffer: 32,
-        multisampling: nif_wgpu::scene::MSAA_SAMPLES as u16,
+        multisampling: MULTISAMPLING as u16,
         viewport,
         wgpu_options,
         ..Default::default()
