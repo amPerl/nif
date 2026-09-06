@@ -16,3 +16,7 @@ pollster = "0.4.0"
 texpresso = "2.0.2"
 walkdir = "2.5.0"
 image = { version = "0.25.10", default-features = false, features = ["bmp", "png", "tga"] }
+
+# the raw wgpu example draws into a window of its own, with no egui in the way
+[dev-dependencies]
+winit = "0.30.13"
