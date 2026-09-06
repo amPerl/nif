@@ -134,15 +134,17 @@ fn fs_highlight(in: VertexOut) -> @location(0) vec4<f32> {
 /// The shading normal. The geometry's own normal where it has one, which is what the engine
 /// lit with; a face normal off the derivatives where it does not, which is flat but never zero.
 fn surface_normal(in: VertexOut) -> vec3<f32> {
-    if (dot(in.normal, in.normal) > 1e-8) {
-        return normalize(in.normal);
-    }
-    // the sign of a derivative normal depends on framebuffer handedness, so orient it
-    // toward the eye rather than trusting it, which holds with culling off too
+    // A derivative may only be taken in uniform control flow, so the face normal is built
+    // before anything branches and discarded where the shape carries normals of its own.
+    // The sign of a derivative normal depends on framebuffer handedness, so orient it toward
+    // the eye rather than trusting it, which holds with culling off too.
     var derived = normalize(cross(dpdx(in.world), dpdy(in.world)));
     let to_eye = normalize(camera.eye.xyz - in.world);
     if (dot(derived, to_eye) < 0.0) {
         derived = -derived;
+    }
+    if (dot(in.normal, in.normal) > 1e-8) {
+        return normalize(in.normal);
     }
     return derived;
 }
