@@ -8,12 +8,10 @@
 //! the draw into a pass the caller has opened. They are separate because a bind group cannot
 //! be created while a pass is recording.
 //!
-//! The `egui` feature implements `egui_wgpu::CallbackTrait` over that pair. It is on by
-//! default; without it the crate depends on wgpu alone.
+//! Joining that pair to a window or a UI toolkit is the caller's, so the crate depends on
+//! wgpu alone.
 
 pub mod dds;
-#[cfg(feature = "egui")]
-pub mod egui;
 pub mod library;
 pub mod pick;
 pub mod scene;

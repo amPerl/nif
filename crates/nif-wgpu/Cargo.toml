@@ -8,17 +8,11 @@ homepage = "https://github.com/amPerl/nif"
 repository = "https://github.com/amPerl/nif"
 license = "MIT"
 
-[features]
-default = ["egui"]
-egui = ["dep:egui", "dep:egui-wgpu"]
-
 [dependencies]
 nif = { path = "../nif", features = ["glam"] }
 wgpu = "29.0.4"
 bytemuck = "1.25.2"
 pollster = "0.4.0"
-egui = { version = "0.35.0", optional = true }
-egui-wgpu = { version = "0.35.0", optional = true }
 texpresso = "2.0.2"
 walkdir = "2.5.0"
 image = { version = "0.25.10", default-features = false, features = ["bmp", "png", "tga"] }

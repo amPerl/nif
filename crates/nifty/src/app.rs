@@ -19,7 +19,6 @@ use nif_wgpu::scene::{
     Camera, Frame, Gfx, Light, LodMode, PreviewCall, Scene, Viewpoint, NO_ANISOTROPY,
 };
 use nif_wgpu::shaders::Shaders;
-use nif_wgpu::Viewport;
 
 use crate::capture::Capture;
 use crate::details::{self, Details};
@@ -252,7 +251,7 @@ impl Nifty {
             gfx: cc
                 .wgpu_render_state
                 .as_ref()
-                .map(|state| Gfx::from_render_state(state, crate::MULTISAMPLING)),
+                .map(|state| crate::preview::gfx(state, crate::MULTISAMPLING)),
             library: TextureLibrary::default(),
             show_library: false,
             root_input: String::new(),
@@ -1400,7 +1399,7 @@ impl Viewer<'_> {
                 let hits = pick::ray_through(
                     view_proj,
                     scene.origin,
-                    Viewport::from(rect),
+                    crate::preview::viewport(rect),
                     [pointer.x, pointer.y],
                 )
                 .map(|ray| {
@@ -1485,7 +1484,7 @@ impl Viewer<'_> {
         self.state.preview_rect = Some(rect);
         ui.painter().add(egui_wgpu::Callback::new_paint_callback(
             rect,
-            PreviewCall {
+            crate::preview::Callback(PreviewCall {
                 // one file per document, so one scene in the viewport
                 instances: vec![nif_wgpu::scene::Instance {
                     scene,
@@ -1501,7 +1500,7 @@ impl Viewer<'_> {
                 eye,
                 right: view.row(0).truncate(),
                 up: view.row(1).truncate(),
-            },
+            }),
         ));
     }
 }

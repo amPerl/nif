@@ -18,6 +18,7 @@
 
 mod app;
 mod capture;
+mod preview;
 
 /// Samples per pixel to ask eframe for, and to build the renderer's pipelines against. The two
 /// have to agree: the pass is eframe's and a pipeline that disagrees with it is rejected.
