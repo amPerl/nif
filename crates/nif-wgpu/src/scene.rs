@@ -2599,7 +2599,10 @@ pub(crate) fn geometry_of<'a>(
 /// `uv_set` rides in the first row's spare lane, since the shader has to know which of the two
 /// sets in the vertex buffer this slot reads. Dark is the reason there are two.
 pub fn uv_rows(transform: Option<nif::blocks::TextureTransform>, uv_set: u32) -> [f32; 8] {
-    let set = if uv_set == 0 { 0.0 } else { 1.0 };
+    // The vertex carries three streams, and the set rides in the first row's spare lane for the
+    // shader to choose between them. A set beyond the last stream reads the last rather than
+    // dropping the map, though nothing in this corpus names one.
+    let set = uv_set.min(UV_STREAMS - 1) as f32;
     let Some(transform) = transform else {
         return [1.0, 0.0, 0.0, set, 0.0, 1.0, 0.0, 0.0];
     };
@@ -2663,6 +2666,10 @@ pub fn slot_uv_rows(
     }
     out
 }
+
+/// How many uv streams a vertex carries. A map names which of them it reads, and the third is
+/// what a blended terrain map uses for its detail stage.
+const UV_STREAMS: u32 = 3;
 
 /// How many cells the grid will draw either side of its centre before it gives up on the
 /// spacing it wanted and takes a coarser one. Sized so a scene of a few hundred units still
@@ -3604,6 +3611,18 @@ mod tests {
                 "{name} should leave the uv set to its maps"
             );
         }
+    }
+
+    /// A map naming the third stream has to reach it: the vertex carries three, the shader
+    /// chooses between them by this lane, and collapsing everything above the first to the
+    /// second left the third unreachable.
+    #[test]
+    fn a_map_can_read_any_of_the_three_uv_streams() {
+        for (named, expected) in [(0, 0.0), (1, 1.0), (2, 2.0)] {
+            assert_eq!(super::uv_rows(None, named)[3], expected, "set {named}");
+        }
+        // and one past the last is read from the last rather than wrapping back to the first
+        assert_eq!(super::uv_rows(None, 3)[3], 2.0);
     }
 
     /// A technique can bind a texture to a shader map by index rather than by naming a file, and
