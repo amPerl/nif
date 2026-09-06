@@ -586,6 +586,324 @@ fn build_samplers(
     })
 }
 
+/// Whether a depth first walk is inside a block hidden by hand.
+///
+/// Hiding a node hides everything under it, which is what the file's own cull flag does. The
+/// walk reaches a block before any of its children and never returns to a depth it has left,
+/// so the depth of the block that was hidden is enough to say where its subtree ends.
+#[derive(Default)]
+struct Concealed {
+    /// The depth of the outermost hidden block the walk has entered and not yet left.
+    at: Option<usize>,
+}
+
+impl Concealed {
+    /// Called once per visit, in walk order. Answers whether this block is hidden, by itself
+    /// or by something above it.
+    fn visit(&mut self, index: usize, depth: usize, hidden: &HashSet<usize>) -> bool {
+        // left first, then entered: a hidden block can be the next sibling of a hidden block,
+        // and testing in the other order would let the first one's depth swallow the second
+        if self.at.is_some_and(|entered| depth <= entered) {
+            self.at = None;
+        }
+        if self.at.is_none() && hidden.contains(&index) {
+            self.at = Some(depth);
+        }
+        self.at.is_some()
+    }
+}
+
+/// Where everything in a file sits at one moment: the pose of every block, what is culled,
+/// what a skin or a morpher has replaced, and what a controller has driven.
+///
+/// `built` is the scene the frame is for, needed because what has to be resolved depends on
+/// what was built: only a shape that is skinned is deformed, only a slot a shape binds has its
+/// transform resolved. `systems` carries the particle simulation, which is advanced here
+/// because it has state that has to persist between frames.
+///
+/// A caller that knows nothing in the file moves can skip this and draw the resting pose.
+///
+/// Free of the viewer because every open file needs one, not just the one being inspected.
+pub fn resolve(
+    nif: &Nif,
+    built: Option<&Scene>,
+    systems: &mut [nif::psys::System],
+    hidden: &HashSet<usize>,
+    viewpoint: Viewpoint,
+) -> Frame {
+    let mut frame = Frame::default();
+    let mut concealed = Concealed::default();
+    for visit in viewpoint.walk(nif) {
+        // every block, not only the shapes: a bone is a node the skinned shape does not
+        // own, and placing one means reaching it here
+        frame
+            .poses
+            .insert(visit.index, Mat4::from(&visit.transform));
+        // asked of every block for the same reason: what was hidden by hand is usually a
+        // node, and a node is not what gets drawn
+        let by_hand = concealed.visit(visit.index, visit.depth, hidden);
+        if visit.block.av_object().is_none() {
+            continue;
+        }
+        if visit.hidden || by_hand {
+            frame.hidden.insert(visit.index);
+        }
+    }
+    // A skinned shape is placed by its bones whether or not anything animates, so its
+    // geometry is resolved every frame rather than only when the clock runs. The scene
+    // built the resting pose into the buffer, and this replaces it once bones move.
+    let scene = built.iter();
+    for mesh in scene.flat_map(|scene| scene.meshes.iter()) {
+        if !mesh.skinned {
+            continue;
+        }
+        let Some(geometry) = nif.blocks.get(mesh.shape_block).and_then(Block::geometry) else {
+            continue;
+        };
+        let skinned = nif::skin::deform(&nif.blocks, geometry, |index| {
+            frame.poses.get(&index).copied()
+        });
+        if let Some(skinned) = skinned {
+            frame.deformed.insert(
+                mesh.shape_block,
+                Deformed {
+                    positions: skinned.positions,
+                    normals: skinned.normals,
+                },
+            );
+        }
+    }
+    // an alpha controller hangs off the material rather than the shape, and one material
+    // can be shared, so these are collected by material block
+    if let Some(time) = viewpoint.time {
+        for (index, block) in nif.blocks.iter().enumerate() {
+            let Block::NiMaterialProperty(material) = block else {
+                continue;
+            };
+            if let Some(alpha) = nif::anim::alpha_at(&nif.blocks, material, time) {
+                // a quadratic track overshoots its keys, and files do drive alpha negative.
+                // The fixed function pipeline clamped the material colour, so clamp here.
+                frame.alpha.insert(index, alpha.clamp(0.0, 1.0));
+            }
+            // one channel of the material colour, clamped for the same reason
+            if let Some((channel, value)) =
+                nif::anim::material_color_at(&nif.blocks, material, time)
+            {
+                frame.material_color.insert(
+                    index,
+                    (
+                        channel,
+                        [
+                            value.x.clamp(0.0, 1.0),
+                            value.y.clamp(0.0, 1.0),
+                            value.z.clamp(0.0, 1.0),
+                            1.0,
+                        ],
+                    ),
+                );
+            }
+        }
+        // a geometry morpher rewrites the shape's vertices rather than moving the shape,
+        // so it is resolved per frame like a pose and handed to the renderer the same way
+        let scene = built.iter();
+        for mesh in scene.flat_map(|scene| scene.meshes.iter()) {
+            let Some(geometry) = nif.blocks.get(mesh.shape_block).and_then(Block::geometry) else {
+                continue;
+            };
+            if let Some(positions) = nif::anim::morph_at(&nif.blocks, geometry, time) {
+                // bending a surface leaves its resting shading behind, so the normals are
+                // rebuilt from the moved vertices wherever the morpher asks for it
+                let normals = nif::anim::morph_normals(&nif.blocks, geometry, &positions);
+                frame
+                    .deformed
+                    .insert(mesh.shape_block, Deformed { positions, normals });
+            }
+        }
+        // an attribute can be driven over time, and a shader reads it from the same model
+        // uniform either way, so only the lane the controller names is replaced
+        let scene = built.iter();
+        for mesh in scene.flat_map(|scene| scene.meshes.iter()) {
+            let (names, resolved) = mesh.attributes;
+            if names.iter().all(|name| name.is_empty()) {
+                continue;
+            }
+            let Some(geometry) = nif.blocks.get(mesh.shape_block).and_then(Block::av_object) else {
+                continue;
+            };
+            let mut params = resolved;
+            let mut driven = false;
+            for (lane, name) in names.iter().enumerate() {
+                if name.is_empty() {
+                    continue;
+                }
+                if let Some(value) =
+                    nif::anim::float_extra_data_at(&nif.blocks, geometry, name, time)
+                {
+                    params[lane] = value;
+                    driven = true;
+                }
+            }
+            if driven {
+                frame.params.insert(mesh.shape_block, params);
+            }
+        }
+        // a texture transform controller drives one member of one slot's transform, so a
+        // property can be the target of several at once and they are resolved together.
+        // Walked per shape rather than per property, since which slots a shape binds is its
+        // shader's choice.
+        // Both kinds, since a flip controller reaches a particle system's sprite exactly as
+        // it reaches a shape's map, and a quarter of them target one.
+        let shapes = built
+            .iter()
+            .flat_map(|scene| scene.meshes.iter())
+            .map(|mesh| {
+                (
+                    mesh.shape_block,
+                    mesh.texturing_block,
+                    mesh.bound,
+                    mesh.uv_pins,
+                )
+            });
+        let systems = built
+            .iter()
+            .flat_map(|scene| scene.particles.iter())
+            .map(|mesh| {
+                (
+                    mesh.block,
+                    mesh.texturing_block,
+                    DEFAULT_SLOTS,
+                    [None; BOUND_SLOTS],
+                )
+            });
+        for (shape_block, texturing_block, bound, uv_pins) in
+            shapes.chain(systems).collect::<Vec<_>>()
+        {
+            let property = match texturing_block.and_then(|i| nif.blocks.get(i)) {
+                Some(Block::NiTexturingProperty(property)) => property,
+                _ => continue,
+            };
+            frame.uv.insert(
+                shape_block,
+                slot_uv_rows(&nif.blocks, Some(property), bound, uv_pins, time),
+            );
+            // every slot a flip controller is ever seen to drive, not just the base one:
+            // a property flipped on two at once is the common case
+            let mut flipped = FlipState::default();
+            for slot in FLIPPABLE {
+                let source = nif::anim::flip_source_at(&nif.blocks, property, slot, time)
+                    .and_then(|r| r.index());
+                if let Some(source) = source {
+                    flipped.set(slot, source);
+                }
+            }
+            if let (false, Some(block)) = (flipped.is_empty(), texturing_block) {
+                frame.flip.insert(block, flipped);
+            }
+        }
+    }
+
+    // the simulation carries state, so it is advanced here and the result handed to the
+    // renderer, which keeps the drawing side free of anything that has to persist
+    {
+        let time = viewpoint.time.unwrap_or(0.0);
+        for system in systems.iter_mut() {
+            system.seek(&nif.blocks, time);
+            frame
+                .particles
+                .insert(system.block, system.particles().to_vec());
+        }
+    }
+    frame
+}
+
+#[cfg(test)]
+mod concealed {
+    use super::Concealed;
+    use std::collections::HashSet;
+
+    /// One depth first walk, as (block, depth) pairs in the order the walk reaches them.
+    fn walked(nodes: &[(usize, usize)], hidden: &[usize]) -> Vec<usize> {
+        let hidden: HashSet<usize> = hidden.iter().copied().collect();
+        let mut concealed = Concealed::default();
+        nodes
+            .iter()
+            .filter(|(index, depth)| concealed.visit(*index, *depth, &hidden))
+            .map(|(index, _)| *index)
+            .collect()
+    }
+
+    /// 0 holds 1, which holds 2 and 3; 4 is 1's sibling and holds 5.
+    const TREE: [(usize, usize); 6] = [(0, 0), (1, 1), (2, 2), (3, 2), (4, 1), (5, 2)];
+
+    #[test]
+    fn hiding_a_node_hides_what_is_under_it() {
+        assert_eq!(walked(&TREE, &[1]), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn a_subtree_ends_where_the_depth_returns() {
+        // 4 and 5 are past 1's subtree, so hiding 1 leaves them alone
+        let out = walked(&TREE, &[1]);
+        assert!(!out.contains(&4) && !out.contains(&5));
+    }
+
+    #[test]
+    fn two_hidden_siblings_each_hide_their_own() {
+        assert_eq!(walked(&TREE, &[1, 4]), vec![1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn a_hidden_node_inside_a_hidden_node_does_not_end_early() {
+        // 2 sits inside 1, so leaving 2 must not reveal 3, which is still inside 1
+        assert_eq!(walked(&TREE, &[1, 2]), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn hiding_the_root_hides_the_file() {
+        assert_eq!(walked(&TREE, &[0]), vec![0, 1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn hiding_nothing_hides_nothing() {
+        assert!(walked(&TREE, &[]).is_empty());
+    }
+}
+
+/// Tells each system where its emitters sit relative to it, which is what lets a particle start
+/// at the object that emitted it rather than at the system's own node. Done once per file: the
+/// emitters are placed at rest and a moving one is not followed.
+/// Hands each system the transforms its emitters place against.
+///
+/// An emitter places into the space of the object it names, not the system's, and in this corpus
+/// every emitter names one. The simulation does not walk the graph, so the walk happens here and
+/// the result is a matrix per named object taking it into its system's space.
+pub fn place_emitters(nif: &Nif, systems: &mut [nif::psys::System]) {
+    if systems.is_empty() {
+        return;
+    }
+    let mut world: HashMap<usize, Mat4> = HashMap::new();
+    for visit in nif.walk() {
+        world.insert(visit.index, Mat4::from(&visit.transform));
+    }
+    for system in systems.iter_mut() {
+        let world_space = matches!(
+            nif.blocks.get(system.block),
+            Some(Block::NiParticleSystem(psys)) if psys.world_space
+        );
+        let Some(into_system) = world
+            .get(&system.block)
+            .map(|pose| particle_space(*pose, world_space).inverse())
+        else {
+            continue;
+        };
+        let spaces = nif::psys::System::emitter_objects(&nif.blocks, system.block)
+            .into_iter()
+            .filter_map(|object| Some((object, into_system * *world.get(&object)?)))
+            .collect();
+        system.place_against(spaces);
+    }
+}
+
 /// Counts scenes as they are built, which is all `Scene::id` has to do: tell one from another.
 static SCENES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 

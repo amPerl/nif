@@ -1,9 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    io::Cursor,
-    path::PathBuf,
-    sync::Arc,
-};
+use std::{collections::HashSet, io::Cursor, path::PathBuf, sync::Arc};
 
 use eframe::egui::{self, text::LayoutJob, Color32, FontId, TextFormat, WidgetText};
 use eframe::egui_wgpu;
@@ -456,7 +451,7 @@ impl Nifty {
         }
         state.time = nif::anim::span(&nif.blocks).map_or(0.0, |(start, _)| start);
         let mut systems = nif::psys::systems(&nif.blocks);
-        place_emitters(&nif, &mut systems);
+        nif_wgpu::scene::place_emitters(&nif, &mut systems);
         state.loaded = Some(Loaded {
             written: written_at(&path),
             path,
@@ -1519,100 +1514,6 @@ fn letterbox(within: egui::Rect, aspect: f32) -> egui::Rect {
     egui::Rect::from_center_size(within.center(), egui::vec2(w, h))
 }
 
-#[cfg(test)]
-mod concealed_tests {
-    use super::Concealed;
-    use std::collections::HashSet;
-
-    /// One depth first walk, as (block, depth) pairs in the order the walk reaches them.
-    fn walked(nodes: &[(usize, usize)], hidden: &[usize]) -> Vec<usize> {
-        let hidden: HashSet<usize> = hidden.iter().copied().collect();
-        let mut concealed = Concealed::default();
-        nodes
-            .iter()
-            .filter(|(index, depth)| concealed.visit(*index, *depth, &hidden))
-            .map(|(index, _)| *index)
-            .collect()
-    }
-
-    /// 0 holds 1, which holds 2 and 3; 4 is 1's sibling and holds 5.
-    const TREE: [(usize, usize); 6] = [(0, 0), (1, 1), (2, 2), (3, 2), (4, 1), (5, 2)];
-
-    #[test]
-    fn hiding_a_node_hides_what_is_under_it() {
-        assert_eq!(walked(&TREE, &[1]), vec![1, 2, 3]);
-    }
-
-    #[test]
-    fn a_subtree_ends_where_the_depth_returns() {
-        // 4 and 5 are past 1's subtree, so hiding 1 leaves them alone
-        let out = walked(&TREE, &[1]);
-        assert!(!out.contains(&4) && !out.contains(&5));
-    }
-
-    #[test]
-    fn two_hidden_siblings_each_hide_their_own() {
-        assert_eq!(walked(&TREE, &[1, 4]), vec![1, 2, 3, 4, 5]);
-    }
-
-    #[test]
-    fn a_hidden_node_inside_a_hidden_node_does_not_end_early() {
-        // 2 sits inside 1, so leaving 2 must not reveal 3, which is still inside 1
-        assert_eq!(walked(&TREE, &[1, 2]), vec![1, 2, 3]);
-    }
-
-    #[test]
-    fn hiding_the_root_hides_the_file() {
-        assert_eq!(walked(&TREE, &[0]), vec![0, 1, 2, 3, 4, 5]);
-    }
-
-    #[test]
-    fn hiding_nothing_hides_nothing() {
-        assert!(walked(&TREE, &[]).is_empty());
-    }
-}
-
-#[cfg(test)]
-mod camera_tests {
-    use super::letterbox;
-    use eframe::egui;
-
-    fn rect(w: f32, h: f32) -> egui::Rect {
-        egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(w, h))
-    }
-
-    /// The file's camera draws into a rectangle of its own shape, so what the game framed is not
-    /// stretched into the panel's aspect. The bars land on whichever pair of sides is spare.
-    #[test]
-    fn a_letterbox_keeps_the_shape_and_fits_inside() {
-        // a panel wider than the camera leaves bars at the sides
-        let inner = letterbox(rect(400.0, 100.0), 1.0);
-        assert!((inner.width() - inner.height()).abs() < 1e-3);
-        assert!((inner.height() - 100.0).abs() < 1e-3, "height was given away");
-
-        // and one taller than the camera leaves them above and below
-        let inner = letterbox(rect(100.0, 400.0), 1.0);
-        assert!((inner.width() - 100.0).abs() < 1e-3);
-
-        // the common frustum here is about four to three, and it keeps that
-        let inner = letterbox(rect(800.0, 800.0), 1.32);
-        assert!((inner.width() / inner.height() - 1.32).abs() < 1e-3);
-        assert!(inner.width() <= 800.0 && inner.height() <= 800.0);
-
-        // always centred in what it was given, and never larger than it
-        let outer = rect(640.0, 480.0);
-        for aspect in [0.5f32, 1.0, 1.32, 2.5] {
-            let inner = letterbox(outer, aspect);
-            assert!((inner.center() - outer.center()).length() < 1e-3);
-            assert!(inner.width() <= outer.width() + 1e-3);
-            assert!(inner.height() <= outer.height() + 1e-3);
-        }
-
-        // a nonsense aspect gives the rectangle back rather than an empty one
-        assert_eq!(letterbox(outer, 0.0), outer);
-    }
-}
-
 /// The chain of nodes from a root down to `target`, following the same links the tree draws.
 fn ancestors_of(links: &[Vec<Link>], roots: &[usize], target: usize) -> Vec<usize> {
     fn descend(
@@ -1778,10 +1679,11 @@ fn frame_selected(state: &mut State) {
     }
 }
 
-/// Where the shapes of one file are and which of them are culled, for the frame about to be
-/// drawn. Skipped entirely when the file holds nothing that moves or hides.
+/// Where everything in the file sits this frame, or the resting pose where nothing moves.
 ///
-/// Free of the viewer because every open file needs one, not just the one being inspected.
+/// The guard is nifty's rather than the renderer's: a file with no animation, no skin, no
+/// particles and nothing hidden by hand resolves to the same frame every tick, so the work is
+/// skipped rather than repeated.
 fn build_frame(
     loaded: &mut Loaded,
     built: Option<&Arc<Scene>>,
@@ -1798,233 +1700,13 @@ fn build_frame(
     {
         return Arc::default();
     }
-    let mut frame = Frame::default();
-    let mut concealed = Concealed::default();
-    for visit in viewpoint.walk(&loaded.nif) {
-        // every block, not only the shapes: a bone is a node the skinned shape does not
-        // own, and placing one means reaching it here
-        frame
-            .poses
-            .insert(visit.index, Mat4::from(&visit.transform));
-        // asked of every block for the same reason: what was hidden by hand is usually a
-        // node, and a node is not what gets drawn
-        let by_hand = concealed.visit(visit.index, visit.depth, hidden);
-        if visit.block.av_object().is_none() {
-            continue;
-        }
-        if visit.hidden || by_hand {
-            frame.hidden.insert(visit.index);
-        }
-    }
-    // A skinned shape is placed by its bones whether or not anything animates, so its
-    // geometry is resolved every frame rather than only when the clock runs. The scene
-    // built the resting pose into the buffer, and this replaces it once bones move.
-    let scene = built.iter();
-    for mesh in scene.flat_map(|scene| scene.meshes.iter()) {
-        if !mesh.skinned {
-            continue;
-        }
-        let Some(geometry) = loaded.nif.blocks.get(mesh.shape_block).and_then(Block::geometry)
-        else {
-            continue;
-        };
-        let skinned = nif::skin::deform(&loaded.nif.blocks, geometry, |index| {
-            frame.poses.get(&index).copied()
-        });
-        if let Some(skinned) = skinned {
-            frame.deformed.insert(
-                mesh.shape_block,
-                nif_wgpu::scene::Deformed {
-                    positions: skinned.positions,
-                    normals: skinned.normals,
-                },
-            );
-        }
-    }
-    // an alpha controller hangs off the material rather than the shape, and one material
-    // can be shared, so these are collected by material block
-    if let Some(time) = viewpoint.time {
-        for (index, block) in loaded.nif.blocks.iter().enumerate() {
-            let Block::NiMaterialProperty(material) = block else {
-                continue;
-            };
-            if let Some(alpha) = nif::anim::alpha_at(&loaded.nif.blocks, material, time) {
-                // a quadratic track overshoots its keys, and files do drive alpha negative.
-                // The fixed function pipeline clamped the material colour, so clamp here.
-                frame.alpha.insert(index, alpha.clamp(0.0, 1.0));
-            }
-            // one channel of the material colour, clamped for the same reason
-            if let Some((channel, value)) =
-                nif::anim::material_color_at(&loaded.nif.blocks, material, time)
-            {
-                frame.material_color.insert(
-                    index,
-                    (
-                        channel,
-                        [
-                            value.x.clamp(0.0, 1.0),
-                            value.y.clamp(0.0, 1.0),
-                            value.z.clamp(0.0, 1.0),
-                            1.0,
-                        ],
-                    ),
-                );
-            }
-        }
-        // a geometry morpher rewrites the shape's vertices rather than moving the shape,
-        // so it is resolved per frame like a pose and handed to the renderer the same way
-        let scene = built.iter();
-        for mesh in scene.flat_map(|scene| scene.meshes.iter()) {
-            let Some(geometry) = loaded
-                .nif
-                .blocks
-                .get(mesh.shape_block)
-                .and_then(Block::geometry)
-            else {
-                continue;
-            };
-            if let Some(positions) = nif::anim::morph_at(&loaded.nif.blocks, geometry, time) {
-                // bending a surface leaves its resting shading behind, so the normals are
-                // rebuilt from the moved vertices wherever the morpher asks for it
-                let normals = nif::anim::morph_normals(&loaded.nif.blocks, geometry, &positions);
-                frame.deformed.insert(
-                    mesh.shape_block,
-                    nif_wgpu::scene::Deformed { positions, normals },
-                );
-            }
-        }
-        // an attribute can be driven over time, and a shader reads it from the same model
-        // uniform either way, so only the lane the controller names is replaced
-        let scene = built.iter();
-        for mesh in scene.flat_map(|scene| scene.meshes.iter()) {
-            let (names, resolved) = mesh.attributes;
-            if names.iter().all(|name| name.is_empty()) {
-                continue;
-            }
-            let Some(geometry) = loaded
-                .nif
-                .blocks
-                .get(mesh.shape_block)
-                .and_then(Block::av_object)
-            else {
-                continue;
-            };
-            let mut params = resolved;
-            let mut driven = false;
-            for (lane, name) in names.iter().enumerate() {
-                if name.is_empty() {
-                    continue;
-                }
-                if let Some(value) =
-                    nif::anim::float_extra_data_at(&loaded.nif.blocks, geometry, name, time)
-                {
-                    params[lane] = value;
-                    driven = true;
-                }
-            }
-            if driven {
-                frame.params.insert(mesh.shape_block, params);
-            }
-        }
-        // a texture transform controller drives one member of one slot's transform, so a
-        // property can be the target of several at once and they are resolved together.
-        // Walked per shape rather than per property, since which slots a shape binds is its
-        // shader's choice.
-        // Both kinds, since a flip controller reaches a particle system's sprite exactly as
-        // it reaches a shape's map, and a quarter of them target one.
-        let shapes = built
-            .iter()
-            .flat_map(|scene| scene.meshes.iter())
-            .map(|mesh| {
-                (
-                    mesh.shape_block,
-                    mesh.texturing_block,
-                    mesh.bound,
-                    mesh.uv_pins,
-                )
-            });
-        let systems = built
-            .iter()
-            .flat_map(|scene| scene.particles.iter())
-            .map(|mesh| {
-                (
-                    mesh.block,
-                    mesh.texturing_block,
-                    nif_wgpu::scene::DEFAULT_SLOTS,
-                    [None; nif_wgpu::scene::BOUND_SLOTS],
-                )
-            });
-        for (shape_block, texturing_block, bound, uv_pins) in
-            shapes.chain(systems).collect::<Vec<_>>()
-        {
-            let property = match texturing_block.and_then(|i| loaded.nif.blocks.get(i)) {
-                Some(Block::NiTexturingProperty(property)) => property,
-                _ => continue,
-            };
-            frame.uv.insert(
-                shape_block,
-                nif_wgpu::scene::slot_uv_rows(
-                    &loaded.nif.blocks,
-                    Some(property),
-                    bound,
-                    uv_pins,
-                    time,
-                ),
-            );
-            // every slot a flip controller is ever seen to drive, not just the base one:
-            // a property flipped on two at once is the common case
-            let mut flipped = nif_wgpu::scene::FlipState::default();
-            for slot in nif_wgpu::scene::FLIPPABLE {
-                let source = nif::anim::flip_source_at(&loaded.nif.blocks, property, slot, time)
-                    .and_then(|r| r.index());
-                if let Some(source) = source {
-                    flipped.set(slot, source);
-                }
-            }
-            if let (false, Some(block)) = (flipped.is_empty(), texturing_block) {
-                frame.flip.insert(block, flipped);
-            }
-        }
-    }
-
-    // the simulation carries state, so it is advanced here and the result handed to the
-    // renderer, which keeps the drawing side free of anything that has to persist
-    {
-        let time = viewpoint.time.unwrap_or(0.0);
-        for system in &mut loaded.systems {
-            system.seek(&loaded.nif.blocks, time);
-            frame
-                .particles
-                .insert(system.block, system.particles().to_vec());
-        }
-    }
-    Arc::new(frame)
-}
-/// Whether a depth first walk is inside a block hidden by hand.
-///
-/// Hiding a node hides everything under it, which is what the file's own cull flag does. The
-/// walk reaches a block before any of its children and never returns to a depth it has left,
-/// so the depth of the block that was hidden is enough to say where its subtree ends.
-#[derive(Default)]
-struct Concealed {
-    /// The depth of the outermost hidden block the walk has entered and not yet left.
-    at: Option<usize>,
-}
-
-impl Concealed {
-    /// Called once per visit, in walk order. Answers whether this block is hidden, by itself
-    /// or by something above it.
-    fn visit(&mut self, index: usize, depth: usize, hidden: &HashSet<usize>) -> bool {
-        // left first, then entered: a hidden block can be the next sibling of a hidden block,
-        // and testing in the other order would let the first one's depth swallow the second
-        if self.at.is_some_and(|entered| depth <= entered) {
-            self.at = None;
-        }
-        if self.at.is_none() && hidden.contains(&index) {
-            self.at = Some(depth);
-        }
-        self.at.is_some()
-    }
+    Arc::new(nif_wgpu::scene::resolve(
+        &loaded.nif,
+        built.map(Arc::as_ref),
+        &mut loaded.systems,
+        hidden,
+        viewpoint,
+    ))
 }
 
 /// A node's label, and the eye that hides what the label names.
@@ -2607,34 +2289,43 @@ impl eframe::App for Nifty {
     }
 }
 
-/// Hands each system the transforms its emitters place against.
-///
-/// An emitter places into the space of the object it names, not the system's, and in this corpus
-/// every emitter names one. The simulation does not walk the graph, so the walk happens here and
-/// the result is a matrix per named object taking it into its system's space.
-fn place_emitters(nif: &Nif, systems: &mut [nif::psys::System]) {
-    if systems.is_empty() {
-        return;
+#[cfg(test)]
+mod camera_tests {
+    use super::letterbox;
+    use eframe::egui;
+
+    fn rect(w: f32, h: f32) -> egui::Rect {
+        egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(w, h))
     }
-    let mut world: HashMap<usize, Mat4> = HashMap::new();
-    for visit in nif.walk() {
-        world.insert(visit.index, Mat4::from(&visit.transform));
-    }
-    for system in systems.iter_mut() {
-        let world_space = matches!(
-            nif.blocks.get(system.block),
-            Some(Block::NiParticleSystem(psys)) if psys.world_space
-        );
-        let Some(into_system) = world
-            .get(&system.block)
-            .map(|pose| nif_wgpu::scene::particle_space(*pose, world_space).inverse())
-        else {
-            continue;
-        };
-        let spaces = nif::psys::System::emitter_objects(&nif.blocks, system.block)
-            .into_iter()
-            .filter_map(|object| Some((object, into_system * *world.get(&object)?)))
-            .collect();
-        system.place_against(spaces);
+
+    /// The file's camera draws into a rectangle of its own shape, so what the game framed is not
+    /// stretched into the panel's aspect. The bars land on whichever pair of sides is spare.
+    #[test]
+    fn a_letterbox_keeps_the_shape_and_fits_inside() {
+        // a panel wider than the camera leaves bars at the sides
+        let inner = letterbox(rect(400.0, 100.0), 1.0);
+        assert!((inner.width() - inner.height()).abs() < 1e-3);
+        assert!((inner.height() - 100.0).abs() < 1e-3, "height was given away");
+
+        // and one taller than the camera leaves them above and below
+        let inner = letterbox(rect(100.0, 400.0), 1.0);
+        assert!((inner.width() - 100.0).abs() < 1e-3);
+
+        // the common frustum here is about four to three, and it keeps that
+        let inner = letterbox(rect(800.0, 800.0), 1.32);
+        assert!((inner.width() / inner.height() - 1.32).abs() < 1e-3);
+        assert!(inner.width() <= 800.0 && inner.height() <= 800.0);
+
+        // always centred in what it was given, and never larger than it
+        let outer = rect(640.0, 480.0);
+        for aspect in [0.5f32, 1.0, 1.32, 2.5] {
+            let inner = letterbox(outer, aspect);
+            assert!((inner.center() - outer.center()).length() < 1e-3);
+            assert!(inner.width() <= outer.width() + 1e-3);
+            assert!(inner.height() <= outer.height() + 1e-3);
+        }
+
+        // a nonsense aspect gives the rectangle back rather than an empty one
+        assert_eq!(letterbox(outer, 0.0), outer);
     }
 }
