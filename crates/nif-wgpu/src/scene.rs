@@ -2185,7 +2185,7 @@ impl Gfx {
         library: &TextureLibrary,
         shaders: &Shaders,
     ) -> (Scene, Vec<String>, Vec<String>) {
-        let lod_of = lod_ancestry(nif);
+        let lod_of = nif::walk::lod_ancestry(nif);
         let unsorted = unsorted_subtrees(nif);
         let device = &self.device;
         // one per Absent variant, since what an unread slot stands in with depends on how the
@@ -3132,32 +3132,6 @@ fn unsorted_subtrees(nif: &Nif) -> HashSet<usize> {
         for child in block.child_refs().unwrap_or_default() {
             let Some(child) = child.index() else { continue };
             stack.push((child, below));
-        }
-    }
-    out
-}
-
-fn lod_ancestry(nif: &Nif) -> HashMap<usize, (usize, usize)> {
-    let mut out = HashMap::new();
-    let mut seen = HashSet::new();
-    let mut stack: Vec<(usize, Option<(usize, usize)>)> =
-        nif.roots().map(|(index, _)| (index, None)).collect();
-
-    while let Some((index, owner)) = stack.pop() {
-        if !seen.insert(index) {
-            continue;
-        }
-        if let Some(owner) = owner {
-            out.insert(index, owner);
-        }
-        let Some(block) = nif.blocks.get(index) else {
-            continue;
-        };
-        let children = block.child_refs().unwrap_or_default();
-        let lod = matches!(block, Block::NiLODNode(_)).then_some(index);
-        for (level, child) in children.iter().enumerate() {
-            let Some(child) = child.index() else { continue };
-            stack.push((child, lod.map(|node| (node, level)).or(owner)));
         }
     }
     out

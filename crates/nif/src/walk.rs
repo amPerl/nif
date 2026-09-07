@@ -167,6 +167,48 @@ struct Frame {
     effects: Effects,
 }
 
+/// Which LOD node each block sits under, and which of its levels it is.
+///
+/// A level is a child's place in the node's child list, which is what the ranges are counted
+/// against. Blocks reached without passing through a LOD node are absent; a node inside another
+/// node's level claims its own children, since it is the nearer one that decides them.
+pub fn lod_ancestry(nif: &crate::Nif) -> std::collections::HashMap<usize, (usize, usize)> {
+    let mut found = std::collections::HashMap::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut stack: Vec<(usize, Option<(usize, usize)>)> =
+        nif.roots().map(|(index, _)| (index, None)).collect();
+
+    while let Some((index, owner)) = stack.pop() {
+        if !seen.insert(index) {
+            continue;
+        }
+        if let Some(owner) = owner {
+            found.insert(index, owner);
+        }
+        let Some(block) = nif.blocks.get(index) else {
+            continue;
+        };
+        let children = block.child_refs().unwrap_or_default();
+        let node = matches!(block, Block::NiLODNode(_)).then_some(index);
+        for (level, child) in children.iter().enumerate() {
+            let Some(child) = child.index() else { continue };
+            stack.push((child, node.map(|node| (node, level)).or(owner)));
+        }
+    }
+    found
+}
+
+/// The level of a LOD node whose range covers `distance`, falling back to the first.
+///
+/// The levels are not ordered by detail, so the ranges are what say which is which: the one
+/// starting furthest out is the one with least in it.
+pub fn lod_level_at(data: &crate::blocks::NiRangeLODData, distance: f32) -> usize {
+    data.lod_levels
+        .iter()
+        .position(|range| distance >= range.near && distance < range.far)
+        .unwrap_or(0)
+}
+
 pub struct Walk<'a> {
     /// Where every object ended up in a pass that left the look at aims alone, so the aiming
     /// pass has its targets to point at. Empty unless the file carries a look at.
