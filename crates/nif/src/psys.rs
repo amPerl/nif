@@ -164,6 +164,27 @@ impl System {
         self.time
     }
 
+    /// How many particles it may hold at once, as its data declares.
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// The spaces its emitters place into, for handing to another system built from the same
+    /// block. Resolving them means walking the file, which is worth doing once.
+    pub fn spaces(&self) -> &std::collections::HashMap<usize, Mat4> {
+        &self.spaces
+    }
+
+    /// Mixes `salt` into the seed and starts again.
+    ///
+    /// One system standing in many places is many simulations, and they are only different if
+    /// their generators are. Without this every copy emits the same particle at the same moment,
+    /// which reads as wrong wherever two copies can be seen at once.
+    pub fn stir(&mut self, salt: u64) {
+        self.seed ^= salt.wrapping_mul(0x9e3779b97f4a7c15);
+        self.reset();
+    }
+
     /// Returns the system to its state before anything was emitted.
     pub fn reset(&mut self) {
         self.particles.clear();
