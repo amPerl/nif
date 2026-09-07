@@ -874,7 +874,11 @@ pub fn visible_at(blocks: &[Block], object: &NiAvObject, time: f32) -> Option<bo
 }
 
 /// Every controller on an object, following the chain from one to the next.
-fn controllers(blocks: &[Block], first: BlockRef) -> impl Iterator<Item = &Block> {
+/// Every controller in a chain, from the first one an object names.
+///
+/// A chain is bounded here rather than trusted: a file whose next pointers form a ring would
+/// otherwise be walked forever.
+pub fn controllers(blocks: &[Block], first: BlockRef) -> impl Iterator<Item = &Block> {
     let mut next = first;
     let mut guard = 0;
     std::iter::from_fn(move || {

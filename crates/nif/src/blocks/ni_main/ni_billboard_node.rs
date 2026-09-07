@@ -8,7 +8,7 @@ pub struct NiBillboardNode {
     pub billboard_mode: BillboardMode,
 }
 
-#[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, BinRead, BinWrite)]
 #[cfg_attr(feature = "facet", derive(facet::Facet))]
 #[cfg_attr(feature = "facet", repr(u8))]
 pub enum BillboardMode {
