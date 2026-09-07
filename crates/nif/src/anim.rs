@@ -767,6 +767,30 @@ pub fn texture_transform_at(
     animated.or(stored)
 }
 
+/// The sources a flip controller can swap into a slot, in the order it steps through them.
+///
+/// Empty where nothing flips that slot. The list is what the controller holds rather than what
+/// it shows at a moment, so it is asked once and stands for the whole animation.
+pub fn flip_frames(
+    blocks: &[Block],
+    property: &NiTexturingProperty,
+    slot: TextureSlot,
+) -> Vec<BlockRef> {
+    for block in controllers(blocks, property.controller_ref) {
+        let Block::NiFlipController(controller) = block else {
+            continue;
+        };
+        let time_controller: &NiTimeController = controller;
+        if !time_controller.is_active()
+            || TextureSlot::from_flip_index(controller.texture_slot) != Some(slot)
+        {
+            continue;
+        }
+        return controller.source_refs.clone();
+    }
+    Vec::new()
+}
+
 /// The source texture a flip controller has swapped into a slot at `time`. None when nothing
 /// flips that slot, so the caller keeps whatever source the map itself names.
 ///
