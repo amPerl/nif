@@ -100,6 +100,8 @@ pub struct System {
     /// Empty means every emitter places into the system's own space, which is only right where
     /// the two coincide.
     spaces: std::collections::HashMap<usize, Mat4>,
+    /// A birth rate the caller has posed, standing in for whatever the file's interpolator holds.
+    posed_rate: Option<f32>,
 }
 
 impl System {
@@ -109,9 +111,12 @@ impl System {
         let Some(psys) = blocks.get(block).and_then(Block::particle_system) else {
             return None;
         };
-        let capacity = match psys.data_ref.get(blocks) {
-            Some(Block::NiPSysData(data)) => data.vertex_count(),
-            _ => 0,
+        // Either form of the data, since a mesh system carries its own and the count the
+        // simulation needs sits underneath. Reading only the plain form left a mesh system with
+        // room for nothing, which simulates perfectly and emits not one particle.
+        let capacity = match psys.data_ref.get(blocks).and_then(Block::psys_data) {
+            Some(data) => data.vertex_count(),
+            None => 0,
         };
         // mixed with the block index, so two systems in one file do not emit in lockstep
         let seed = 0x9e3779b97f4a7c15 ^ block as u64;
@@ -123,11 +128,29 @@ impl System {
             rng: Rng::new(seed),
             seed,
             spaces: std::collections::HashMap::new(),
+            posed_rate: None,
         })
     }
 
     pub fn particles(&self) -> &[Particle] {
         &self.particles
+    }
+
+    /// Stands a birth rate in place of the one the file carries, for every emitter of this
+    /// system, or clears it again with `None`.
+    ///
+    /// What the client does to make it rain. `NiPSysEmitterCtlr` holds its rate in a
+    /// `NiFloatInterpolator`, and rather than key one per weather the client writes the value in
+    /// with `SetPoseValue` every frame from the preset's own rate. The file's own value is what
+    /// stands until something poses over it, which for the rain effect is nought: left alone it
+    /// simulates correctly and emits nothing at all.
+    pub fn pose_birth_rate(&mut self, rate: Option<f32>) {
+        if self.posed_rate != rate {
+            self.posed_rate = rate;
+            // The emission already worked out for this moment was worked out against the old
+            // rate, so it has to be laid down again from the start.
+            self.reset();
+        }
     }
 
     /// Where the objects this system's emitters name sit relative to the system itself, keyed by
@@ -446,9 +469,12 @@ impl System {
         let Some(emitter) = blocks.get(index).and_then(as_emitter) else {
             return;
         };
-        let Some(rate) = birth_rate(blocks, self.block, index) else {
+        let Some(mut rate) = birth_rate(blocks, self.block, index) else {
             return;
         };
+        if let Some(posed) = self.posed_rate {
+            rate.per_second = posed;
+        }
         let (start, stop) = rate.window;
         if rate.per_second <= 0.0 || start >= stop || now <= start {
             return;
@@ -1124,6 +1150,7 @@ mod tests {
             rng: Rng::new(1),
             seed: 1,
             spaces: Default::default(),
+            posed_rate: None,
         };
         system.spin(0.5);
 
@@ -1387,6 +1414,7 @@ mod tests {
             rng: Rng::new(1),
             seed: 1,
             spaces: Default::default(),
+            posed_rate: None,
         };
         system.tint(&blocks, &modifier);
 
@@ -1448,6 +1476,7 @@ mod tests {
             rng: Rng::new(1),
             seed: 1,
             spaces: Default::default(),
+            posed_rate: None,
         };
 
         // half way into a two second grow

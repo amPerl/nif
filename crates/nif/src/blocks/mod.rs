@@ -331,6 +331,19 @@ impl Block {
         Some(system)
     }
 
+    /// The stored particle data behind a system's `data_ref`, in either of its forms.
+    ///
+    /// `NiMeshPSysData` adds a pool size, a fill flag, a generation list and the meshes it
+    /// instances on top of `NiPSysData`. Everything the simulation reads is underneath.
+    pub fn psys_data(&self) -> Option<&NiPSysData> {
+        let data: &NiPSysData = match self {
+            Block::NiPSysData(b) => b,
+            Block::NiMeshPSysData(b) => b,
+            _ => return None,
+        };
+        Some(data)
+    }
+
     pub fn geometry(&self) -> Option<&NiGeometry> {
         let geometry: &NiGeometry = match self {
             Block::NiTriShape(b) => b,
