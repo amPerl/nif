@@ -316,6 +316,21 @@ impl Block {
         Some(modifier)
     }
 
+    /// A particle system in either of its forms.
+    ///
+    /// `NiMeshParticleSystem` adds no fields of its own to `NiParticleSystem`: what differs is
+    /// only that its particles are instances of a mesh rather than sprites, which is the drawing
+    /// and not the simulation. Everything that advances a system wants this rather than the one
+    /// variant.
+    pub fn particle_system(&self) -> Option<&NiParticleSystem> {
+        let system: &NiParticleSystem = match self {
+            Block::NiParticleSystem(b) => b,
+            Block::NiMeshParticleSystem(b) => b,
+            _ => return None,
+        };
+        Some(system)
+    }
+
     pub fn geometry(&self) -> Option<&NiGeometry> {
         let geometry: &NiGeometry = match self {
             Block::NiTriShape(b) => b,

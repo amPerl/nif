@@ -106,7 +106,7 @@ impl System {
     /// Prepares an empty system for the `NiParticleSystem` at `block`. Nothing exists until it
     /// is advanced.
     pub fn new(blocks: &[Block], block: usize) -> Option<System> {
-        let Some(Block::NiParticleSystem(psys)) = blocks.get(block) else {
+        let Some(psys) = blocks.get(block).and_then(Block::particle_system) else {
             return None;
         };
         let capacity = match psys.data_ref.get(blocks) {
@@ -142,7 +142,7 @@ impl System {
 
     /// Every block whose space this system's emitters place into, for the caller to resolve.
     pub fn emitter_objects(blocks: &[Block], block: usize) -> Vec<usize> {
-        let Some(Block::NiParticleSystem(psys)) = blocks.get(block) else {
+        let Some(psys) = blocks.get(block).and_then(Block::particle_system) else {
             return Vec::new();
         };
         let mut out = Vec::new();
@@ -209,7 +209,7 @@ impl System {
     fn step(&mut self, blocks: &[Block], dt: f32) {
         let last = self.time;
         let now = last + dt;
-        let Some(Block::NiParticleSystem(psys)) = blocks.get(self.block) else {
+        let Some(psys) = blocks.get(self.block).and_then(Block::particle_system) else {
             return;
         };
 
@@ -765,9 +765,9 @@ fn seed_rotation(modifier: &NiPSysRotationModifier, particle: &mut Particle, rng
 
 /// The modifiers one system carries, by block index.
 fn system_modifiers(blocks: &[Block], system: usize) -> impl Iterator<Item = usize> + '_ {
-    let refs = match blocks.get(system) {
-        Some(Block::NiParticleSystem(psys)) => psys.modifiers_refs.as_slice(),
-        _ => &[],
+    let refs = match blocks.get(system).and_then(Block::particle_system) {
+        Some(psys) => psys.modifiers_refs.as_slice(),
+        None => &[],
     };
     refs.iter().filter_map(|r| r.index())
 }
@@ -946,7 +946,7 @@ pub fn systems(blocks: &[Block]) -> Vec<System> {
     blocks
         .iter()
         .enumerate()
-        .filter(|(_, block)| matches!(block, Block::NiParticleSystem(_)))
+        .filter(|(_, block)| block.particle_system().is_some())
         .filter_map(|(index, _)| System::new(blocks, index))
         .collect()
 }
