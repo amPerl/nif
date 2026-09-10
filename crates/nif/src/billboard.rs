@@ -105,48 +105,20 @@ impl BillboardMode {
     /// had.
     pub fn aim(&self, camera: &Camera, pivot: Vec3, standing: Mat3) -> Option<Mat3> {
         match self {
-            BillboardMode::AlwaysFaceCamera
-            | BillboardMode::AlwaysFaceCenter
-            | BillboardMode::RigidFaceCamera
-            | BillboardMode::RigidFaceCenter => {
-                let basis = Basis::of(camera);
-                let basis = match self {
-                    BillboardMode::AlwaysFaceCenter | BillboardMode::RigidFaceCenter => {
-                        basis.toward(camera, pivot)?
-                    }
-                    _ => basis,
-                };
-                let Basis { facing, up, right } = basis;
-
-                Some(match self {
-                    // rigid drops the node's own orientation entirely, since this cancels
-                    // against the rotation it is multiplied by
-                    BillboardMode::RigidFaceCamera | BillboardMode::RigidFaceCenter => {
-                        Mat3::from_cols(right, up, facing)
-                    }
-                    // The others roll the quad about the view direction so its own up stays as
-                    // upright as the view allows. Which up that is, is the node's own y axis as
-                    // the copy's placement leaves it standing.
-                    _ => {
-                        let own = standing.y_axis;
-                        let (along, across) = (own.dot(up), -own.dot(right));
-                        let root = (across * across + along * along).sqrt();
-                        if root > 1e-6 {
-                            let inverse = 1.0 / root;
-                            let (cos, sin) = (along * inverse, across * inverse);
-                            Mat3::from_cols(right * cos + up * sin, right * -sin + up * cos, facing)
-                        } else {
-                            Mat3::from_cols(-right, -up, facing)
-                        }
-                    }
-                })
+            // These two meet the camera's own direction rather than look at the node, so where
+            // the copy stands does not reach the answer and only which way up it is does.
+            BillboardMode::AlwaysFaceCamera | BillboardMode::RigidFaceCamera => {
+                self.aim_alike(camera, standing.y_axis)
+            }
+            BillboardMode::AlwaysFaceCenter | BillboardMode::RigidFaceCenter => {
+                Some(self.rolled(Basis::of(camera).toward(camera, pivot)?, standing.y_axis))
             }
 
             // Pivots about the node's own up, keeping x and z as the ground plane. This one does
             // not shed the placement the way the others do: the turn is about an axis of the
             // node's rather than one of the camera's, so where the copy stands turned stays in
-            // the answer. The node's own scale drops out either way, since all that is taken from
-            // the direction to the eye is which way it points.
+            // the answer. The node's own scale drops out either way, since all that is taken
+            // from the direction to the eye is which way it points.
             BillboardMode::RotateAboutUp
             | BillboardMode::BSRotateAboutUp
             | BillboardMode::RotateAboutUp2 => {
@@ -161,6 +133,54 @@ impl BillboardMode {
                             Vec3::new(flat.x, 0.0, flat.y),
                         ),
                 )
+            }
+        }
+    }
+
+    /// The turn for the two modes that meet the camera's own direction rather than look at the
+    /// node, which is one turn for every copy standing the same way up.
+    ///
+    /// That is what makes it worth having apart. A draw whose copies were all set down the same
+    /// way up takes one turn between them, and nearly all of them were: 158 of cras's 185
+    /// billboard draws covering 7797 of its 8107 copies, and every one of koinonia's. `up` is the
+    /// node's own y axis as the copy's placement leaves it standing, which is what `aim` reads
+    /// off `standing`. None where the mode is not one of those two.
+    pub fn aim_alike(&self, camera: &Camera, up: Vec3) -> Option<Mat3> {
+        match self {
+            BillboardMode::AlwaysFaceCamera | BillboardMode::RigidFaceCamera => {
+                Some(self.rolled(Basis::of(camera), up))
+            }
+            _ => None,
+        }
+    }
+
+    /// The camera's axes as columns, rolled about the view direction where the mode asks for it.
+    fn rolled(&self, basis: Basis, up_of_node: Vec3) -> Mat3 {
+        let Basis { facing, up, right } = basis;
+        {
+            {
+                match self {
+                    // rigid drops the node's own orientation entirely, since this cancels
+                    // against the rotation it is multiplied by
+                    BillboardMode::RigidFaceCamera | BillboardMode::RigidFaceCenter => {
+                        Mat3::from_cols(right, up, facing)
+                    }
+                    // The others roll the quad about the view direction so its own up stays as
+                    // upright as the view allows. Which up that is, is the node's own y axis as
+                    // the copy's placement leaves it standing.
+                    _ => {
+                        let own = up_of_node;
+                        let (along, across) = (own.dot(up), -own.dot(right));
+                        let root = (across * across + along * along).sqrt();
+                        if root > 1e-6 {
+                            let inverse = 1.0 / root;
+                            let (cos, sin) = (along * inverse, across * inverse);
+                            Mat3::from_cols(right * cos + up * sin, right * -sin + up * cos, facing)
+                        } else {
+                            Mat3::from_cols(-right, -up, facing)
+                        }
+                    }
+                }
             }
         }
     }
