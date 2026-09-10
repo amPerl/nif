@@ -54,16 +54,6 @@ impl Basis {
         })
     }
 
-    /// The same axes as the node's own frame sees them, which is the transpose applied to
-    /// each one.
-    fn into_local(self, rotation: Mat3) -> Basis {
-        let local = rotation.transpose();
-        Basis {
-            facing: local * self.facing,
-            up: local * self.up,
-            right: local * self.right,
-        }
-    }
 }
 
 impl BillboardMode {
@@ -73,9 +63,48 @@ impl BillboardMode {
     /// inherit the result, so this replaces the node's world rotation rather than being applied to
     /// the geometry under it.
     pub fn orient(&self, world: &NiTransform, camera: &Camera) -> Option<Matrix33> {
-        let rotation = Mat3::from(&world.rotation);
+        // A node's own frame is a space like any other, so this is `aim` asked from inside it:
+        // the camera has already been brought in by whoever walked down to here, the node stands
+        // at its own translation, and the rotation it rests at is its own. What `aim` gives back
+        // is `rotation * face` with the two cancelling parts already gone, which is what this
+        // used to build the long way round.
+        if world.scale.abs() < 1e-8 {
+            // kept from when the pivoting modes divided by it, so a node scaled to nothing still
+            // declines here rather than orienting
+            return None;
+        }
+        self.aim(
+            camera,
+            Vec3::from(&world.translation),
+            Mat3::from(&world.rotation),
+        )
+        .map(Matrix33::from)
+    }
 
-        let face = match self {
+    /// The turn a copy of a billboard takes, without the trip through the node's own space.
+    ///
+    /// `orient` answers in the node's frame, which means a caller drawing copies has to bring the
+    /// camera in through each copy's placement, turn the node there, and multiply the answer back
+    /// out again. Those cancel. Writing the placement as `T Q s`, the node's resting world pose as
+    /// `T_r R_r s_r` and the camera's axes as the columns of `A`, what a copy is finally drawn
+    /// with comes out as
+    ///
+    /// ```text
+    ///     s * A * C * R_r^T
+    /// ```
+    ///
+    /// with the placement's own rotation `Q` gone from both sides and `C` the roll the upright
+    /// modes add. So the camera can stay in the world and no placement need ever be inverted.
+    ///
+    /// `pivot` is where the copy's placement leaves the node's origin, and `standing` is where it
+    /// leaves the node's resting rotation, columns of unit length. What comes back still wants the
+    /// transpose of that resting rotation on its right and the placement's scale on it, both of
+    /// which are one value for a whole draw rather than one a copy.
+    ///
+    /// None means the same as it does for `orient`: the mode declines, and the node keeps what it
+    /// had.
+    pub fn aim(&self, camera: &Camera, pivot: Vec3, standing: Mat3) -> Option<Mat3> {
+        match self {
             BillboardMode::AlwaysFaceCamera
             | BillboardMode::AlwaysFaceCenter
             | BillboardMode::RigidFaceCamera
@@ -83,52 +112,57 @@ impl BillboardMode {
                 let basis = Basis::of(camera);
                 let basis = match self {
                     BillboardMode::AlwaysFaceCenter | BillboardMode::RigidFaceCenter => {
-                        basis.toward(camera, Vec3::from(&world.translation))?
+                        basis.toward(camera, pivot)?
                     }
                     _ => basis,
                 };
-                let Basis { facing, up, right } = basis.into_local(rotation);
+                let Basis { facing, up, right } = basis;
 
-                match self {
+                Some(match self {
                     // rigid drops the node's own orientation entirely, since this cancels
                     // against the rotation it is multiplied by
                     BillboardMode::RigidFaceCamera | BillboardMode::RigidFaceCenter => {
                         Mat3::from_cols(right, up, facing)
                     }
-                    // the others roll the quad about the view direction so its own up stays as
-                    // upright as the view allows
+                    // The others roll the quad about the view direction so its own up stays as
+                    // upright as the view allows. Which up that is, is the node's own y axis as
+                    // the copy's placement leaves it standing.
                     _ => {
-                        let root = (right.y * right.y + up.y * up.y).sqrt();
+                        let own = standing.y_axis;
+                        let (along, across) = (own.dot(up), -own.dot(right));
+                        let root = (across * across + along * along).sqrt();
                         if root > 1e-6 {
                             let inverse = 1.0 / root;
-                            let (cos, sin) = (up.y * inverse, -right.y * inverse);
+                            let (cos, sin) = (along * inverse, across * inverse);
                             Mat3::from_cols(right * cos + up * sin, right * -sin + up * cos, facing)
                         } else {
                             Mat3::from_cols(-right, -up, facing)
                         }
                     }
-                }
+                })
             }
 
-            // pivots about the node's own up, keeping x and z as the ground plane
+            // Pivots about the node's own up, keeping x and z as the ground plane. This one does
+            // not shed the placement the way the others do: the turn is about an axis of the
+            // node's rather than one of the camera's, so where the copy stands turned stays in
+            // the answer. The node's own scale drops out either way, since all that is taken from
+            // the direction to the eye is which way it points.
             BillboardMode::RotateAboutUp
             | BillboardMode::BSRotateAboutUp
             | BillboardMode::RotateAboutUp2 => {
-                if world.scale.abs() < 1e-8 {
-                    return None;
-                }
-                let offset = Vec3::from(&camera.location) - Vec3::from(&world.translation);
-                let local = (rotation.transpose() * offset) / world.scale;
+                let offset = Vec3::from(&camera.location) - pivot;
+                let local = standing.transpose() * offset;
                 let flat = glam::Vec2::new(local.x, local.z).try_normalize()?;
-                Mat3::from_cols(
-                    Vec3::new(flat.y, 0.0, -flat.x),
-                    Vec3::Y,
-                    Vec3::new(flat.x, 0.0, flat.y),
+                Some(
+                    standing
+                        * Mat3::from_cols(
+                            Vec3::new(flat.y, 0.0, -flat.x),
+                            Vec3::Y,
+                            Vec3::new(flat.x, 0.0, flat.y),
+                        ),
                 )
             }
-        };
-
-        Some((rotation * face).into())
+        }
     }
 }
 
