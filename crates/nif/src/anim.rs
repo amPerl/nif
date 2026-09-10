@@ -74,6 +74,22 @@ pub fn span(blocks: &[Block]) -> Option<(f32, f32)> {
 
 /// The transform an object holds at `time`, following its controller chain. None when nothing
 /// animates it, so a caller can keep whatever it already had.
+/// Whether anything could ever move this object, whatever the moment.
+///
+/// `transform_at` returns None for a node no controller drives, and it has to walk the chain and
+/// look at every one to find that out. Whether the chain holds an active transform controller at
+/// all does not change while a file is loaded, so a caller asking the same node about thousands of
+/// copies a frame can ask this once instead. False is a promise that `transform_at` is None at
+/// every time; true only means it is worth asking.
+pub fn drives_transform(blocks: &[Block], object: &NiAvObject) -> bool {
+    controllers(blocks, object.controller_ref).any(|block| {
+        matches!(block, Block::NiTransformController(_))
+            && block
+                .as_time_controller()
+                .is_some_and(NiTimeController::is_active)
+    })
+}
+
 pub fn transform_at(blocks: &[Block], object: &NiAvObject, time: f32) -> Option<NiTransform> {
     for block in controllers(blocks, object.controller_ref) {
         let Block::NiTransformController(controller) = block else {
