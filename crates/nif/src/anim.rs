@@ -1061,24 +1061,32 @@ impl NiTransformData {
             });
         }
 
+        // Found by halving rather than by walking, the way the translations and the scales
+        // already are. A quaternion key carries its time as an option only because the xyz form
+        // leaves both empty, and that form was answered above, so every key here has one and they
+        // are in order: a binary search is as sound as the scan was and does not read the whole
+        // track to find the one moment asked for. A driven node is sampled for every copy of
+        // every model that carries it, which made this one of the hottest reads in a frame.
         let keys = &self.quaternion_keys;
-        let mut pairs = keys
-            .iter()
-            .filter_map(|key| Some((key.time?, key.value.as_ref()?)));
-        let first = pairs.next()?;
-        let mut previous = first;
-        for current in pairs {
-            if time <= current.0 {
-                let span = current.0 - previous.0;
-                if span <= 0.0 {
-                    return Some(*current.1);
-                }
-                let t = ((time - previous.0) / span).clamp(0.0, 1.0);
-                return Some(Quat::from(previous.1).slerp(current.1.into(), t).into());
-            }
-            previous = current;
+        if keys.len() < 2 {
+            return keys.first().and_then(|key| key.value);
         }
-        Some(*previous.1)
+        // The first key at or after the moment, so the segment is the pair ending there. Strictly
+        // before rather than at or before, because two keys can share a time: the walk took the
+        // first of them as the segment's end and halving on `<=` would step past both.
+        let at = keys
+            .partition_point(|key| key.time.is_some_and(|start| start < time))
+            .clamp(1, keys.len() - 1);
+        let previous = keys.get(at - 1)?;
+        let current = keys.get(at)?;
+        let (start, from) = (previous.time?, previous.value.as_ref()?);
+        let (end, to) = (current.time?, current.value.as_ref()?);
+        let span = end - start;
+        if span <= 0.0 {
+            return Some(*to);
+        }
+        let t = ((time - start) / span).clamp(0.0, 1.0);
+        Some(Quat::from(from).slerp(to.into(), t).into())
     }
 
     pub fn sample(&self, time: f32) -> Pose {
@@ -1785,5 +1793,106 @@ pub(crate) mod tests {
         assert_eq!(controller.cycle_type_enum(), CycleType::Clamp);
         assert_eq!(controller.local_time(5.0), 4.0);
         assert_eq!(controller.local_time(-1.0), 0.0);
+    }
+}
+
+
+#[cfg(test)]
+mod rotations {
+    use super::*;
+    use crate::common::{QuatKey, Quaternion};
+
+    /// The walk this used to do, kept so the halving can be held against it.
+    fn by_walking(keys: &[QuatKey], time: f32) -> Option<Quaternion> {
+        let mut pairs = keys
+            .iter()
+            .filter_map(|key| Some((key.time?, key.value.as_ref()?)));
+        let first = pairs.next()?;
+        let mut previous = first;
+        for current in pairs {
+            if time <= current.0 {
+                let span = current.0 - previous.0;
+                if span <= 0.0 {
+                    return Some(*current.1);
+                }
+                let t = ((time - previous.0) / span).clamp(0.0, 1.0);
+                return Some(Quat::from(previous.1).slerp(current.1.into(), t).into());
+            }
+            previous = current;
+        }
+        Some(*previous.1)
+    }
+
+    fn track(times: &[f32]) -> NiTransformData {
+        let quaternion_keys = times
+            .iter()
+            .enumerate()
+            .map(|(n, at)| {
+                let turn = Quat::from_rotation_z(n as f32 * 0.6)
+                    * Quat::from_rotation_x(n as f32 * -0.25);
+                QuatKey {
+                    time: Some(*at),
+                    value: Some(turn.into()),
+                    tbc: None,
+                }
+            })
+            .collect();
+        NiTransformData {
+            num_rotation_keys: times.len() as u32,
+            rotation_type: Some(crate::common::KeyType::Linear),
+            quaternion_keys,
+            xyz_rotations: None,
+            translations: crate::common::KeyGroup {
+                interpolation: None,
+                keys: Vec::new(),
+            },
+            scales: crate::common::KeyGroup {
+                interpolation: None,
+                keys: Vec::new(),
+            },
+        }
+    }
+
+    /// Halving finds the same turn the walk did, at every moment either can be asked about.
+    #[test]
+    fn halving_lands_where_walking_did() {
+        for times in [
+            vec![],
+            vec![0.0],
+            vec![0.0, 1.0],
+            vec![0.0, 0.5, 2.0, 2.0, 5.5],
+            (0..40).map(|n| n as f32 * 0.37).collect::<Vec<_>>(),
+        ] {
+            let data = track(&times);
+            // before the first key, on every key, between every pair, and past the last
+            let mut moments = vec![-3.0f32, -0.0001, 0.0, 99.0];
+            for (n, at) in times.iter().enumerate() {
+                moments.push(*at);
+                moments.push(at - 0.0001);
+                moments.push(at + 0.0001);
+                if let Some(next) = times.get(n + 1) {
+                    moments.push((at + next) * 0.5);
+                }
+            }
+            for time in moments {
+                let walked = by_walking(&data.quaternion_keys, time);
+                let halved = data.rotation_at(time);
+                match (walked, halved) {
+                    (None, None) => {}
+                    (Some(a), Some(b)) => {
+                        let (a, b) = (Quat::from(&a), Quat::from(&b));
+                        // a turn and its negation are the same turn, and `angle_between` is an
+                        // acos that goes to NaN when the dot creeps past one, which two equal
+                        // turns manage
+                        assert!(
+                            (a.dot(b).abs() - 1.0).abs() < 1e-5,
+                            "{} keys at {time}: {a:?} by walking, {b:?} by halving",
+                            times.len()
+                        );
+                    }
+                    _ => panic!("{} keys at {time}: one found a turn and the other did not", times.len()),
+                }
+            }
+        }
     }
 }
