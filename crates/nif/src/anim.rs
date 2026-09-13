@@ -1,5 +1,9 @@
 use glam::{Mat3, Quat, Vec3};
 
+// Following a controller chain is a walk of the graph like any other and needs none of the
+// maths this module is gated on, so it lives with the walks. Named here as it always was.
+pub use crate::walk::controllers;
+
 use crate::blocks::{
     Block, GeomMorpherFlags, LookAxis, MaterialColor, NiAvObject, NiGeometry, NiLookAtInterpolator,
     NiMaterialProperty, NiObjectNET, NiTexturingProperty, NiTimeController, NiTransformData,
@@ -887,23 +891,6 @@ pub fn visible_at(blocks: &[Block], object: &NiAvObject, time: f32) -> Option<bo
         };
     }
     None
-}
-
-/// Every controller on an object, following the chain from one to the next.
-/// Every controller in a chain, from the first one an object names.
-///
-/// A chain is bounded here rather than trusted: a file whose next pointers form a ring would
-/// otherwise be walked forever.
-pub fn controllers(blocks: &[Block], first: BlockRef) -> impl Iterator<Item = &Block> {
-    let mut next = first;
-    let mut guard = 0;
-    std::iter::from_fn(move || {
-        let block = next.get(blocks)?;
-        let time_controller = block.as_time_controller()?;
-        next = time_controller.next_controller_ref;
-        guard += 1;
-        (guard <= 64).then_some(block)
-    })
 }
 
 /// `Tbc` needs per key derivatives the file does not carry, so it falls back to linear here.

@@ -167,6 +167,22 @@ struct Frame {
     effects: Effects,
 }
 
+/// Every controller in a chain, from the first one an object names.
+///
+/// A chain is bounded here rather than trusted: a file whose next pointers form a ring would
+/// otherwise be walked forever.
+pub fn controllers(blocks: &[Block], first: BlockRef) -> impl Iterator<Item = &Block> {
+    let mut next = first;
+    let mut guard = 0;
+    std::iter::from_fn(move || {
+        let block = next.get(blocks)?;
+        let time_controller = block.as_time_controller()?;
+        next = time_controller.next_controller_ref;
+        guard += 1;
+        (guard <= 64).then_some(block)
+    })
+}
+
 /// Which LOD node each block sits under, and which of its levels it is.
 ///
 /// A level is a child's place in the node's child list, which is what the ranges are counted
@@ -196,6 +212,115 @@ pub fn lod_ancestry(nif: &crate::Nif) -> std::collections::HashMap<usize, (usize
         }
     }
     found
+}
+
+/// Which block decides whether each one shows, where anything does.
+///
+/// A visibility controller sits on a node far more often than on the shape under it, so asking
+/// the shape about its own controllers finds nothing and the shape stays drawn through the half
+/// of the animation it should be gone. The nearest one above wins, and a shape carrying its own
+/// speaks for itself.
+pub fn hiding_ancestry(nif: &crate::Nif) -> std::collections::HashMap<usize, usize> {
+    let mut found = std::collections::HashMap::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut stack: Vec<(usize, Option<usize>)> = nif.roots().map(|(at, _)| (at, None)).collect();
+    while let Some((index, owner)) = stack.pop() {
+        if !seen.insert(index) {
+            continue;
+        }
+        let Some(block) = nif.blocks.get(index) else {
+            continue;
+        };
+        let hides = block.object_net().is_some_and(|object| {
+            controllers(&nif.blocks, object.controller_ref)
+                .any(|held| matches!(held, Block::NiVisController(_)))
+        });
+        let hider = hides.then_some(index).or(owner);
+        if let Some(hider) = hider {
+            found.insert(index, hider);
+        }
+        for child in block.child_refs().unwrap_or_default() {
+            let Some(child) = child.index() else { continue };
+            stack.push((child, hider));
+        }
+    }
+    found
+}
+
+/// Which nodes above each block move it, outermost first.
+///
+/// Two things count: a transform controller, and a billboard node, which turns to meet whoever is
+/// looking. Both replace the node's own transform and leave everything under it alone, which is
+/// what makes them something a placement's matrix can carry. The other controllers change what a
+/// shape looks like rather than where it is, and no matrix would express them.
+pub fn driven_ancestry(nif: &crate::Nif) -> std::collections::HashMap<usize, Vec<usize>> {
+    let mut found = std::collections::HashMap::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut stack: Vec<(usize, Vec<usize>)> = nif.roots().map(|(at, _)| (at, Vec::new())).collect();
+    while let Some((index, chain)) = stack.pop() {
+        if !seen.insert(index) {
+            continue;
+        }
+        if !chain.is_empty() {
+            found.insert(index, chain.clone());
+        }
+        let Some(block) = nif.blocks.get(index) else {
+            continue;
+        };
+        let turns = matches!(block, Block::NiBillboardNode(_))
+            || block.object_net().is_some_and(|object| {
+                controllers(&nif.blocks, object.controller_ref)
+                    .any(|held| matches!(held, Block::NiTransformController(_)))
+            });
+        let mut below = chain;
+        if turns {
+            below.push(index);
+        }
+        for child in block.child_refs().unwrap_or_default() {
+            let Some(child) = child.index() else { continue };
+            stack.push((child, below.clone()));
+        }
+    }
+    found
+}
+
+/// What the three walks above say about every block, gathered once.
+///
+/// None of it changes while a file is read, and each answer costs a walk of the whole file. A
+/// caller that reads a file every frame, for the shapes something drives or the chunks something
+/// moves, would otherwise work all three out again dozens of times a second for a file that has
+/// not changed since it was opened.
+#[derive(Default)]
+pub struct Ancestry {
+    hidden_by: std::collections::HashMap<usize, usize>,
+    lod_of: std::collections::HashMap<usize, (usize, usize)>,
+    driven_of: std::collections::HashMap<usize, Vec<usize>>,
+}
+
+impl Ancestry {
+    /// Worked out once, when the file is read.
+    pub fn of(nif: &crate::Nif) -> Ancestry {
+        Ancestry {
+            hidden_by: hiding_ancestry(nif),
+            lod_of: lod_ancestry(nif),
+            driven_of: driven_ancestry(nif),
+        }
+    }
+
+    /// Which node, if any, can hide each block.
+    pub fn hidden_by(&self) -> &std::collections::HashMap<usize, usize> {
+        &self.hidden_by
+    }
+
+    /// Which LOD node each block sits under and which level of it, where it sits under one.
+    pub fn lod_of(&self) -> &std::collections::HashMap<usize, (usize, usize)> {
+        &self.lod_of
+    }
+
+    /// The nodes above each block whose transform is not the one the file stores, outermost first.
+    pub fn driven_of(&self) -> &std::collections::HashMap<usize, Vec<usize>> {
+        &self.driven_of
+    }
 }
 
 /// The level of a LOD node whose range covers `distance`, falling back to the first.
