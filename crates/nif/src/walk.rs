@@ -1,4 +1,4 @@
-use crate::blocks::{Block, NiLODNode};
+use crate::blocks::{Block, NiLODNode, NiTimeController};
 use crate::common::{BlockRef, NiTransform};
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -220,6 +220,9 @@ pub fn lod_ancestry(nif: &crate::Nif) -> std::collections::HashMap<usize, (usize
 /// the shape about its own controllers finds nothing and the shape stays drawn through the half
 /// of the animation it should be gone. The nearest one above wins, and a shape carrying its own
 /// speaks for itself.
+///
+/// A controller switched off is not one, which is the same question `anim::visible_at` asks
+/// before it samples: without this a shape sits under a hider that will never hide it.
 pub fn hiding_ancestry(nif: &crate::Nif) -> std::collections::HashMap<usize, usize> {
     let mut found = std::collections::HashMap::new();
     let mut seen = std::collections::HashSet::new();
@@ -232,8 +235,9 @@ pub fn hiding_ancestry(nif: &crate::Nif) -> std::collections::HashMap<usize, usi
             continue;
         };
         let hides = block.object_net().is_some_and(|object| {
-            controllers(&nif.blocks, object.controller_ref)
-                .any(|held| matches!(held, Block::NiVisController(_)))
+            controllers(&nif.blocks, object.controller_ref).any(|held| {
+                matches!(held, Block::NiVisController(_)) && is_running(held)
+            })
         });
         let hider = hides.then_some(index).or(owner);
         if let Some(hider) = hider {
@@ -253,6 +257,10 @@ pub fn hiding_ancestry(nif: &crate::Nif) -> std::collections::HashMap<usize, usi
 /// looking. Both replace the node's own transform and leave everything under it alone, which is
 /// what makes them something a placement's matrix can carry. The other controllers change what a
 /// shape looks like rather than where it is, and no matrix would express them.
+///
+/// A controller switched off is not one, which is the same question `anim::transform_at` asks
+/// before it samples: without this a shape is handed to the path that recomposes its motion every
+/// frame, and the sampler there has nothing to give it.
 pub fn driven_ancestry(nif: &crate::Nif) -> std::collections::HashMap<usize, Vec<usize>> {
     let mut found = std::collections::HashMap::new();
     let mut seen = std::collections::HashSet::new();
@@ -269,8 +277,9 @@ pub fn driven_ancestry(nif: &crate::Nif) -> std::collections::HashMap<usize, Vec
         };
         let turns = matches!(block, Block::NiBillboardNode(_))
             || block.object_net().is_some_and(|object| {
-                controllers(&nif.blocks, object.controller_ref)
-                    .any(|held| matches!(held, Block::NiTransformController(_)))
+                controllers(&nif.blocks, object.controller_ref).any(|held| {
+                    matches!(held, Block::NiTransformController(_)) && is_running(held)
+                })
             });
         let mut below = chain;
         if turns {
@@ -282,6 +291,14 @@ pub fn driven_ancestry(nif: &crate::Nif) -> std::collections::HashMap<usize, Vec
         }
     }
     found
+}
+
+/// Whether a controller runs at all. A file can carry one switched off, and the samplers pass
+/// over it, so anything asking which controllers are in force has to ask this too.
+fn is_running(block: &Block) -> bool {
+    block
+        .as_time_controller()
+        .is_some_and(NiTimeController::is_active)
 }
 
 /// What the three walks above say about every block, gathered once.
