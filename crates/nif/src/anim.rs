@@ -94,7 +94,18 @@ pub fn drives_transform(blocks: &[Block], object: &NiAvObject) -> bool {
     })
 }
 
+/// A node can carry several at once, and all of them run.
+///
+/// `NiTransformController::Update` writes only the channels its interpolator says are valid and
+/// leaves the target's own alone, and `NiAVObject::UpdateObjectControllers` walks the whole chain
+/// from the head calling Update on each. So four controllers on one node are four writes to the
+/// same three channels, and the last to write a channel is the one that decides it.
+///
+/// Reading only the first is what made a roof item ten times its size: `i_discgem` and `i_lizard`
+/// hang four and two controllers off one node, and the first of them carries a scale of ten that
+/// a later one puts back to one.
 pub fn transform_at(blocks: &[Block], object: &NiAvObject, time: f32) -> Option<NiTransform> {
+    let mut found: Option<Pose> = None;
     for block in controllers(blocks, object.controller_ref) {
         let Block::NiTransformController(controller) = block else {
             continue;
@@ -130,9 +141,14 @@ pub fn transform_at(blocks: &[Block], object: &NiAvObject, time: f32) -> Option<
         if pose.is_empty() {
             continue;
         }
-        return Some(pose.apply(&NiTransform::from(object)));
+        // This one's channels over whatever the chain has said so far, which is the order the
+        // engine writes them in.
+        found = Some(match found {
+            Some(held) => pose.or(held),
+            None => pose,
+        });
     }
-    None
+    Some(found?.apply(&NiTransform::from(object)))
 }
 
 /// The value a channel carries when it supplies nothing, so the target keeps its own.
@@ -1548,6 +1564,78 @@ pub(crate) mod tests {
             unreachable!()
         };
         assert!(morph_normals(&bare, geometry, &vertices).is_none());
+    }
+
+    /// The whole of one: the controller and the interpolator it reads, side by side.
+    fn stacked(scale: Option<f32>, up: Option<f32>, next: BlockRef, at: u32) -> Vec<Block> {
+        let invalid = -f32::MAX;
+        vec![
+            Block::NiTransformController(crate::blocks::NiTransformController {
+                base: crate::blocks::NiSingleInterpController {
+                    base: crate::blocks::NiInterpController {
+                        base: time_controller(next),
+                    },
+                    interpolator_ref: BlockRef::Index(at + 1),
+                },
+            }),
+            Block::NiTransformInterpolator(crate::blocks::NiTransformInterpolator {
+                base: crate::blocks::NiKeyBasedInterpolator {
+                    base: crate::blocks::NiInterpolator {},
+                },
+                transform: crate::common::NiQuatTransform {
+                    // All three or none: the format marks a whole channel absent, and a vector
+                    // with one live component in it reads as nothing at all.
+                    translation: match up {
+                        Some(up) => vector(0.0, 0.0, up),
+                        None => vector(invalid, invalid, invalid),
+                    },
+                    rotation: crate::common::Quaternion {
+                        x: invalid,
+                        y: invalid,
+                        z: invalid,
+                        w: invalid,
+                    },
+                    scale: scale.unwrap_or(invalid),
+                },
+                data_ref: BlockRef::None,
+            }),
+        ]
+    }
+
+    /// A node carries every controller hung off it, and every one of them runs.
+    ///
+    /// `NiTransformController::Update` writes only the channels its interpolator says are valid,
+    /// and `NiAVObject::UpdateObjectControllers` walks the chain from the head calling each in
+    /// turn. So the last controller to write a channel decides it, and one that writes nothing
+    /// about a channel leaves whatever came before.
+    ///
+    /// Reading the first alone is what drew a roof item at ten times its size: `i_discgem` hangs
+    /// four off one node and the first of them carries a scale of ten that a later one puts back.
+    /// Twenty nine of the vehicle files stack them, up to eight deep on one node.
+    #[test]
+    fn every_controller_on_a_node_gets_its_say() {
+        let mut blocks = vec![shape(BlockRef::Index(1), BlockRef::None)];
+        // the head carries the wrong scale, as the roof items do
+        blocks.extend(stacked(Some(10.0), None, BlockRef::Index(3), 1));
+        // and a later one puts it right without touching anything else
+        blocks.extend(stacked(Some(1.0), None, BlockRef::Index(5), 3));
+        // and a third lifts it, saying nothing about scale at all
+        blocks.extend(stacked(None, Some(4.0), BlockRef::None, 5));
+        let Some(Block::NiTriShape(geometry)) = blocks.first() else {
+            unreachable!()
+        };
+
+        let held = transform_at(&blocks, geometry, 0.5).expect("the node is driven");
+        assert!(
+            (held.scale - 1.0).abs() < 1e-5,
+            "the first controller won the scale: {}",
+            held.scale
+        );
+        assert!(
+            (held.translation.z - 4.0).abs() < 1e-5,
+            "the lift was lost: {}",
+            held.translation.z
+        );
     }
 
     fn key(time: f32, value: f32, in_tangent: f32, out_tangent: f32) -> Key<f32> {
