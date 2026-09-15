@@ -415,6 +415,10 @@ impl Block {
             Block::NiSwitchNode(b) => b,
             Block::NiLODNode(b) => b,
             Block::NiBillboardNode(b) => b,
+            // A node that says how its subtree is sorted and nothing else. Left out, the
+            // subtree is left out with it: `i_smoker` keeps both its shapes under one and drew
+            // nothing at all.
+            Block::NiSortAdjustNode(b) => b,
             _ => return None,
         };
         Some(obj)
