@@ -15,8 +15,8 @@
 use glam::{Mat4, Vec3};
 
 use crate::blocks::{
-    Block, EmitFrom, ForceType, NiPSysColorModifier, NiPSysEmitter, NiPSysGravityModifier,
-    NiPSysGrowFadeModifier, NiPSysRotationModifier, VelocityType,
+    Block, EmitFrom, ForceType, NiPSysColorModifier, NiPSysData, NiPSysEmitter,
+    NiPSysGravityModifier, NiPSysGrowFadeModifier, NiPSysRotationModifier, VelocityType,
 };
 use crate::common::{BlockRef, Color4, NiTransform, Vector3};
 
@@ -91,6 +91,8 @@ pub struct System {
     /// Which block this simulates, so a caller holding several can tell them apart.
     pub block: usize,
     particles: Vec<Particle>,
+    /// The particles its file was saved with, alive when it is first run.
+    saved: Vec<Particle>,
     capacity: usize,
     time: f32,
     rng: Rng,
@@ -105,8 +107,8 @@ pub struct System {
 }
 
 impl System {
-    /// Prepares an empty system for the `NiParticleSystem` at `block`. Nothing exists until it
-    /// is advanced.
+    /// Prepares the system for the `NiParticleSystem` at `block`, holding whatever particles its
+    /// file was saved with and nothing else until it is advanced.
     pub fn new(blocks: &[Block], block: usize) -> Option<System> {
         let Some(psys) = blocks.get(block).and_then(Block::particle_system) else {
             return None;
@@ -114,15 +116,17 @@ impl System {
         // Either form of the data, since a mesh system carries its own and the count the
         // simulation needs sits underneath. Reading only the plain form left a mesh system with
         // room for nothing, which simulates perfectly and emits not one particle.
-        let capacity = match psys.data_ref.get(blocks).and_then(Block::psys_data) {
-            Some(data) => data.vertex_count(),
-            None => 0,
-        };
+        let data = psys.data_ref.get(blocks).and_then(Block::psys_data);
+        let capacity = data.map_or(0, |data| data.vertex_count());
+        let saved = data.map(saved).unwrap_or_default();
         // mixed with the block index, so two systems in one file do not emit in lockstep
         let seed = 0x9e3779b97f4a7c15 ^ block as u64;
+        let mut particles = Vec::with_capacity(capacity.min(4096));
+        particles.extend_from_slice(&saved);
         Some(System {
             block,
-            particles: Vec::with_capacity(capacity.min(4096)),
+            particles,
+            saved,
             capacity,
             time: 0.0,
             rng: Rng::new(seed),
@@ -205,10 +209,15 @@ impl System {
     /// which reads as wrong wherever two copies can be seen at once.
     pub fn stir(&mut self, salt: u64) {
         self.seed ^= salt.wrapping_mul(0x9e3779b97f4a7c15);
-        self.reset();
+        self.rng = Rng::new(self.seed);
+        self.particles.clear();
+        self.particles.extend_from_slice(&self.saved);
+        self.time = 0.0;
     }
 
-    /// Returns the system to its state before anything was emitted.
+    /// Empties the system and starts its clock again, as the engine does when its time runs
+    /// backwards. What the file was saved with is not brought back: that is there only when the
+    /// system is first run.
     pub fn reset(&mut self) {
         self.particles.clear();
         self.time = 0.0;
@@ -727,6 +736,48 @@ fn emit(emitter: &NiPSysEmitter, age: f32, rng: &mut Rng) -> Option<Particle> {
     })
 }
 
+/// The particles a file was saved with that are alive, every one as it was saved: the engine runs
+/// a loaded or cloned system on from these rather than from nothing, so an effect saved part way
+/// through shows as it was saved on its first frame. A saved particle's last update is kept too,
+/// since the first step measures its age and its move from it.
+fn saved(data: &NiPSysData) -> Vec<Particle> {
+    let Some(vertices) = data.vertices.as_ref() else {
+        return Vec::new();
+    };
+    let live = (data.num_active as usize)
+        .min(data.particle_info.len())
+        .min(vertices.len());
+    let at = |slot: &Option<Vec<f32>>, index: usize, or: f32| {
+        slot.as_ref()
+            .and_then(|values| values.get(index))
+            .copied()
+            .unwrap_or(or)
+    };
+    (0..live)
+        .map(|index| {
+            let info = &data.particle_info[index];
+            Particle {
+                position: vertices[index],
+                velocity: info.velocity,
+                age: info.age,
+                life_span: info.life_span,
+                radius: at(&data.radii, index, 1.0),
+                size: at(&data.sizes, index, 1.0),
+                rotation: at(&data.rotation_angles, index, 0.0),
+                rotation_speed: at(&data.rotation_speeds, index, 0.0),
+                color: data
+                    .vertex_colors
+                    .as_ref()
+                    .and_then(|colors| colors.get(index))
+                    .copied()
+                    .unwrap_or_default(),
+                generation: info.spawn_generation,
+                last_update: info.last_update,
+            }
+        })
+        .collect()
+}
+
 /// One object's transform as of `time`, composed from the root down. A NIF links parents to
 /// children and not the other way, so the chain up is found by asking which node claims each
 /// block as a child.
@@ -1007,6 +1058,76 @@ mod tests {
         crate::Nif::parse(&mut std::io::Cursor::new(&bytes)).expect("parse")
     }
 
+    /// A system saved with particles alive starts with them, every one as saved and only the ones
+    /// alive; stirring it starts it again from them, and a reset, as a clock running backwards
+    /// does, leaves it empty.
+    #[test]
+    fn a_system_starts_with_the_particles_it_was_saved_with() {
+        use crate::blocks::{NiGeometryData, NiParticleInfo, NiParticlesData};
+        let at = |x: f32| Vector3 { x, y: 0.0, z: 0.0 };
+        let info = |age: f32| NiParticleInfo {
+            velocity: at(2.0),
+            age,
+            life_span: 0.5,
+            last_update: 0.06,
+            spawn_generation: 0,
+            code: 0,
+        };
+        let data = NiPSysData {
+            base: NiParticlesData {
+                base: NiGeometryData {
+                    group_id: 0,
+                    keep_flags: 0,
+                    compress_flags: 0,
+                    vertices: Some(vec![at(1.0), at(2.0), at(3.0)]),
+                    data_flags: 0,
+                    normals: None,
+                    tangents: None,
+                    binormals: None,
+                    center: at(0.0),
+                    radius: 0.0,
+                    vertex_colors: None,
+                    uv_sets: Vec::new(),
+                    consistency_flags: 0,
+                    additional_data_ref: BlockRef::None,
+                },
+                radii: Some(vec![159.0, 403.0, 7.0]),
+                num_active: 2,
+                sizes: None,
+                rotations: None,
+                rotation_angles: None,
+                rotation_axes: None,
+            },
+            particle_info: vec![info(-0.01), info(0.07), info(0.3)],
+            rotation_speeds: None,
+            num_added_particles: 0,
+            added_particles_base: 0,
+        };
+        let found = saved(&data);
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert_eq!(found[1].position, at(2.0));
+        assert_eq!((found[0].age, found[1].radius), (-0.01, 403.0));
+        assert_eq!((found[0].size, found[0].last_update), (1.0, 0.06));
+
+        let mut system = System {
+            block: 0,
+            particles: found.clone(),
+            saved: found.clone(),
+            capacity: 3,
+            time: 0.0,
+            rng: Rng::new(1),
+            seed: 1,
+            spaces: std::collections::HashMap::new(),
+            posed_rate: None,
+        };
+        system.particles.clear();
+        system.time = 1.0;
+        system.stir(5);
+        assert_eq!(system.particles(), &found[..]);
+        system.reset();
+        assert!(system.particles().is_empty());
+    }
+
     /// A volume emitter's velocity is turned the way the emitter's object is turned against the
     /// system, and keeps its speed however that object is scaled: a crash effect's emitters are
     /// turned to leave sideways, and scaled to a four hundredth.
@@ -1176,6 +1297,7 @@ mod tests {
                 make(0.0, -1.0),
                 make(std::f32::consts::TAU - 0.1, 1.0),
             ],
+            saved: Vec::new(),
             capacity: 8,
             time: 0.0,
             rng: Rng::new(1),
@@ -1440,6 +1562,7 @@ mod tests {
         let mut system = System {
             block: 0,
             particles: vec![make(0.0), make(0.5), make(1.0)],
+            saved: Vec::new(),
             capacity: 4,
             time: 0.0,
             rng: Rng::new(1),
@@ -1502,6 +1625,7 @@ mod tests {
         let mut system = System {
             block: 0,
             particles: Vec::new(),
+            saved: Vec::new(),
             capacity: 4,
             time: 0.0,
             rng: Rng::new(1),
