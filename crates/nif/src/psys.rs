@@ -810,6 +810,9 @@ fn place(
     particle: &mut Particle,
     rng: &mut Rng,
 ) {
+    // A volume emitter's velocity is turned into the system's space along with its position; a
+    // mesh emitter aims by the surface instead, below.
+    let mut volume = true;
     let (local, normal, object) = match blocks.get(index) {
         Some(Block::NiPSysBoxEmitter(e)) => (
             Vec3::new(
@@ -851,6 +854,7 @@ fn place(
             )
         }
         Some(Block::NiPSysMeshEmitter(e)) => {
+            volume = false;
             // one mesh each in this corpus, but the engine picks at random among them
             let count = e.emitter_mesh_refs.len();
             if count == 0 {
@@ -879,7 +883,18 @@ fn place(
         let speed = Vec3::from(&particle.velocity).length();
         let aimed = space.transform_vector3(normal).normalize_or_zero();
         particle.velocity = (aimed * speed).into();
+    } else if volume {
+        particle.velocity = turned_into(&space, Vec3::from(&particle.velocity)).into();
     }
+}
+
+/// A velocity taken into a system's space by the turn of the transform that takes an emitter's
+/// space there, and not its scale. Left in the emitter's own space, a particle leaves along the
+/// emitter's own axis however the object carrying it is turned: an effect exported lying on its
+/// side sends everything straight up out of the side it was meant to leave by.
+fn turned_into(space: &Mat4, velocity: Vec3) -> Vec3 {
+    let (_, rotation, _) = space.to_scale_rotation_translation();
+    rotation * velocity
 }
 
 /// A point on a mesh's surface and the direction to leave it by, in the mesh's own space.
@@ -990,6 +1005,22 @@ mod tests {
     fn parse(path: &str) -> crate::Nif {
         let bytes = std::fs::read(path).expect("fixture");
         crate::Nif::parse(&mut std::io::Cursor::new(&bytes)).expect("parse")
+    }
+
+    /// A volume emitter's velocity is turned the way the emitter's object is turned against the
+    /// system, and keeps its speed however that object is scaled: a crash effect's emitters are
+    /// turned to leave sideways, and scaled to a four hundredth.
+    #[test]
+    fn a_volume_emitters_velocity_is_turned_and_not_scaled() {
+        let space = Mat4::from_scale(Vec3::splat(0.0025))
+            * Mat4::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+        let up = Vec3::new(0.0, 0.0, 5.0);
+        let turned = turned_into(&space, up);
+        assert!(
+            turned.abs_diff_eq(Vec3::new(0.0, 5.0, 0.0), 1e-4),
+            "{turned}"
+        );
+        assert!(turned_into(&Mat4::IDENTITY, up).abs_diff_eq(up, 1e-6));
     }
 
     #[test]
