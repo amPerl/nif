@@ -121,6 +121,9 @@ struct Plan {
     /// The chain up to the root from the system and from each object its gravity names, by
     /// block. Where a node sits is the file's; only an animated one's transform moves.
     chains: std::collections::HashMap<usize, Vec<usize>>,
+    /// The longest any particle of the system can live, counting what spawns on death down to
+    /// the last generation and what the file was saved with.
+    longest: f32,
 }
 
 impl Plan {
@@ -156,11 +159,13 @@ impl Plan {
                 }
             }
         }
+        let longest = longest_life(blocks, system, &modifiers);
         Plan {
             modifiers,
             rates,
             spinner,
             chains,
+            longest,
         }
     }
 
@@ -301,6 +306,17 @@ impl System {
     pub fn seek(&mut self, blocks: &[Block], time: f32) {
         if time < self.time {
             self.reset();
+        }
+        // A particle born longer before `time` than any particle lives is gone by then, so those
+        // steps are skipped, whole steps at a time to stay on the grid. Births after come out the
+        // same but their random draws do not. The engine itself runs a gap as one update.
+        let plan = self
+            .plan
+            .get_or_insert_with(|| Plan::of(blocks, self.block));
+        let behind = time - self.time - plan.longest;
+        if behind > STEP {
+            self.particles.clear();
+            self.time += (behind / STEP).floor() * STEP;
         }
         let mut steps = 0;
         while self.time + STEP <= time && steps < MAX_STEPS {
@@ -762,6 +778,37 @@ fn as_emitter(block: &Block) -> Option<&NiPSysEmitter> {
         _ => return None,
     };
     Some(emitter)
+}
+
+/// The longest any particle of `system` can live: the longest an emitter gives, plus every
+/// generation spawned on death after it, or what the file was saved with where that is longer.
+fn longest_life(blocks: &[Block], system: usize, modifiers: &[(u32, usize)]) -> f32 {
+    // an emitter and a spawner each take half their variation either way
+    let born = modifiers
+        .iter()
+        .filter_map(|(_, index)| blocks.get(*index).and_then(as_emitter))
+        .map(|e| e.life_span + e.life_span_variation.abs() * 0.5)
+        .fold(0.0, f32::max);
+    let spawned: f32 = system_modifiers(blocks, system)
+        .filter_map(|index| match blocks.get(index) {
+            Some(Block::NiPSysSpawnModifier(m)) => Some(
+                (m.life_span + m.life_span_variation.abs() * 0.5)
+                    * f32::from(m.num_spawn_generations),
+            ),
+            _ => None,
+        })
+        .sum();
+    let saved = blocks
+        .get(system)
+        .and_then(Block::particle_system)
+        .and_then(|psys| psys.data_ref.get(blocks))
+        .and_then(Block::psys_data)
+        .map(saved)
+        .unwrap_or_default()
+        .iter()
+        .map(|p| p.life_span - p.age)
+        .fold(0.0, f32::max);
+    (born + spawned).max(saved)
 }
 
 /// What an emitter gives a particle at birth. Each field takes its variation differently, and
@@ -1441,6 +1488,43 @@ mod tests {
             alive += system.particles().len();
         }
         assert!(alive > 0, "a looping emitter emitted nothing past its own span");
+    }
+
+    /// A seek far ahead starts from no further back than a particle lives, so it reaches a moment
+    /// past what a seek steps through at most, and what is alive there is what stepping the whole
+    /// way leaves, up to the life spans each particle drew.
+    #[test]
+    fn a_seek_far_ahead_steps_only_from_as_far_back_as_a_particle_lives() {
+        let bytes = std::fs::read("tests/20.nif").expect("fixture");
+        let nif = crate::Nif::parse(&mut std::io::Cursor::new(&bytes)).expect("parse");
+        let blocks = &nif.blocks;
+
+        // ten minutes on, where stepping every step would stop at the guard's one
+        for mut system in systems(blocks) {
+            system.seek(blocks, 600.0);
+            assert!(
+                system.time() > 600.0 - 2.0 * STEP,
+                "stopped at {} on the way to 600",
+                system.time()
+            );
+        }
+
+        // stepped one step a seek, which never falls far enough behind to skip
+        let (mut whole, mut skipped) = (0, 0);
+        for (mut stepped, mut jumped) in systems(blocks).into_iter().zip(systems(blocks)) {
+            for at in 1..=30 * 60 {
+                stepped.seek(blocks, at as f32 * STEP);
+            }
+            jumped.seek(blocks, stepped.time());
+            whole += stepped.particles().len();
+            skipped += jumped.particles().len();
+        }
+        assert!(whole > 0, "the fixture has nothing alive to compare");
+        let off = whole.abs_diff(skipped) as f32 / whole as f32;
+        assert!(
+            off < 0.1,
+            "{skipped} alive after skipping, {whole} stepping every step"
+        );
     }
 
     /// A looping emitter fires again every time its span comes round. Counting only the first
