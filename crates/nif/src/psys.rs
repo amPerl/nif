@@ -104,6 +104,77 @@ pub struct System {
     spaces: std::collections::HashMap<usize, Mat4>,
     /// A birth rate the caller has posed, standing in for whatever the file's interpolator holds.
     posed_rate: Option<f32>,
+    /// What a step reads from the file, worked out on the first step: see [`Plan`].
+    plan: Option<Plan>,
+}
+
+/// What a step reads from the file, worked out once instead of walking the blocks for every
+/// modifier on every step.
+#[derive(Clone)]
+struct Plan {
+    /// The active modifiers, by block, in the order they run.
+    modifiers: Vec<(u32, usize)>,
+    /// The birth rate driving each emitter among them, by the emitter's block.
+    rates: std::collections::HashMap<usize, BirthRate>,
+    /// The rotation modifier that sets a newborn particle's turn, where the system has one.
+    spinner: Option<usize>,
+    /// The chain up to the root from the system and from each object its gravity names, by
+    /// block. Where a node sits is the file's; only an animated one's transform moves.
+    chains: std::collections::HashMap<usize, Vec<usize>>,
+}
+
+impl Plan {
+    fn of(blocks: &[Block], system: usize) -> Plan {
+        let mut modifiers: Vec<(u32, usize)> = blocks
+            .get(system)
+            .and_then(Block::particle_system)
+            .map(|psys| {
+                psys.modifiers_refs
+                    .iter()
+                    .filter_map(|r| r.index())
+                    .filter_map(|index| {
+                        let modifier = blocks.get(index)?.as_psys_modifier()?;
+                        modifier.active.then_some((modifier.order, index))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        modifiers.sort_by_key(|(order, _)| *order);
+        let rates = modifiers
+            .iter()
+            .filter(|(_, index)| blocks.get(*index).and_then(as_emitter).is_some())
+            .filter_map(|(_, index)| Some((*index, birth_rate(blocks, system, *index)?)))
+            .collect();
+        let spinner = system_modifiers(blocks, system)
+            .find(|index| matches!(blocks.get(*index), Some(Block::NiPSysRotationModifier(_))));
+        let mut chains = std::collections::HashMap::new();
+        chains.insert(system, chain_of(blocks, system));
+        for (_, index) in &modifiers {
+            if let Some(Block::NiPSysGravityModifier(gravity)) = blocks.get(*index) {
+                if let Some(object) = gravity.gravity_object_ref.index() {
+                    chains.insert(object, chain_of(blocks, object));
+                }
+            }
+        }
+        Plan {
+            modifiers,
+            rates,
+            spinner,
+            chains,
+        }
+    }
+
+    /// Where one object sits in another's space as of `time`, along the chains worked out for
+    /// them, or found now for one that was not.
+    fn relative(&self, blocks: &[Block], system: usize, object: usize, time: f32) -> Option<Mat4> {
+        let along = |target: usize| match self.chains.get(&target) {
+            Some(chain) => transform_along(blocks, chain, time),
+            None => world_transform(blocks, target, time),
+        };
+        let system = Mat4::from(&along(system)?);
+        let object = Mat4::from(&along(object)?);
+        Some(system.inverse() * object)
+    }
 }
 
 impl System {
@@ -133,6 +204,7 @@ impl System {
             seed,
             spaces: std::collections::HashMap::new(),
             posed_rate: None,
+            plan: None,
         })
     }
 
@@ -241,37 +313,32 @@ impl System {
     fn step(&mut self, blocks: &[Block], dt: f32) {
         let last = self.time;
         let now = last + dt;
-        let Some(psys) = blocks.get(self.block).and_then(Block::particle_system) else {
+        let Some(_) = blocks.get(self.block).and_then(Block::particle_system) else {
             return;
         };
-
-        let mut modifiers: Vec<(u32, usize)> = psys
-            .modifiers_refs
-            .iter()
-            .filter_map(|r| r.index())
-            .filter_map(|index| {
-                let modifier = blocks.get(index)?.as_psys_modifier()?;
-                modifier.active.then_some((modifier.order, index))
-            })
-            .collect();
-        modifiers.sort_by_key(|(order, _)| *order);
+        // Taken out while the step runs, since the modifiers it lists change the system.
+        let plan = match self.plan.take() {
+            Some(plan) => plan,
+            None => Plan::of(blocks, self.block),
+        };
 
         // several modifiers share one order, so the block decides the behaviour and the order
         // only decides the sequence
-        for (order, index) in modifiers {
+        for &(order, index) in &plan.modifiers {
             match blocks.get(index) {
                 Some(Block::NiPSysGrowFadeModifier(m)) => self.grow_and_fade(m),
                 Some(Block::NiPSysRotationModifier(_)) => self.spin(now),
-                Some(Block::NiPSysGravityModifier(m)) => self.pull(blocks, m, now),
+                Some(Block::NiPSysGravityModifier(m)) => self.pull(blocks, &plan, m, now),
                 Some(Block::NiPSysColorModifier(m)) => self.tint(blocks, m),
                 _ => match order {
                     order::AGE_DEATH => self.age_and_die(blocks, index, now),
-                    order::EMIT => self.emit_from(blocks, index, last, now),
+                    order::EMIT => self.emit_from(blocks, &plan, index, last, now),
                     order::POSITION => self.integrate(now),
                     _ => {}
                 },
             }
         }
+        self.plan = Some(plan);
         self.time = now;
     }
 
@@ -305,11 +372,11 @@ impl System {
     /// object's transform, and without a gravity object the engine applies nothing at all. Every
     /// file stores the same axis, so it is the transform that decides where a system's gravity
     /// points, not the axis.
-    fn pull(&mut self, blocks: &[Block], modifier: &NiPSysGravityModifier, now: f32) {
+    fn pull(&mut self, blocks: &[Block], plan: &Plan, modifier: &NiPSysGravityModifier, now: f32) {
         let Some(object) = modifier.gravity_object_ref.index() else {
             return;
         };
-        let Some(relative) = relative_transform(blocks, self.block, object, now) else {
+        let Some(relative) = plan.relative(blocks, self.block, object, now) else {
             return;
         };
         let towards = relative.w_axis.truncate();
@@ -474,18 +541,16 @@ impl System {
     /// Emit whatever is due. The count born by a time is a closed form rather than a running
     /// total, so the population never depends on the step size, and each particle is back dated
     /// to the moment within the interval it was due.
-    fn emit_from(&mut self, blocks: &[Block], index: usize, last: f32, now: f32) {
+    fn emit_from(&mut self, blocks: &[Block], plan: &Plan, index: usize, last: f32, now: f32) {
         let Some(emitter) = blocks.get(index).and_then(as_emitter) else {
             return;
         };
-        let Some(mut rate) = birth_rate(blocks, self.block, index) else {
+        let Some(rate) = plan.rates.get(&index) else {
             return;
         };
-        if let Some(posed) = self.posed_rate {
-            rate.per_second = posed;
-        }
+        let per_second = self.posed_rate.unwrap_or(rate.per_second);
         let (start, stop) = rate.window;
-        if rate.per_second <= 0.0 || start >= stop || now <= start {
+        if per_second <= 0.0 || start >= stop || now <= start {
             return;
         }
         // past the end of its span an emitter is done, unless the span comes round again
@@ -496,16 +561,15 @@ impl System {
         // emission counts against how long the emitter has been on, not against the clock
         let current_delta = rate.emitting_before(now);
         let last_delta = rate.emitting_before(last);
-        let current_count = (rate.per_second * current_delta) as u32;
-        let last_count = (rate.per_second * last_delta) as u32;
-        let interval = 1.0 / rate.per_second;
-        // a particle's turn is set when it is born rather than each step, so the modifier that
-        // decides it is found once
-        let spinner =
-            system_modifiers(blocks, self.block).find_map(|index| match blocks.get(index) {
-                Some(Block::NiPSysRotationModifier(m)) => Some(m),
-                _ => None,
-            });
+        let current_count = (per_second * current_delta) as u32;
+        let last_count = (per_second * last_delta) as u32;
+        let interval = 1.0 / per_second;
+        // a particle's turn is set when it is born rather than each step, by the modifier the
+        // plan found
+        let spinner = plan.spinner.and_then(|index| match blocks.get(index) {
+            Some(Block::NiPSysRotationModifier(m)) => Some(m),
+            _ => None,
+        });
 
         for born in last_count..current_count {
             if self.particles.len() >= self.capacity {
@@ -530,6 +594,7 @@ impl System {
 }
 
 /// A birth rate and the window it applies over, from the emitter's own controller.
+#[derive(Clone)]
 struct BirthRate {
     per_second: f32,
     window: (f32, f32),
@@ -782,6 +847,11 @@ fn saved(data: &NiPSysData) -> Vec<Particle> {
 /// children and not the other way, so the chain up is found by asking which node claims each
 /// block as a child.
 fn world_transform(blocks: &[Block], target: usize, time: f32) -> Option<NiTransform> {
+    transform_along(blocks, &chain_of(blocks, target), time)
+}
+
+/// The chain from `target` up to the root, the target first.
+fn chain_of(blocks: &[Block], target: usize) -> Vec<usize> {
     let mut chain = vec![target];
     let mut at = target;
     // a graph is a tree here, and the guard is against a file that says otherwise
@@ -792,9 +862,13 @@ fn world_transform(blocks: &[Block], target: usize, time: f32) -> Option<NiTrans
         chain.push(parent);
         at = parent;
     }
+    chain
+}
 
+/// The transform at the start of `chain` as of `time`, composed from the root down.
+fn transform_along(blocks: &[Block], chain: &[usize], time: f32) -> Option<NiTransform> {
     let mut world = NiTransform::IDENTITY;
-    for index in chain.into_iter().rev() {
+    for &index in chain.iter().rev() {
         let object = blocks.get(index)?.av_object()?;
         // an animated node is wherever its controller leaves it, not where the file stores it
         let own = crate::anim::transform_at(blocks, object, time).unwrap_or(NiTransform {
@@ -817,14 +891,6 @@ fn parent_of(blocks: &[Block], child: usize) -> Option<usize> {
         Block::NiLODNode(node) => node.child_refs.iter().any(|r| r.index() == Some(child)),
         _ => false,
     })
-}
-
-/// Where one object sits in another's space, which is what carries a gravity axis and a gravity
-/// object's position into the space a system's particles live in.
-fn relative_transform(blocks: &[Block], system: usize, object: usize, time: f32) -> Option<Mat4> {
-    let system = Mat4::from(&world_transform(blocks, system, time)?);
-    let object = Mat4::from(&world_transform(blocks, object, time)?);
-    Some(system.inverse() * object)
 }
 
 /// How far and how fast a newly born particle turns. The variation is applied whole here rather
@@ -1119,6 +1185,7 @@ mod tests {
             seed: 1,
             spaces: std::collections::HashMap::new(),
             posed_rate: None,
+            plan: None,
         };
         system.particles.clear();
         system.time = 1.0;
@@ -1254,12 +1321,14 @@ mod tests {
         assert_eq!(parent_of(&blocks, 0), None);
 
         let up = Vec3::new(0.0, 0.0, 1.0);
+        // block 1 is no particle system, so the plan holds its chain and finds the other's
+        let plan = Plan::of(&blocks, 1);
         // the system's own space, so an object sharing its orientation leaves the axis alone
-        let same = relative_transform(&blocks, 1, 1, 0.0).expect("resolves");
+        let same = plan.relative(&blocks, 1, 1, 0.0).expect("resolves");
         assert!(same.transform_vector3(up).abs_diff_eq(up, 1e-5));
 
         // and the turned object sends the same axis the other way
-        let turned = relative_transform(&blocks, 1, 2, 0.0).expect("resolves");
+        let turned = plan.relative(&blocks, 1, 2, 0.0).expect("resolves");
         assert!(turned.transform_vector3(up).abs_diff_eq(-up, 1e-5));
     }
 
@@ -1304,6 +1373,7 @@ mod tests {
             seed: 1,
             spaces: Default::default(),
             posed_rate: None,
+            plan: None,
         };
         system.spin(0.5);
 
@@ -1569,6 +1639,7 @@ mod tests {
             seed: 1,
             spaces: Default::default(),
             posed_rate: None,
+            plan: None,
         };
         system.tint(&blocks, &modifier);
 
@@ -1632,6 +1703,7 @@ mod tests {
             seed: 1,
             spaces: Default::default(),
             posed_rate: None,
+            plan: None,
         };
 
         // half way into a two second grow
